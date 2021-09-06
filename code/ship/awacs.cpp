@@ -175,6 +175,7 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 	float test;
 	int closest_index = -1;
 	int idx, stealth_ship = 0, check_huge_ship = 0, friendly_stealth_invisible = 0;
+	bool hidden_from_sensors = false;
 	ship *shipp = NULL;
 	ship_info *sip = NULL;
 
@@ -188,7 +189,7 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 #define ALWAYS_TARGETABLE		1.5f
 #define MARGINALLY_TARGETABLE	0.5f
 #define UNTARGETABLE			-1.0f
-#define FULLY_TARGETABLE		(viewer_has_primitive_sensors ? ((distance < viewer->primitive_sensor_range) ? MARGINALLY_TARGETABLE : UNTARGETABLE) : ALWAYS_TARGETABLE)
+#define FULLY_TARGETABLE		(viewer_has_primitive_sensors ? ((distance < viewer->primitive_sensor_range) ? MARGINALLY_TARGETABLE : UNTARGETABLE) : (hidden_from_sensors ? MARGINALLY_TARGETABLE : ALWAYS_TARGETABLE))
 
 	// if the viewer is me, and I'm a multiplayer observer, its always viewable
 	if ((viewer == Player_ship) && (Game_mode & GM_MULTIPLAYER) && (Net_player != NULL) && MULTI_OBSERVER(Net_players[MY_NET_PLAYER_NUM]))
@@ -209,6 +210,7 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 		sip = &Ship_info[shipp->ship_info_index];
 		stealth_ship = (shipp->flags[Ship::Ship_Flags::Stealth]);
 		friendly_stealth_invisible = (shipp->flags[Ship::Ship_Flags::Friendly_stealth_invis]);
+		hidden_from_sensors = shipp->flags[Ship::Ship_Flags::Hidden_from_sensors];
 
 		check_huge_ship = (sip->is_huge_ship());
 	}
