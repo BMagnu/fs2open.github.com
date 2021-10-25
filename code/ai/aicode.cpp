@@ -5823,40 +5823,71 @@ bool ai_do_multilock(ai_info* aip, weapon_info* wip) {
 				multilock_targets.push_back(multilock_target{ primary_target,  nullptr, 1.0f });
 		}
 	} else { // any target
-		for (ship_obj* so = GET_FIRST(&Ship_obj_list); so != END_OF_LIST(&Ship_obj_list); so = GET_NEXT(so)) {
-			object* target_objp = &Objects[so->objnum];
-			ship* target_ship = &Ships[target_objp->instance];
-			float dot;
 
-			if (!weapon_multilock_can_lock_on_target(Pl_objp, target_objp, wip, &dot))
-				continue;
+		if (wip->target_restrict_objecttypes == LR_Objecttypes::LRO_SHIPS) {
+			for (ship_obj* so = GET_FIRST(&Ship_obj_list); so != END_OF_LIST(&Ship_obj_list); so = GET_NEXT(so)) {
+				object* target_objp = &Objects[so->objnum];
+				ship* target_ship = &Ships[target_objp->instance];
+				float dot;
 
-			if (Ship_info[target_ship->ship_info_index].is_big_or_huge()) {
-				// add ALL the valid subsystems as possible targets
-				// dont check range or lock fov, the sub function will do that for subsystems
-				ship_subsys* ss;
-				for (ss = GET_FIRST(&target_ship->subsys_list); ss != END_OF_LIST(&target_ship->subsys_list); ss = GET_NEXT(ss)) {
+				if (!weapon_multilock_can_lock_on_target(Pl_objp, target_objp, wip, &dot))
+					continue;
 
-					if (!weapon_multilock_can_lock_on_subsys(Pl_objp, target_objp, ss, wip, &dot))
+				if (Ship_info[target_ship->ship_info_index].is_big_or_huge()) {
+					// add ALL the valid subsystems as possible targets
+					// dont check range or lock fov, the sub function will do that for subsystems
+					ship_subsys* ss;
+					for (ss = GET_FIRST(&target_ship->subsys_list); ss != END_OF_LIST(&target_ship->subsys_list); ss = GET_NEXT(ss)) {
+
+						if (!weapon_multilock_can_lock_on_subsys(Pl_objp, target_objp, ss, wip, &dot))
+							continue;
+
+						// this will guarantee the ship will send always send some missiles at its actual target
+						if (aip->targeted_subsys == ss)
+							dot = 1.0f;
+
+						multilock_targets.push_back(multilock_target{ target_objp,  ss, dot });
+					}
+				} else {
+					// just a small target, now we check range and fov
+					if (!weapon_secondary_world_pos_in_range(Player_obj, wip, &target_objp->pos))
+						continue;
+
+					if (dot < wip->lock_fov)
 						continue;
 
 					// this will guarantee the ship will send always send some missiles at its actual target
-					if (aip->targeted_subsys == ss)
+					if (primary_target == target_objp)
 						dot = 1.0f;
 
-					multilock_targets.push_back(multilock_target{ target_objp,  ss, dot });
+					multilock_targets.push_back(multilock_target{ target_objp,  nullptr, dot });
 				}
-			} else {
-				// just a small target, now we check range and fov
-				if (!weapon_secondary_world_pos_in_range(Player_obj, wip, &target_objp->pos))
+			}
+		}
+		else {
+			for (int i = 0; i < MAX_WEAPONS; i++)
+			{
+				weapon* target_weapon = &Weapons[i];
+				if (target_weapon->weapon_info_index < 0 || target_weapon->objnum < 0)
+					continue;
+
+				object* target_objp = &Objects[target_weapon->objnum];
+
+				if (target_objp->type != OBJ_WEAPON)
+					continue;
+
+				//We have a valid weapon
+
+				float dot;
+
+				if (!weapon_multilock_can_lock_on_target(Pl_objp, target_objp, wip, &dot, true))
+					continue;
+
+				if (!weapon_secondary_world_pos_in_range(Pl_objp, wip, &target_objp->pos))
 					continue;
 
 				if (dot < wip->lock_fov)
 					continue;
-
-				// this will guarantee the ship will send always send some missiles at its actual target
-				if (primary_target == target_objp)
-					dot = 1.0f;
 
 				multilock_targets.push_back(multilock_target{ target_objp,  nullptr, dot });
 			}
