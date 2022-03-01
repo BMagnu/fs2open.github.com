@@ -1384,4 +1384,229 @@ namespace animation {
 		
 		return segment;
 	}
+
+
+	ModelAnimationSegmentKeyframed::ModelAnimationSegmentKeyframed(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial) : m_submodel(submodel), m_keyframes(std::move(keyframes)), m_returnToInitial(returnToInitial) { }
+
+	ModelAnimationSegment* ModelAnimationSegmentKeyframed::copy() const {
+		return new ModelAnimationSegmentKeyframed(*this);
+	}
+
+	void ModelAnimationSegmentKeyframed::recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) {
+		auto& instance = m_instances[pmi->id];
+		float& duration = m_duration[pmi->id];
+		
+		vm_copy_transpose(&instance.startT, &base[m_submodel].data.orientation);
+
+		angles firstNode;
+		vm_extract_angles_matrix_alternate(&firstNode, &base[m_submodel].data.orientation);
+
+		if (m_returnToInitial)
+			m_keyframes.back().angle = firstNode;
+
+		for (size_t component = 0; component < 3; ++component) {
+			auto& curve = instance.bezierCurve[component];
+			curve.clear();
+
+			curve.push_back({ 0.0f, firstNode.*pbh[component], 0.0f, 0.0f, m_keyframes.front().time / 3.0f, firstNode.*pbh[component] });
+
+			for (size_t i = 0; i < m_keyframes.size(); ++i) {
+				const auto& keyframe = m_keyframes[i];
+
+				float pointX = keyframe.time;
+				float pointY = keyframe.angle.*pbh[component];
+
+				float lastHandleX = pointX - (pointX - curve.back().pointX) / 3.0f;
+				float nextHandleX = i < m_keyframes.size() - 1 ? (m_keyframes[i + 1].time - pointX) / 3.0f + pointX : 0.0f;
+				float lastHandleY = 0.0f, nextHandleY = 0.0f;
+
+				switch (keyframe.keyframeMode[component]) {
+				case bezier_def_point::DECELERATE:
+					lastHandleY = nextHandleY = pointY;
+					break;
+				case bezier_def_point::SMOOTH: {
+					float lastAngle = atan2f(pointY - curve.back().pointY, pointX - curve.back().pointX);
+					float nextAngle = i < m_keyframes.size() - 1 ? atan2f(m_keyframes[i + 1].angle.*pbh[component] - pointY, m_keyframes[i + 1].time - pointX) : lastAngle;
+					float usedAngleTan = tanf((lastAngle + nextAngle) / 2.0f);
+					lastHandleY = pointY - (pointX - lastHandleX) * usedAngleTan;
+					nextHandleY = pointY - (nextHandleX - pointX) * usedAngleTan;
+					break;
+				}
+				default:
+					UNREACHABLE("Illegal Bezier Interpolation Mode.");
+					break;
+				}
+
+				curve.push_back({ pointX, pointY, lastHandleX, lastHandleY, nextHandleX, nextHandleY });
+				duration = MAX(duration, pointX);
+			}
+		}
+
+	}
+
+	void ModelAnimationSegmentKeyframed::calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const {
+		const auto& instance = m_instances.at(pmi_id);
+		angles target;
+
+		for (size_t component = 0; component < 3; component++) {
+			const bezier_point* last_point = nullptr;
+			const bezier_point* next_point = nullptr;
+			const auto& curve = instance.bezierCurve[component];
+
+			//Yes, we could binary search here, but if we expect only like 10 keyframes per submodel it's not worth the effort.
+			for (size_t i = 1; i < curve.size(); ++i) {
+				if (curve[i].pointX > time) {
+					last_point = &curve[i - 1];
+					next_point = &curve[i];
+					break;
+				}
+			}
+
+			if (next_point == nullptr) {
+				//This means we're past the end of our curve. Return the last point's value
+				target.*pbh[component] = curve.back().pointY;
+				continue;
+			}
+
+			float t = bezierTFromX(*last_point, *next_point, time);
+			float angle = bezierYFromT(*last_point, *next_point, t);
+
+			target.*pbh[component] = angle;
+		}
+
+		matrix orient;
+		vm_angles_2_matrix(&orient, &target);
+		vm_matrix_x_matrix(&orient, &orient, &instance.startT);
+
+		ModelAnimationData<true> delta;
+		delta.orientation = orient;
+
+		base[m_submodel].data.applyDelta(delta);
+		base[m_submodel].modified = true;
+	}
+
+	float ModelAnimationSegmentKeyframed::bezierTFromX(const bezier_point& last, const bezier_point& next, float x) {
+		//Not a full solution. Notably, this assumes that the bezier curves are well formed with regards to not having loops (which is ensured by the parser for this segment).
+		//This simplification implies that this equation will always have exactly one solution, or it is ill-formed for our purposes
+		//Solution for the cubic equation from "Numerical Recipies", Chapter 5.6, Eqn. 5.6.10 and 5.6.15 to 5.6.17
+
+		const float cubicFactor = -last.pointX + 3.0f * last.handleX - 3.0f * next.prevHandleX + next.pointX;
+
+		const float a_prefactor = 3.0f * last.pointX - 6.0f * last.handleX + 3.0f * next.prevHandleX;
+		const float b_prefactor = -3.0f * last.pointX + 3.0f * last.handleX;
+		const float c_prefactor = last.pointX - x;
+		if (fabs(cubicFactor) < 0.001f) {
+			if (fabs(a_prefactor) < 0.001f) {
+				//We're down to a linear equation. All four bezier points seem to be equidistant and on a line.
+				return -c_prefactor / b_prefactor;
+			}
+
+			Assertion(fabs(b_prefactor * b_prefactor - 4.0f * a_prefactor * c_prefactor) < 0.001f, "Keyframed Bezier Curve is ill-formed (square). Get a coder.");
+
+			return -b_prefactor / (2.0f * a_prefactor);
+		}
+
+		const float a = a_prefactor / cubicFactor;
+		const float b = b_prefactor / cubicFactor;
+		const float c = c_prefactor / cubicFactor;
+
+		const float q = (a * a - 3.0f * b) / 9.0f;
+		const float r = (2.0f * a * a * a - 9.0f * a * b + 27.0f * c) / 54.0f;
+
+		//If this criterion is not fulfilled, the curve has multiple solutions. Bad.
+		Assertion(r * r >= q * q * q, "Keyframed Bezier Curve is ill-formed (cubic). Get a coder.");
+
+		const float bigA = -copysignf(1.0f, r) * cbrtf(fabs(r) + sqrtf(r * r - q * q * q));
+		const float bigB = fabs(bigA) < 0.001f ? 0.0f : q / bigA;
+
+		return (bigA + bigB) - a / 3.0f;
+	}
+
+	float ModelAnimationSegmentKeyframed::bezierYFromT(const bezier_point& last, const bezier_point& next, float t) {
+		return (-last.pointY + 3.0f * last.handleY - 3.0f * next.prevHandleY + next.pointY) * t * t * t
+			+ (3.0f * last.pointY - 6.0f * last.handleY + 3.0f * next.prevHandleY) * t * t
+			+ (-3.0f * last.pointY + 3.0f * last.handleY) * t
+			+ last.pointY;
+	}
+
+	void ModelAnimationSegmentKeyframed::exchangeSubmodelPointers(ModelAnimationSet& replaceWith) {
+		m_submodel = replaceWith.getSubmodel(m_submodel);
+	}
+
+	std::shared_ptr<ModelAnimationSegment> ModelAnimationSegmentKeyframed::parser(ModelAnimationParseHelper* data) {
+		auto submodel = ModelAnimationParseHelper::parseSubmodel();
+		if (!submodel) {
+			if (data->parentSubmodel)
+				submodel = data->parentSubmodel;
+			else
+				error_display(1, "Translation has no target submodel!");
+		}
+		
+		float lastTime = 0.0f;
+
+		SCP_vector<bezier_def_point> curve;
+		bool repeatInitial = false;
+
+		while (optional_string("+Keyframe:")) {
+			bezier_def_point keyframe;
+
+			required_string("+Angle:");
+			stuff_angles_deg_phb(&keyframe.angle);
+
+			required_string("+Time:");
+			stuff_float(&keyframe.time);
+
+			if (keyframe.time < lastTime) {
+				error_display(1, "Tabled keyframe at time %.2f seconds is before preceding keyframe at %.2f seconds!", keyframe.time, lastTime);
+				return nullptr;
+			}
+			lastTime = keyframe.time;
+
+			stuff_bezier_interp_mode(keyframe);
+
+			curve.push_back(keyframe);
+		}
+
+		if (optional_string("+Initial State Keyframe:")) {
+			bezier_def_point keyframe;
+
+			required_string("+Time:");
+			stuff_float(&keyframe.time);
+
+			stuff_bezier_interp_mode(keyframe);
+
+			curve.push_back(keyframe);
+
+			repeatInitial = true;
+		}
+
+		return std::shared_ptr<ModelAnimationSegmentKeyframed>(new ModelAnimationSegmentKeyframed(submodel, curve, repeatInitial));
+	}
+
+	void ModelAnimationSegmentKeyframed::stuff_bezier_interp_mode(bezier_def_point& keyframe) {
+		if (optional_string("+Frame Interpolation:")) {
+			for (int i = 0; i < 3; i++) {
+				int mode = optional_string_one_of(2, "Decelerate", "Smooth");
+				optional_string(",");
+
+				switch (mode) {
+				case 0:
+					keyframe.keyframeMode[i] = bezier_def_point::DECELERATE;
+					break;
+				case 1:
+					keyframe.keyframeMode[i] = bezier_def_point::SMOOTH;
+					break;
+				default:
+					error_display(1, "Unknown frame interpolation type specified!");
+					keyframe.keyframeMode[i] = bezier_def_point::DECELERATE;
+					break;
+				}
+			}
+		}
+		else {
+			for (auto& mode : keyframe.keyframeMode)
+				mode = bezier_def_point::DECELERATE;
+		}
+	}
+
 }
