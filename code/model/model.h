@@ -1017,6 +1017,10 @@ extern void model_instance_global_to_local_dir(vec3d *out_dir, const vec3d *in_d
 
 // ------- end of submodel transformations -------
 
+// Gives the velocity at which a point on a submodel is moving relative to the ship, considering submodel movement.
+// If objorient is supplied, the global frame will be world space; otherwise it will be the model's space.
+extern void model_instance_point_global_velocity(vec3d* out_vel, const vec3d* point, const polymodel* pm, const polymodel_instance* pmi, int submodel_num, const matrix* objorient = nullptr, float scale = 1.0f);
+
 // Given a polygon model index, find a list of moving submodels to be used for collision
 void model_get_moving_submodel_list(SCP_vector<int> &submodel_vector, const object *objp);
 

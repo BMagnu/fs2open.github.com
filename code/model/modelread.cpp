@@ -4301,6 +4301,17 @@ void model_instance_global_to_local_dir(vec3d* out_dir, const vec3d* in_dir, con
 	*out_dir = resultDir;
 }
 
+void model_instance_point_global_velocity(vec3d* out_vel, const vec3d* point, const polymodel* pm, const polymodel_instance* pmi, int submodel_num, const matrix* objorient, float scale) {
+	vec3d last_frame_global_pos, global_pos;
+	model_instance_local_to_global_point(&last_frame_global_pos, point, pm, pmi, submodel_num, objorient, objorient == nullptr ? nullptr : &vmd_zero_vector, true);
+	model_instance_local_to_global_point(&global_pos, point, pm, pmi, submodel_num, objorient, objorient == nullptr ? nullptr : &vmd_zero_vector);
+
+	//Calculate the movement speed from that
+	vm_vec_sub(out_vel, &global_pos, &last_frame_global_pos);
+
+	vm_vec_scale2(out_vel, scale, flFrametime);
+}
+
 // Verify rotating submodel has corresponding ship subsystem -- info in which to store rotation angle
 int rotating_submodel_has_ship_subsys(int submodel, ship *shipp)
 {

@@ -8247,6 +8247,26 @@ static void do_dying_undock_physics(object *dying_objp, ship *dying_shipp)
 		vm_vec_rand_vec_quick(&pos);
 		vm_vec_scale(&pos, docked_objp->radius);
 		vm_vec_add2(&pos, &docked_objp->pos);
+
+		if (The_mission.ai_profile->flags[AI::Profile_Flags::Jettison_cargo_with_momentum]) {
+			extern void find_adjusted_dockpoint_info(vec3d * global_dock_point, matrix * dock_orient, object * objp, polymodel * pm, int submodel, int dock_index);
+			extern int find_parent_moving_submodel(polymodel * pm, int dock_index);
+
+			vec3d cargo_parent_speed, dockpoint_pos;
+			matrix dock_orient;
+			auto pmi = model_get_instance(dying_shipp->model_instance_num);
+			auto pm = model_get(pmi->model_num);
+
+			int submodel = find_parent_moving_submodel(pm, dockee_index);
+			find_adjusted_dockpoint_info(&dockpoint_pos, &dock_orient, dying_objp, pm, submodel, dockee_index);
+
+			model_instance_global_to_local_point(&dockpoint_pos, &pos, pm, pmi, submodel, &dying_objp->orient, &dying_objp->pos);
+			model_instance_point_global_velocity(&cargo_parent_speed, &dockpoint_pos, pm, pmi, submodel, &dying_objp->orient);
+
+			//Calculated momentum is directly added to velocity and not whacked, since the undock velocity is given no matter the physics characteristics of the cargo
+			docked_objp->phys_info.vel = dying_objp->phys_info.vel + cargo_parent_speed;
+		}
+
 		// apply whack to docked object
 		ship_apply_whack(&impulse_vec, &pos, docked_objp);
 		// enhance rotation of the docked object
@@ -17563,6 +17583,18 @@ void object_jettison_cargo(object *objp, object *cargo_objp, float jettison_spee
 
 		// set for relative separation speed (see also do_dying_undock_physics)
 		vm_vec_copy_scale(&impulse, &dock_orient.vec.fvec, jettison_speed * cargo_objp->phys_info.mass);
+
+		if (The_mission.ai_profile->flags[AI::Profile_Flags::Jettison_cargo_with_momentum]) {
+			vec3d cargo_parent_speed, dockpoint_pos;
+			auto pmi = model_get_instance(shipp->model_instance_num);
+
+			model_instance_global_to_local_point(&dockpoint_pos, &pos, pm, pmi, docker_moving_submodel, &objp->orient, &objp->pos);
+			model_instance_point_global_velocity(&cargo_parent_speed, &dockpoint_pos, pm, pmi, docker_moving_submodel, &objp->orient);
+			
+			//Calculated momentum is directly added to velocity and not whacked, since the undock velocity is given no matter the physics characteristics of the cargo
+			cargo_objp->phys_info.vel = objp->phys_info.vel + cargo_parent_speed;
+		}
+
 	}
 	else
 	{

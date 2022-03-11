@@ -598,6 +598,8 @@ void parse_ai_profiles_tbl(const char *filename)
 
 				set_flag(profile, "$fix keep-safe-distance:", AI::Profile_Flags::Fix_keep_safe_distance);
 
+				set_flag(profile, "$jettison cargo with submodel momentum:", AI::Profile_Flags::Jettison_cargo_with_momentum);
+
 
 				// if we've been through once already and are at the same place, force a move
 				if (saved_Mp && (saved_Mp == Mp))

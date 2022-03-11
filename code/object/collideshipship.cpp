@@ -566,16 +566,8 @@ void calculate_ship_ship_collision_physics(collision_info_struct *ship_ship_hit_
 		}
 		
 		if ( pmi != nullptr ) { 
-			//Find the global movement of the position that hit the ship
-			vec3d last_frame_col_pos, col_pos;
-			model_instance_local_to_global_point(&last_frame_col_pos, &ship_ship_hit_info->hit_pos, pm, pmi, ship_ship_hit_info->submodel_num, &heavy->orient, &heavy->pos, true);
-			model_instance_local_to_global_point(&col_pos, &ship_ship_hit_info->hit_pos, pm, pmi, ship_ship_hit_info->submodel_num, &heavy->orient, &heavy->pos);
-
-			//Calculate the movement speed from that
-			vm_vec_sub(&local_vel_from_submodel, &col_pos, &last_frame_col_pos);
-
 			//By artificially inflating moving submodel collision speed by 20%, the chance to accidentally tunnel through fast (~100m/s) moving submodels is drastically reduced with only very little noticeable in-game change
-			vm_vec_scale2(&local_vel_from_submodel, 1.2f, flFrametime);
+			model_instance_point_global_velocity(&local_vel_from_submodel, &ship_ship_hit_info->hit_pos, pm, pmi, ship_ship_hit_info->submodel_num, &heavy->orient, 1.2f);
 		} else {
 			vm_vec_zero(&local_vel_from_submodel);
 		}
