@@ -1539,7 +1539,8 @@ namespace animation {
 		{"$Translation:", 		ModelAnimationSegmentTranslation::parser},
 		{"$Sound During:", 		ModelAnimationSegmentSoundDuring::parser},
 		{"$Inverse Kinematics:", 	ModelAnimationSegmentIK::parser},
-		{"$Keyframed:",			ModelAnimationSegmentKeyframed::parser}
+		{"$Keyframed Rotation:",	ModelAnimationSegmentKeyframedRotation::parser},
+		{"$Keyframed Translation:",	ModelAnimationSegmentKeyframedTranslation::parser}
 	};
 	
 	std::map<SCP_string, ModelAnimationParseHelper::ModelAnimationMoveableParser> ModelAnimationParseHelper::s_moveableParsers = {

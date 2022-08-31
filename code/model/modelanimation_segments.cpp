@@ -1388,33 +1388,21 @@ namespace animation {
 
 	ModelAnimationSegmentKeyframed::ModelAnimationSegmentKeyframed(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial) : m_submodel(submodel), m_keyframes(std::move(keyframes)), m_returnToInitial(returnToInitial) { }
 
-	ModelAnimationSegment* ModelAnimationSegmentKeyframed::copy() const {
-		return new ModelAnimationSegmentKeyframed(*this);
-	}
-
-	void ModelAnimationSegmentKeyframed::recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) {
-		auto& instance = m_instances[pmi->id];
-		float& duration = m_duration[pmi->id];
-		
-		vm_copy_transpose(&instance.startT, &base[m_submodel].data.orientation);
-
-		angles firstNode;
-		vm_extract_angles_matrix_alternate(&firstNode, &base[m_submodel].data.orientation);
-
+	void ModelAnimationSegmentKeyframed::recalculate(SCP_vector<bezier_point>(&bezier)[3], const float* const (&firstPoint)[3], float& duration) {
 		if (m_returnToInitial)
-			m_keyframes.back().angle = firstNode;
+			m_keyframes.back().pnt = { {*firstPoint[0], *firstPoint[1], *firstPoint[2]} };
 
 		for (size_t component = 0; component < 3; ++component) {
-			auto& curve = instance.bezierCurve[component];
+			auto& curve = bezier[component];
 			curve.clear();
 
-			curve.push_back({ 0.0f, firstNode.*pbh[component], 0.0f, 0.0f, m_keyframes.front().time / 3.0f, firstNode.*pbh[component] });
+			curve.push_back({ 0.0f, *firstPoint[component], 0.0f, 0.0f, m_keyframes.front().time / 3.0f, *firstPoint[component] });
 
 			for (size_t i = 0; i < m_keyframes.size(); ++i) {
 				const auto& keyframe = m_keyframes[i];
 
 				float pointX = keyframe.time;
-				float pointY = keyframe.angle.*pbh[component];
+				float pointY = keyframe.pnt.a1d[component];
 
 				float lastHandleX = pointX - (pointX - curve.back().pointX) / 3.0f;
 				float nextHandleX = i < m_keyframes.size() - 1 ? (m_keyframes[i + 1].time - pointX) / 3.0f + pointX : 0.0f;
@@ -1426,7 +1414,7 @@ namespace animation {
 					break;
 				case bezier_def_point::SMOOTH: {
 					float lastAngle = atan2f(pointY - curve.back().pointY, pointX - curve.back().pointX);
-					float nextAngle = i < m_keyframes.size() - 1 ? atan2f(m_keyframes[i + 1].angle.*pbh[component] - pointY, m_keyframes[i + 1].time - pointX) : lastAngle;
+					float nextAngle = i < m_keyframes.size() - 1 ? atan2f(m_keyframes[i + 1].pnt.a1d[component] - pointY, m_keyframes[i + 1].time - pointX) : lastAngle;
 					float usedAngleTan = tanf((lastAngle + nextAngle) / 2.0f);
 					lastHandleY = pointY - (pointX - lastHandleX) * usedAngleTan;
 					nextHandleY = pointY - (nextHandleX - pointX) * usedAngleTan;
@@ -1444,14 +1432,11 @@ namespace animation {
 
 	}
 
-	void ModelAnimationSegmentKeyframed::calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const {
-		const auto& instance = m_instances.at(pmi_id);
-		angles target;
-
+	void ModelAnimationSegmentKeyframed::calculateAnimation(float time, const SCP_vector<bezier_point>(&bezier)[3], float* const (&target)[3]) const {
 		for (size_t component = 0; component < 3; component++) {
 			const bezier_point* last_point = nullptr;
 			const bezier_point* next_point = nullptr;
-			const auto& curve = instance.bezierCurve[component];
+			const auto& curve = bezier[component];
 
 			//Yes, we could binary search here, but if we expect only like 10 keyframes per submodel it's not worth the effort.
 			for (size_t i = 1; i < curve.size(); ++i) {
@@ -1464,25 +1449,15 @@ namespace animation {
 
 			if (next_point == nullptr) {
 				//This means we're past the end of our curve. Return the last point's value
-				target.*pbh[component] = curve.back().pointY;
+				*(target[component]) = curve.back().pointY;
 				continue;
 			}
 
 			float t = bezierTFromX(*last_point, *next_point, time);
 			float angle = bezierYFromT(*last_point, *next_point, t);
 
-			target.*pbh[component] = angle;
+			*(target[component]) = angle;
 		}
-
-		matrix orient;
-		vm_angles_2_matrix(&orient, &target);
-		vm_matrix_x_matrix(&orient, &orient, &instance.startT);
-
-		ModelAnimationData<true> delta;
-		delta.orientation = orient;
-
-		base[m_submodel].data.applyDelta(delta);
-		base[m_submodel].modified = true;
 	}
 
 	float ModelAnimationSegmentKeyframed::bezierTFromX(const bezier_point& last, const bezier_point& next, float x) {
@@ -1533,7 +1508,7 @@ namespace animation {
 		m_submodel = replaceWith.getSubmodel(m_submodel);
 	}
 
-	std::shared_ptr<ModelAnimationSegment> ModelAnimationSegmentKeyframed::parser(ModelAnimationParseHelper* data) {
+	std::tuple<bool, std::shared_ptr<ModelAnimationSubmodel>, SCP_vector<ModelAnimationSegmentKeyframed::bezier_def_point>, bool> ModelAnimationSegmentKeyframed::parser(ModelAnimationParseHelper* data, std::function<void(vec3d&)> parseTarget) {
 		auto submodel = ModelAnimationParseHelper::parseSubmodel();
 		if (!submodel) {
 			if (data->parentSubmodel)
@@ -1550,15 +1525,14 @@ namespace animation {
 		while (optional_string("+Keyframe:")) {
 			bezier_def_point keyframe;
 
-			required_string("+Angle:");
-			stuff_angles_deg_phb(&keyframe.angle);
+			parseTarget(keyframe.pnt);
 
 			required_string("+Time:");
 			stuff_float(&keyframe.time);
 
 			if (keyframe.time < lastTime) {
 				error_display(1, "Tabled keyframe at time %.2f seconds is before preceding keyframe at %.2f seconds!", keyframe.time, lastTime);
-				return nullptr;
+				return { false, nullptr, {}, false };
 			}
 			lastTime = keyframe.time;
 
@@ -1580,7 +1554,7 @@ namespace animation {
 			repeatInitial = true;
 		}
 
-		return std::shared_ptr<ModelAnimationSegmentKeyframed>(new ModelAnimationSegmentKeyframed(submodel, curve, repeatInitial));
+		return { true, submodel, curve, repeatInitial };
 	}
 
 	void ModelAnimationSegmentKeyframed::stuff_bezier_interp_mode(bezier_def_point& keyframe) {
@@ -1609,4 +1583,104 @@ namespace animation {
 		}
 	}
 
+	ModelAnimationSegmentKeyframedRotation::ModelAnimationSegmentKeyframedRotation(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial) : ModelAnimationSegmentKeyframed(submodel, std::move(keyframes), returnToInitial) { }
+
+	ModelAnimationSegment* ModelAnimationSegmentKeyframedRotation::copy() const {
+		return new ModelAnimationSegmentKeyframedRotation(*this);
+	}
+
+	void ModelAnimationSegmentKeyframedRotation::recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) {
+		auto& instance = m_instances[pmi->id];
+		float& duration = m_duration[pmi->id];
+
+		vm_copy_transpose(&instance.startT, &base[m_submodel].data.orientation);
+
+		angles firstNode;
+		vm_extract_angles_matrix_alternate(&firstNode, &base[m_submodel].data.orientation);
+
+		if (m_returnToInitial)
+			m_keyframes.back().pnt = {{ firstNode.p, firstNode.b, firstNode.h }};
+
+		ModelAnimationSegmentKeyframed::recalculate(instance.bezierCurve, { &firstNode.p, &firstNode.b, &firstNode.h }, duration);
+	}
+
+	void ModelAnimationSegmentKeyframedRotation::calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const {
+		const auto& instance = m_instances.at(pmi_id);
+		angles target;
+
+		ModelAnimationSegmentKeyframed::calculateAnimation(time, instance.bezierCurve, { &target.p, &target.b, &target.h });
+
+		matrix orient;
+		vm_angles_2_matrix(&orient, &target);
+		vm_matrix_x_matrix(&orient, &orient, &instance.startT);
+
+		ModelAnimationData<true> delta;
+		delta.orientation = orient;
+
+		base[m_submodel].data.applyDelta(delta);
+		base[m_submodel].modified = true;
+	}
+
+	std::shared_ptr<ModelAnimationSegment> ModelAnimationSegmentKeyframedRotation::parser(ModelAnimationParseHelper* data) {
+		auto&& parseResult = ModelAnimationSegmentKeyframed::parser(data, [](vec3d& target) {
+			angles angle;
+			required_string("+Angle:");
+			stuff_angles_deg_phb(&angle);
+			target.xyz.x = angle.p;
+			target.xyz.y = angle.b;
+			target.xyz.z = angle.h;
+			});
+
+		if(!std::get<0>(parseResult))
+			return nullptr;
+
+		return std::shared_ptr<ModelAnimationSegment>(new ModelAnimationSegmentKeyframedRotation(std::get<1>(parseResult), std::move(std::get<2>(parseResult)), std::get<3>(parseResult)));
+	}
+
+
+	ModelAnimationSegmentKeyframedTranslation::ModelAnimationSegmentKeyframedTranslation(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial) : ModelAnimationSegmentKeyframed(submodel, std::move(keyframes), returnToInitial) { }
+
+	ModelAnimationSegment* ModelAnimationSegmentKeyframedTranslation::copy() const {
+		return new ModelAnimationSegmentKeyframedTranslation(*this);
+	}
+
+	void ModelAnimationSegmentKeyframedTranslation::recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) {
+		auto& instance = m_instances[pmi->id];
+		float& duration = m_duration[pmi->id];
+
+		instance.startOffset = vmd_zero_vector - base[m_submodel].data.position;
+
+		vec3d firstNode = base[m_submodel].data.position;
+		if (m_returnToInitial)
+			m_keyframes.back().pnt = firstNode;
+
+		ModelAnimationSegmentKeyframed::recalculate(instance.bezierCurve, { &firstNode.xyz.x, &firstNode.xyz.y, &firstNode.xyz.z }, duration);
+	}
+
+	void ModelAnimationSegmentKeyframedTranslation::calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const {
+		const auto& instance = m_instances.at(pmi_id);
+		vec3d target;
+
+		ModelAnimationSegmentKeyframed::calculateAnimation(time, instance.bezierCurve, { &target.xyz.x, &target.xyz.y, &target.xyz.z });
+
+		target += instance.startOffset;
+
+		ModelAnimationData<true> delta;
+		delta.position = target;
+
+		base[m_submodel].data.applyDelta(delta);
+		base[m_submodel].modified = true;
+	}
+
+	std::shared_ptr<ModelAnimationSegment> ModelAnimationSegmentKeyframedTranslation::parser(ModelAnimationParseHelper* data) {
+		auto&& parseResult = ModelAnimationSegmentKeyframed::parser(data, [](vec3d& target) {
+			required_string("+Vector:");
+			stuff_vec3d(&target);
+			});
+
+		if (!std::get<0>(parseResult))
+			return nullptr;
+
+		return std::shared_ptr<ModelAnimationSegment>(new ModelAnimationSegmentKeyframedTranslation(std::get<1>(parseResult), std::move(std::get<2>(parseResult)), std::get<3>(parseResult)));
+	}
 }

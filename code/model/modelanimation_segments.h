@@ -283,6 +283,7 @@ namespace animation {
 	};
 
 	class ModelAnimationSegmentKeyframed : public ModelAnimationSegment {
+	protected:
 		struct bezier_point {
 			float pointX, pointY;
 			float prevHandleX, prevHandleY, handleX, handleY;
@@ -290,10 +291,29 @@ namespace animation {
 
 		struct bezier_def_point {
 			float time;
-			angles angle;
+			vec3d pnt;
 			enum { DECELERATE, SMOOTH } keyframeMode[3];
 		};
 
+		std::shared_ptr<ModelAnimationSubmodel> m_submodel;
+		std::vector<bezier_def_point> m_keyframes;
+		bool m_returnToInitial;
+
+		void recalculate(SCP_vector<bezier_point>(&bezier)[3], const float* const (&firstPoint)[3], float& duration);
+		void calculateAnimation(float time, const SCP_vector<bezier_point>(&bezier)[3], float* const (&target)[3]) const;
+		void executeAnimation(const ModelAnimationSubmodelBuffer& /*state*/, float /*timeboundLower*/, float /*timeboundUpper*/, ModelAnimationDirection /*direction*/, int /*pmi_id*/) override { };
+		void exchangeSubmodelPointers(ModelAnimationSet& replaceWith) override;
+
+		static float bezierTFromX(const bezier_point& last, const bezier_point& next, float x);
+		static float bezierYFromT(const bezier_point& last, const bezier_point& next, float t);
+
+		static void stuff_bezier_interp_mode(bezier_def_point& keyframe);
+		static std::tuple<bool, std::shared_ptr<ModelAnimationSubmodel>, SCP_vector<bezier_def_point>, bool> parser(ModelAnimationParseHelper* data, std::function<void(vec3d&)> parseTarget);
+
+		ModelAnimationSegmentKeyframed(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial);
+	};
+
+	class ModelAnimationSegmentKeyframedRotation : public ModelAnimationSegmentKeyframed {
 		struct instance_data {
 			//One for each P, B and H
 			SCP_vector<bezier_point> bezierCurve[3];
@@ -303,23 +323,31 @@ namespace animation {
 		//PMI ID -> Instance Data
 		std::map<int, instance_data> m_instances;
 
-		std::shared_ptr<ModelAnimationSubmodel> m_submodel;
-		std::vector<bezier_def_point> m_keyframes;
-		bool m_returnToInitial;
+		ModelAnimationSegment* copy() const override;
+		void recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) override;
+		void calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const override;
+
+	public:
+		ModelAnimationSegmentKeyframedRotation(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial);
+		static std::shared_ptr<ModelAnimationSegment> parser(ModelAnimationParseHelper* data);
+	};
+
+	class ModelAnimationSegmentKeyframedTranslation : public ModelAnimationSegmentKeyframed {
+		struct instance_data {
+			//One for each X, Y, and Z
+			SCP_vector<bezier_point> bezierCurve[3];
+			vec3d startOffset;
+		};
+
+		//PMI ID -> Instance Data
+		std::map<int, instance_data> m_instances;
 
 		ModelAnimationSegment* copy() const override;
 		void recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) override;
 		void calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const override;
-		void executeAnimation(const ModelAnimationSubmodelBuffer& /*state*/, float /*timeboundLower*/, float /*timeboundUpper*/, ModelAnimationDirection /*direction*/, int /*pmi_id*/) override { };
-		void exchangeSubmodelPointers(ModelAnimationSet& replaceWith) override;
 
-		static float bezierTFromX(const bezier_point& last, const bezier_point& next, float x);
-		static float bezierYFromT(const bezier_point& last, const bezier_point& next, float t);
-
-		static void stuff_bezier_interp_mode(bezier_def_point& keyframe);
 	public:
+		ModelAnimationSegmentKeyframedTranslation(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial);
 		static std::shared_ptr<ModelAnimationSegment> parser(ModelAnimationParseHelper* data);
-		ModelAnimationSegmentKeyframed(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial);
 	};
-
 }
