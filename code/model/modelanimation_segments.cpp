@@ -1648,7 +1648,9 @@ namespace animation {
 		auto& instance = m_instances[pmi->id];
 		float& duration = m_duration[pmi->id];
 
-		instance.startOffset = vmd_zero_vector - base[m_submodel].data.position;
+		bsp_info* submodel = m_submodel->findSubmodel(pmi).second;
+
+		instance.startOffset = vmd_zero_vector - base[m_submodel].data.position - submodel->offset;
 
 		vec3d firstNode = base[m_submodel].data.position;
 		if (m_returnToInitial)
