@@ -1652,7 +1652,7 @@ namespace animation {
 
 		instance.startOffset = vmd_zero_vector - base[m_submodel].data.position - submodel->offset;
 
-		vec3d firstNode = base[m_submodel].data.position;
+		vec3d firstNode = base[m_submodel].data.position + submodel->offset;
 		if (m_returnToInitial)
 			m_keyframes.back().pnt = firstNode;
 
