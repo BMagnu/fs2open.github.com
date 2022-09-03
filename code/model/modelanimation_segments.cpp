@@ -1423,10 +1423,11 @@ namespace animation {
 						bezier_point{ m_keyframes[i + 1].time, m_keyframes[i + 1].pnt.a1d[component], m_keyframes[i + 1].time - (m_keyframes[i + 1].time - pointX) / 3.0f, m_keyframes[i + 1].pnt.a1d[component], 0.0f, 0.0f } :
 						bezier_point{ 2.0f * pointX - prevX, 2.0f * pointY - prevY, (5.0f - 2.0f * prevX) * pointX / 3.0f,  2.0f * pointY - prevY, 0.0f, 0.0f };
 
-					float t = bezierTFromX(prev, next, pointX);
-					float dx = bezierDerivYFromT(prev, next, t);
-					lastHandleY = pointY - (pointX - lastHandleX) * dx;
-					nextHandleY = pointY + (nextHandleX - pointX) * dx;
+					const float t = bezierTFromX(prev, next, pointX);
+					const auto nabla = bezierNablaFromT(prev, next, t);
+					const float dy_dx = nabla.second / nabla.first;
+					lastHandleY = pointY - (pointX - lastHandleX) * dy_dx;
+					nextHandleY = pointY + (nextHandleX - pointX) * dy_dx;
 					break;
 				}
 				default:
@@ -1559,10 +1560,13 @@ namespace animation {
 			+ last.pointY;
 	}
 
-	float ModelAnimationSegmentKeyframed::bezierDerivYFromT(const bezier_point& last, const bezier_point& next, float t) {
-		return (9.0f * last.handleY - 3.0f * last.pointY - 9.0f * next.prevHandleY + 3.0f * next.pointY) * t * t
+	std::pair<float, float> ModelAnimationSegmentKeyframed::bezierNablaFromT(const bezier_point& last, const bezier_point& next, float t) {
+		return { (9.0f * last.handleX - 3.0f * last.pointX - 9.0f * next.prevHandleX + 3.0f * next.pointX) * t * t
+			+ (-12.0f * last.handleX + 6.0f * last.pointX + 6.0f * next.prevHandleX) * t
+			+ 3.0f * last.handleX - 3.0f * last.pointX,
+			(9.0f * last.handleY - 3.0f * last.pointY - 9.0f * next.prevHandleY + 3.0f * next.pointY) * t * t
 			+ (-12.0f * last.handleY + 6.0f * last.pointY + 6.0f * next.prevHandleY) * t
-			+ 3.0f * last.handleY - 3.0f * last.pointY;
+			+ 3.0f * last.handleY - 3.0f * last.pointY };
 	}
 
 	void ModelAnimationSegmentKeyframed::exchangeSubmodelPointers(ModelAnimationSet& replaceWith) {
