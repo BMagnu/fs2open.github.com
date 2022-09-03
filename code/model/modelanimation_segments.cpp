@@ -1416,7 +1416,7 @@ namespace animation {
 					break;
 				case bezier_def_point::SMOOTH: {
 					float prevY = curve.back().pointY;
-					//Badly guestimate where the bezier handles need to be.
+					//Badly guestimate where the bezier handles need to be by testing the gradient of a bezier curve with flat handles around the surrounding keyframes.
 
 					bezier_point prev { prevX, prevY, 0.0f, 0.0f, (pointX - prevX) / 3.0f + prevX, prevY };
 					bezier_point next = i < m_keyframes.size() - 1 ?
@@ -1485,9 +1485,31 @@ namespace animation {
 				return -c_prefactor / b_prefactor;
 			}
 
-			Assertion(fabs(b_prefactor * b_prefactor - 4.0f * a_prefactor * c_prefactor) < 0.001f, "Keyframed Bezier Curve is ill-formed (square). Get a coder.");
+			Assertion(!(b_prefactor * b_prefactor - 4.0f * a_prefactor * c_prefactor < 0.0f), "Keyframed Bezier Curve is ill-formed (square). Get a coder.");
 
-			return -b_prefactor / (2.0f * a_prefactor);
+			if(b_prefactor * b_prefactor - 4.0f * a_prefactor * c_prefactor < 0.001f)
+				return -b_prefactor / (2.0f * a_prefactor);
+			else {
+				const float sqrtq = sqrtf(b_prefactor * b_prefactor - 4.0f * a_prefactor * c_prefactor);
+
+				const float solution[2] = {
+					(-b_prefactor + sqrtq) / (2.0f * a_prefactor),
+					(-b_prefactor - sqrtq) / (2.0f * a_prefactor)
+				};
+
+				uint8_t cntInDefinition = 0;
+				float result = NAN;
+				for (const float& value : solution) {
+					if (value >= 0.0f && value <= 1.0f) {
+						cntInDefinition++;
+						result = value;
+					}
+				}
+
+				Assertion(cntInDefinition <= 1, "Too many solution found for bezier curve (square)! Get a coder.");
+
+				return result;
+			}
 		}
 
 		const float a = a_prefactor / cubicFactor;
@@ -1522,8 +1544,8 @@ namespace animation {
 				}
 			}
 
-			Assertion(cntInDefinition > 0, "No solution found for bezier curve! Get a coder.");
-			Assertion(cntInDefinition <= 1, "Too many solution found for bezier curve! Get a coder.");
+			Assertion(cntInDefinition > 0, "No solution found for bezier curve (cubic)! Get a coder.");
+			Assertion(cntInDefinition <= 1, "Too many solution found for bezier curve (cubic)! Get a coder.");
 
 			return result;
 		}
