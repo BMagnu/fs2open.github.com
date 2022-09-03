@@ -306,6 +306,7 @@ namespace animation {
 
 		static float bezierTFromX(const bezier_point& last, const bezier_point& next, float x);
 		static float bezierYFromT(const bezier_point& last, const bezier_point& next, float t);
+		static float bezierDerivYFromT(const bezier_point& last, const bezier_point& next, float t);
 
 		static void stuff_bezier_interp_mode(bezier_def_point& keyframe);
 		static std::tuple<bool, std::shared_ptr<ModelAnimationSubmodel>, SCP_vector<bezier_def_point>, bool> parser(ModelAnimationParseHelper* data, std::function<void(vec3d&)> parseTarget);

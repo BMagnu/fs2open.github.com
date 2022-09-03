@@ -1404,7 +1404,9 @@ namespace animation {
 				float pointX = keyframe.time;
 				float pointY = keyframe.pnt.a1d[component];
 
-				float lastHandleX = pointX - (pointX - curve.back().pointX) / 3.0f;
+				float prevX = curve.back().pointX;
+
+				float lastHandleX = pointX - (pointX - prevX) / 3.0f;
 				float nextHandleX = i < m_keyframes.size() - 1 ? (m_keyframes[i + 1].time - pointX) / 3.0f + pointX : 0.0f;
 				float lastHandleY = 0.0f, nextHandleY = 0.0f;
 
@@ -1413,11 +1415,18 @@ namespace animation {
 					lastHandleY = nextHandleY = pointY;
 					break;
 				case bezier_def_point::SMOOTH: {
-					float lastAngle = atan2f(pointY - curve.back().pointY, pointX - curve.back().pointX);
-					float nextAngle = i < m_keyframes.size() - 1 ? atan2f(m_keyframes[i + 1].pnt.a1d[component] - pointY, m_keyframes[i + 1].time - pointX) : lastAngle;
-					float usedAngleTan = tanf((lastAngle + nextAngle) / 2.0f);
-					lastHandleY = pointY - (pointX - lastHandleX) * usedAngleTan;
-					nextHandleY = pointY - (nextHandleX - pointX) * usedAngleTan;
+					float prevY = curve.back().pointY;
+					//Badly guestimate where the bezier handles need to be.
+
+					bezier_point prev { prevX, prevY, 0.0f, 0.0f, (pointX - prevX) / 3.0f + prevX, prevY };
+					bezier_point next = i < m_keyframes.size() - 1 ?
+						bezier_point{ m_keyframes[i + 1].time, m_keyframes[i + 1].pnt.a1d[component], m_keyframes[i + 1].time - (m_keyframes[i + 1].time - pointX) / 3.0f, m_keyframes[i + 1].pnt.a1d[component], 0.0f, 0.0f } :
+						bezier_point{ 2.0f * pointX - prevX, 2.0f * pointY - prevY, (5.0f - 2.0f * prevX) * pointX / 3.0f,  2.0f * pointY - prevY, 0.0f, 0.0f };
+
+					float t = bezierTFromX(prev, next, pointX);
+					float dx = bezierDerivYFromT(prev, next, t);
+					lastHandleY = pointY - (pointX - lastHandleX) * dx;
+					nextHandleY = pointY + (nextHandleX - pointX) * dx;
 					break;
 				}
 				default:
@@ -1463,7 +1472,7 @@ namespace animation {
 	float ModelAnimationSegmentKeyframed::bezierTFromX(const bezier_point& last, const bezier_point& next, float x) {
 		//Not a full solution. Notably, this assumes that the bezier curves are well formed with regards to not having loops (which is ensured by the parser for this segment).
 		//This simplification implies that this equation will always have exactly one solution, or it is ill-formed for our purposes
-		//Solution for the cubic equation from "Numerical Recipies", Chapter 5.6, Eqn. 5.6.10 and 5.6.15 to 5.6.17
+		//Solution for the cubic equation from "Numerical Recipies", Chapter 5.6, Eqn. 5.6.10 to 5.6.12 and 5.6.15 to 5.6.17
 
 		const float cubicFactor = -last.pointX + 3.0f * last.handleX - 3.0f * next.prevHandleX + next.pointX;
 
@@ -1488,13 +1497,37 @@ namespace animation {
 		const float q = (a * a - 3.0f * b) / 9.0f;
 		const float r = (2.0f * a * a * a - 9.0f * a * b + 27.0f * c) / 54.0f;
 
-		//If this criterion is not fulfilled, the curve has multiple solutions. Bad.
-		Assertion(r * r >= q * q * q, "Keyframed Bezier Curve is ill-formed (cubic). Get a coder.");
+		//If this criterion is not fulfilled, the curve has one real solution
+		if (r * r >= q * q * q) {
+			const float bigA = -copysignf(1.0f, r) * cbrtf(fabs(r) + sqrtf(r * r - q * q * q));
+			const float bigB = fabs(bigA) < 0.001f ? 0.0f : q / bigA;
 
-		const float bigA = -copysignf(1.0f, r) * cbrtf(fabs(r) + sqrtf(r * r - q * q * q));
-		const float bigB = fabs(bigA) < 0.001f ? 0.0f : q / bigA;
+			return (bigA + bigB) - a / 3.0f;
+		}
+		else {
+			const float phi = acosf(r / sqrtf(q * q * q));
+			const float sqrtq2 = -2.0f * sqrtf(q);
+			const float solution[3] = {
+				sqrtq2 * cosf(phi / 3.0f) - a / 3.0f,
+				sqrtq2 * cosf((phi + 2.0f * ((float)M_PI)) / 3.0f) - a / 3.0f,
+				sqrtq2 * cosf((phi - 2.0f * ((float)M_PI)) / 3.0f) - a / 3.0f,
+			};
 
-		return (bigA + bigB) - a / 3.0f;
+			uint8_t cntInDefinition = 0;
+			float result = NAN;
+			for (const float& value : solution) {
+				if (value >= 0.0f && value <= 1.0f) {
+					cntInDefinition++;
+					result = value;
+				}
+			}
+
+			Assertion(cntInDefinition > 0, "No solution found for bezier curve! Get a coder.");
+			Assertion(cntInDefinition <= 1, "Too many solution found for bezier curve! Get a coder.");
+
+			return result;
+		}
+
 	}
 
 	float ModelAnimationSegmentKeyframed::bezierYFromT(const bezier_point& last, const bezier_point& next, float t) {
@@ -1502,6 +1535,12 @@ namespace animation {
 			+ (3.0f * last.pointY - 6.0f * last.handleY + 3.0f * next.prevHandleY) * t * t
 			+ (-3.0f * last.pointY + 3.0f * last.handleY) * t
 			+ last.pointY;
+	}
+
+	float ModelAnimationSegmentKeyframed::bezierDerivYFromT(const bezier_point& last, const bezier_point& next, float t) {
+		return (9.0f * last.handleY - 3.0f * last.pointY - 9.0f * next.prevHandleY + 3.0f * next.pointY) * t * t
+			+ (-12.0f * last.handleY + 6.0f * last.pointY + 6.0f * next.prevHandleY) * t
+			+ 3.0f * last.handleY - 3.0f * last.pointY;
 	}
 
 	void ModelAnimationSegmentKeyframed::exchangeSubmodelPointers(ModelAnimationSet& replaceWith) {
