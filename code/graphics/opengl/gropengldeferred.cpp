@@ -73,13 +73,13 @@ void gr_opengl_deferred_lighting_begin(bool clearNonColorBufs)
 	GLenum buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4 };
 	glDrawBuffers(5, buffers);
 
-	static const float black[] = { 0, 0, 0, 1.0f };
+	static const float transparent[] = { 0, 0, 0, 0 }; // We cannot use black, otherwise later deferred passes will have trouble with transparent textures
 
-	glClearBufferfv(GL_COLOR, 0, black);
+	glClearBufferfv(GL_COLOR, 0, transparent);
 	if (clearNonColorBufs) {
-		glClearBufferfv(GL_COLOR, 1, black);
-		glClearBufferfv(GL_COLOR, 2, black);
-		glClearBufferfv(GL_COLOR, 3, black);
+		glClearBufferfv(GL_COLOR, 1, transparent);
+		glClearBufferfv(GL_COLOR, 2, transparent);
+		glClearBufferfv(GL_COLOR, 3, transparent);
 	}
 }
 
