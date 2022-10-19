@@ -1007,7 +1007,7 @@ int hud_squadmsg_send_ship_command( int shipnum, int command, int send_message, 
 	ai_info *ainfo;
 	int ai_mode, ai_submode;					// ai mode and submode needed for ship commands
 	char *target_shipname;						// ship number of possible targets
-	object_ship_wing_point_team lua_target;
+	ai_lua_parameters lua_target;
 	int message;
 	int target_team, ship_team;				// team id's for the ship getting message and any target the player has
 	ship *ordering_shipp;
@@ -1251,7 +1251,7 @@ int hud_squadmsg_send_ship_command( int shipnum, int command, int send_message, 
 			auto lua_porder = ai_lua_find_player_order(Player_orders[command].lua_id);
 			message = lua_porder->ai_message;
 			if (ainfo->target_objnum != -1)
-				lua_target = object_ship_wing_point_team(&Ships[Objects[ainfo->target_objnum].instance]);
+				lua_target = { object_ship_wing_point_team(&Ships[Objects[ainfo->target_objnum].instance]), {} };
 			break;
 		}
 
@@ -1300,7 +1300,7 @@ int hud_squadmsg_send_wing_command( int wingnum, int command, int send_message, 
 	ai_info *ainfo;
 	int ai_mode, ai_submode;					// ai mode and submode needed for ship commands
 	char *target_shipname;						// ship number of possible targets
-	object_ship_wing_point_team lua_target;
+	ai_lua_parameters lua_target;
 	int message_sent, message;
 	int target_team, wing_team;				// team for the wing and the player's target
 	ship *ordering_shipp;
@@ -1478,7 +1478,7 @@ int hud_squadmsg_send_wing_command( int wingnum, int command, int send_message, 
 			auto lua_porder = ai_lua_find_player_order(Player_orders[command].lua_id);
 			message = lua_porder->ai_message;
 			if(ainfo->target_objnum != -1)
-				lua_target = object_ship_wing_point_team(&Ships[Objects[ainfo->target_objnum].instance]);
+				lua_target = { object_ship_wing_point_team(&Ships[Objects[ainfo->target_objnum].instance]), {} };
 			break;
 
 		}
@@ -1774,13 +1774,18 @@ void hud_squadmsg_call_reinforcement(int reinforcement_num, int  /*player_num*/)
 
 	// safety net mainly for multiplayer servers in case some odd data desync occurs between 
 	// server and clients
-	if ( MULTIPLAYER_MASTER && (rp->num_uses == rp->uses) ) {
+	if ( MULTIPLAYER_MASTER && (rp->num_uses >= rp->uses) ) {
 		return;
 	}
 
 	// check to see if the reinforcement called was a wing.
 	for (i = 0; i < Num_wings; i++ ) {
 		if ( !stricmp(rp->name, Wings[i].name) ) {
+			// if the wing is currently present, skip this request so we don't waste a "use"
+			if (Wings[i].current_count > 0) {
+				return;
+			}
+
 			// found a wingname.  Call the parse function to create all the ships in this wing
 			// we must set the arrival cue of the wing to true, otherwise, this won't work!!
             Wings[i].flags.remove(Ship::Wing_Flags::Reinforcement);
@@ -1848,7 +1853,7 @@ void hud_squadmsg_reinforcement_select()
 			SCP_string rp_name = rp->name;
 
 			// don't put reinforcements onto the list that have already been used up.
-			if ( rp->num_uses == rp->uses ){
+			if ( rp->num_uses >= rp->uses ){
 				continue;
 			}
 

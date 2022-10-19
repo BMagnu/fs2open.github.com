@@ -2890,7 +2890,7 @@ void process_wing_create_packet( ubyte *data, header *hinfo )
 	// need to set some timestamps and cues correctly to be sure that these things get created on
 	// the clients correctly
 	multi_set_network_signature( signature, MULTI_SIG_SHIP );
-	parse_wing_create_ships( &Wings[index], num_to_create, 1 );
+	parse_wing_create_ships( &Wings[index], num_to_create, true );
 }
 
 // packet indicating a ship is departing
@@ -8527,8 +8527,8 @@ void process_event_update_packet(ubyte *data, header *hinfo)
 		mission_event_unset_directive_special(u_event);
 	}	
 
-	if (Mission_events[u_event].result && !Mission_events[u_event].satisfied_time) {
-		Mission_events[u_event].satisfied_time = Missiontime;
+	if (Mission_events[u_event].result && !Mission_events[u_event].satisfied_time.isValid()) {
+		Mission_events[u_event].satisfied_time = _timestamp();
 		if ( Mission_events[u_event].objective_text ) {
 			mission_event_set_completion_sound_timestamp();
 		}

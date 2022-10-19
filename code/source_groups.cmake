@@ -239,6 +239,7 @@ add_file_folder("Default files\\\\data\\\\effects"
 	def_files/data/effects/fxaa-v.sdr
 	def_files/data/effects/fxaapre-f.sdr
 	def_files/data/effects/gamma.sdr
+	def_files/data/effects/irrmap-f.sdr
 	def_files/data/effects/lighting.sdr
 	def_files/data/effects/ls-f.sdr
 	def_files/data/effects/main-f.sdr
@@ -870,6 +871,8 @@ add_file_folder("Model"
 	model/modelread.cpp
 	model/modelrender.h
 	model/modelrender.cpp
+	model/modelreplace.h
+	model/modelreplace.cpp
 	model/modelsinc.h
 	model/model_flags.h
 )
@@ -1271,8 +1274,6 @@ add_file_folder("Scripting\\\\Api\\\\Libs"
 	scripting/api/libs/options.h
 	scripting/api/libs/parse.cpp
 	scripting/api/libs/parse.h
-	scripting/api/objs/redalert.cpp
-	scripting/api/objs/redalert.h
 	scripting/api/libs/tables.cpp
 	scripting/api/libs/tables.h
 	scripting/api/libs/testing.cpp
@@ -1296,6 +1297,8 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/background_element.h
 	scripting/api/objs/beam.cpp
 	scripting/api/objs/beam.h
+	scripting/api/objs/briefing.cpp
+	scripting/api/objs/briefing.h
 	scripting/api/objs/bytearray.cpp
 	scripting/api/objs/bytearray.h
 	scripting/api/objs/camera.cpp
@@ -1310,6 +1313,8 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/color.h
 	scripting/api/objs/control_info.cpp
 	scripting/api/objs/control_info.h
+	scripting/api/objs/debriefing.cpp
+	scripting/api/objs/debriefing.h
 	scripting/api/objs/debris.cpp
 	scripting/api/objs/debris.h
 	scripting/api/objs/decaldefinition.cpp
@@ -1378,18 +1383,24 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/player.h
 	scripting/api/objs/promise.cpp
 	scripting/api/objs/promise.h
+	scripting/api/objs/redalert.cpp
+	scripting/api/objs/redalert.h
 	scripting/api/objs/sexpvar.cpp
 	scripting/api/objs/sexpvar.h
 	scripting/api/objs/shields.cpp
 	scripting/api/objs/shields.h
 	scripting/api/objs/ship_bank.cpp
 	scripting/api/objs/ship_bank.h
+	scripting/api/objs/ship_registry_entry.cpp
+	scripting/api/objs/ship_registry_entry.h
 	scripting/api/objs/shipclass.cpp
 	scripting/api/objs/shipclass.h
 	scripting/api/objs/ship.cpp
 	scripting/api/objs/ship.h
 	scripting/api/objs/shiptype.cpp
 	scripting/api/objs/shiptype.h
+	scripting/api/objs/shipwepselect.cpp
+	scripting/api/objs/shipwepselect.h
 	scripting/api/objs/sound.cpp
 	scripting/api/objs/sound.h
 	scripting/api/objs/species.cpp
@@ -1400,6 +1411,8 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/subsystem.h
 	scripting/api/objs/team.cpp
 	scripting/api/objs/team.h
+	scripting/api/objs/techroom.cpp
+	scripting/api/objs/techroom.h
 	scripting/api/objs/texture.cpp
 	scripting/api/objs/texture.h
 	scripting/api/objs/texturemap.cpp
@@ -1577,6 +1590,8 @@ add_file_folder("Ui"
 )
 
 add_file_folder("Utils"
+	utils/base64.cpp
+	utils/base64.h
 	utils/encoding.cpp
 	utils/encoding.h
 	utils/event.h

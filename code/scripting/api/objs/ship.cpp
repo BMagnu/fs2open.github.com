@@ -29,6 +29,8 @@
 #include "parse/parselo.h"
 
 extern void ship_reset_disabled_physics(object *objp, int ship_class);
+extern bool sexp_check_flag_arrays(const char *flag_name, Object::Object_Flags &object_flag, Ship::Ship_Flags &ship_flags, Mission::Parse_Object_Flags &parse_obj_flag, AI::AI_Flags &ai_flag);
+extern void sexp_alter_ship_flag_helper(object_ship_wing_point_team &oswpt, bool future_ships, Object::Object_Flags object_flag, Ship::Ship_Flags ship_flag, Mission::Parse_Object_Flags parse_obj_flag, AI::AI_Flags ai_flag, bool set_flag);
 
 namespace scripting {
 namespace api {
@@ -178,6 +180,130 @@ ADE_FUNC(__len, l_Ship, NULL, "Number of subsystems on ship", "number", "Subsyst
 		return ade_set_error(L, "i", 0);
 
 	return ade_set_args(L, "i", ship_get_num_subsys(&Ships[objh->objp->instance]));
+}
+
+ADE_FUNC(setFlag, l_Ship, "boolean set_it, string flag_name", "Sets or clears one or more flags - this function can accept an arbitrary number of flag arguments.  The flag names can be any string that the alter-ship-flag SEXP operator supports.", nullptr, "Returns nothing")
+{
+	object_h *objh;
+	bool set_it;
+	const char *flag_name;
+
+	if (!ade_get_args(L, "obs", l_Ship.GetPtr(&objh), &set_it, &flag_name))
+		return ADE_RETURN_NIL;
+	int skip_args = 2;	// not 3 because there will be one more below
+
+	if (!objh->IsValid())
+		return ADE_RETURN_NIL;
+
+	auto shipp = &Ships[objh->objp->instance];
+	object_ship_wing_point_team oswpt(shipp);
+
+	do {
+		auto object_flag = Object::Object_Flags::NUM_VALUES;
+		auto ship_flag = Ship::Ship_Flags::NUM_VALUES;
+		auto parse_obj_flag = Mission::Parse_Object_Flags::NUM_VALUES;
+		auto ai_flag = AI::AI_Flags::NUM_VALUES;
+
+		sexp_check_flag_arrays(flag_name, object_flag, ship_flag, parse_obj_flag, ai_flag);
+
+		if (object_flag == Object::Object_Flags::NUM_VALUES && ship_flag == Ship::Ship_Flags::NUM_VALUES && ai_flag == AI::AI_Flags::NUM_VALUES)
+		{
+			Warning(LOCATION, "Ship/object/ai flag '%s' not found!", flag_name);
+			return ADE_RETURN_NIL;
+		}
+
+		sexp_alter_ship_flag_helper(oswpt, true, object_flag, ship_flag, parse_obj_flag, ai_flag, set_it);
+
+	// read the next flag
+	internal::Ade_get_args_skip = ++skip_args;
+	} while (ade_get_args(L, "|s", &flag_name) > 0);
+
+	return ADE_RETURN_NIL;
+}
+
+ADE_FUNC(getFlag, l_Ship, "string flag_name", "Checks whether one or more flags are set - this function can accept an arbitrary number of flag arguments.  The flag names can be any string that the alter-ship-flag SEXP operator supports.", "boolean", "Returns whether all flags are set, or nil if the ship is not valid")
+{
+	object_h *objh;
+	const char *flag_name;
+
+	if (!ade_get_args(L, "os", l_Ship.GetPtr(&objh), &flag_name))
+		return ADE_RETURN_NIL;
+	int skip_args = 1;	// not 2 because there will be one more below
+
+	if (!objh->IsValid())
+		return ADE_RETURN_NIL;
+
+	auto shipp = &Ships[objh->objp->instance];
+	auto objp = objh->objp;
+	auto aip = &Ai_info[shipp->ai_index];
+
+	do {
+		auto object_flag = Object::Object_Flags::NUM_VALUES;
+		auto ship_flag = Ship::Ship_Flags::NUM_VALUES;
+		auto parse_obj_flag = Mission::Parse_Object_Flags::NUM_VALUES;
+		auto ai_flag = AI::AI_Flags::NUM_VALUES;
+
+		sexp_check_flag_arrays(flag_name, object_flag, ship_flag, parse_obj_flag, ai_flag);
+
+		if (object_flag == Object::Object_Flags::NUM_VALUES && ship_flag == Ship::Ship_Flags::NUM_VALUES && ai_flag == AI::AI_Flags::NUM_VALUES)
+		{
+			Warning(LOCATION, "Ship/object/ai flag '%s' not found!", flag_name);
+			return ADE_RETURN_FALSE;
+		}
+
+		// now check the flags
+		if (object_flag != Object::Object_Flags::NUM_VALUES)
+		{
+			if (!(objp->flags[object_flag]))
+				return ADE_RETURN_FALSE;
+		}
+
+		if (ship_flag != Ship::Ship_Flags::NUM_VALUES)
+		{
+			if (!(shipp->flags[ship_flag]))
+				return ADE_RETURN_FALSE;
+		}
+
+		// we don't check parse flags
+
+		if (ai_flag != AI::AI_Flags::NUM_VALUES)
+		{
+			if (!(aip->ai_flags[ai_flag]))
+				return ADE_RETURN_FALSE;
+		}
+
+	// read the next flag
+	internal::Ade_get_args_skip = ++skip_args;
+	} while (ade_get_args(L, "|s", &flag_name) > 0);
+
+	// if we're still here, all the flags we were looking for were present
+	return ADE_RETURN_TRUE;
+}
+
+static int ship_getset_helper(lua_State* L, int ship::* field, bool canSet = false, bool canBeNegative = false)
+{
+	object_h* objh;
+	int value;
+	if (!ade_get_args(L, "o|i", l_Ship.GetPtr(&objh), &value))
+		return ADE_RETURN_NIL;
+
+	if (!objh->IsValid())
+		return ADE_RETURN_NIL;
+
+	ship* shipp = &Ships[objh->objp->instance];
+
+	if (ADE_SETTING_VAR)
+	{
+		if (canSet)
+		{
+			if (canBeNegative || value >= 0)
+				shipp->*field = value;
+		}
+		else
+			LuaError(L, "This property is read only.");
+	}
+
+	return ade_set_args(L, "i", shipp->*field);
 }
 
 ADE_VIRTVAR(ShieldArmorClass, l_Ship, "string", "Current Armor class of the ships' shield", "string", "Armor class name, or empty string if none is set")
@@ -540,7 +666,6 @@ ADE_VIRTVAR(PrimaryTriggerDown, l_Ship, "boolean", "Determines if primary trigge
 	else
 		return ADE_RETURN_FALSE;
 }
-
 
 ADE_VIRTVAR(PrimaryBanks, l_Ship, "weaponbanktype", "Array of primary weapon banks", "weaponbanktype", "Primary weapon banks, or invalid weaponbanktype handle if ship handle is invalid")
 {
@@ -986,6 +1111,121 @@ ADE_VIRTVAR(Orders, l_Ship, "shiporders", "Array of ship orders", "shiporders", 
 	return ade_set_args(L, "o", l_ShipOrders.Set(object_h(objh->objp)));
 }
 
+ADE_VIRTVAR(WaypointSpeedCap, l_Ship, "number", "Waypoint speed cap", "number", "The limit on the ship's speed for traversing waypoints.  -1 indicates no speed cap.  0 will be returned if handle is invalid.")
+{
+	object_h* objh;
+	int speed_cap = -1;
+	if (!ade_get_args(L, "o|i", l_Ship.GetPtr(&objh), &speed_cap))
+		return ade_set_error(L, "i", 0);
+
+	if (!objh->IsValid())
+		return ade_set_error(L, "i", 0);
+
+	ship* shipp = &Ships[objh->objp->instance];
+	ai_info* aip = &Ai_info[shipp->ai_index];
+
+	if (ADE_SETTING_VAR)
+	{
+		// cap speed to range (-1, 32767) to store within int
+		CLAMP(speed_cap, -1, 32767);
+
+		aip->waypoint_speed_cap = speed_cap;
+	}
+
+	return ade_set_args(L, "i", aip->waypoint_speed_cap);
+}
+
+static int ship_getset_location_helper(lua_State* L, int ship::* field, const char* location_type, const char** location_names, size_t location_names_size)
+{
+	object_h* objh;
+	const char* s = nullptr;
+	if (!ade_get_args(L, "o|s", l_Ship.GetPtr(&objh), &s))
+		return ADE_RETURN_NIL;
+
+	if (!objh->IsValid())
+		return ADE_RETURN_NIL;
+
+	ship* shipp = &Ships[objh->objp->instance];
+
+	if (ADE_SETTING_VAR && s != nullptr)
+	{
+		int location = string_lookup(s, location_names, location_names_size);
+		if (location < 0)
+		{
+			Warning(LOCATION, "%s location '%s' not found.", location_type, s);
+			return ADE_RETURN_NIL;
+		}
+		shipp->*field = location;
+	}
+
+	return ade_set_args(L, "s", location_names[shipp->*field]);
+}
+
+ADE_VIRTVAR(ArrivalLocation, l_Ship, "string", "The ship's arrival location", "string", "Arrival location, or nil if handle is invalid")
+{
+	return ship_getset_location_helper(L, &ship::arrival_location, "Arrival", Arrival_location_names, MAX_ARRIVAL_NAMES);
+}
+
+ADE_VIRTVAR(DepartureLocation, l_Ship, "string", "The ship's departure location", "string", "Departure location, or nil if handle is invalid")
+{
+	return ship_getset_location_helper(L, &ship::departure_location, "Departure", Departure_location_names, MAX_DEPARTURE_NAMES);
+}
+
+static int ship_getset_anchor_helper(lua_State* L, int ship::* field)
+{
+	object_h* objh;
+	const char* s = nullptr;
+	if (!ade_get_args(L, "o|s", l_Ship.GetPtr(&objh), &s))
+		return ADE_RETURN_NIL;
+
+	if (!objh->IsValid())
+		return ADE_RETURN_NIL;
+
+	ship* shipp = &Ships[objh->objp->instance];
+
+	if (ADE_SETTING_VAR && s != nullptr)
+	{
+		shipp->*field = (stricmp(s, "<no anchor>") == 0) ? -1 : get_parse_name_index(s);
+	}
+
+	return ade_set_args(L, "s", (shipp->*field >= 0) ? Parse_names[shipp->*field] : "<no anchor>");
+}
+
+ADE_VIRTVAR(ArrivalAnchor, l_Ship, "string", "The ship's arrival anchor", "string", "Arrival anchor, or nil if handle is invalid")
+{
+	return ship_getset_anchor_helper(L, &ship::arrival_anchor);
+}
+
+ADE_VIRTVAR(DepartureAnchor, l_Ship, "string", "The ship's departure anchor", "string", "Departure anchor, or nil if handle is invalid")
+{
+	return ship_getset_anchor_helper(L, &ship::departure_anchor);
+}
+
+ADE_VIRTVAR(ArrivalPathMask, l_Ship, "number", "The ship's arrival path mask", "number", "Arrival path mask, or nil if handle is invalid")
+{
+	return ship_getset_helper(L, &ship::arrival_path_mask, true);
+}
+
+ADE_VIRTVAR(DeparturePathMask, l_Ship, "number", "The ship's departure path mask", "number", "Departure path mask, or nil if handle is invalid")
+{
+	return ship_getset_helper(L, &ship::departure_path_mask, true);
+}
+
+ADE_VIRTVAR(ArrivalDelay, l_Ship, "number", "The ship's arrival delay", "number", "Arrival delay, or nil if handle is invalid")
+{
+	return ship_getset_helper(L, &ship::arrival_delay, true);
+}
+
+ADE_VIRTVAR(DepartureDelay, l_Ship, "number", "The ship's departure delay", "number", "Departure delay, or nil if handle is invalid")
+{
+	return ship_getset_helper(L, &ship::departure_delay, true);
+}
+
+ADE_VIRTVAR(ArrivalDistance, l_Ship, "number", "The ship's arrival distance", "number", "Arrival distance, or nil if handle is invalid")
+{
+	return ship_getset_helper(L, &ship::arrival_distance, true);
+}
+
 ADE_FUNC(turnTowardsPoint,
 	l_Ship,
 	"vector target, [boolean respectDifficulty = true, vector turnrateModifier /* 100% of tabled values in all rotation axes by default */, number bank /* native bank-on-heading by default */ ]",
@@ -1110,10 +1350,9 @@ ADE_FUNC(addShipEffect, l_Ship, "string name, number durationMillis", "Activates
 
 	ship* shipp = &Ships[shiph->objp->instance];
 
-	shipp->shader_effect_active = true;
 	shipp->shader_effect_num = effect_num;
 	shipp->shader_effect_duration = duration;
-	shipp->shader_effect_start_time = timer_get_milliseconds();
+	shipp->shader_effect_timestamp = _timestamp(duration);
 
 	return ade_set_args(L, "b", true);
 }
@@ -1278,8 +1517,8 @@ ADE_FUNC(giveOrder, l_Ship, "enumeration Order, [object Target=nil, subsystem Ta
 	if(priority < 0.0f)
 		return ade_set_error(L, "b", false);
 
-	if(priority > 1.0f)
-		priority = 1.0f;
+	if(priority > 2.0f)
+		priority = 2.0f;
 
 	bool tgh_valid = tgh && tgh->IsValid();
 	bool tgsh_valid = tgsh && tgsh->isSubsystemValid();
@@ -1691,6 +1930,32 @@ ADE_FUNC(triggerSubmodelAnimation, l_Ship, "string type, string triggeredBy, [bo
 	return Ship_info[shipp->ship_info_index].animations.parseScripted(model_get_instance(shipp->model_instance_num), animtype, trigger).start(forwards ? animation::ModelAnimationDirection::FWD : animation::ModelAnimationDirection::RWD, forced || instant, instant, pause) ? ADE_RETURN_TRUE : ADE_RETURN_FALSE;
 }
 
+ADE_FUNC(stopLoopingSubmodelAnimation, l_Ship, "string type, string triggeredBy",
+	"Stops a currently looping animation after it has finished its current loop. Type is the string name of the animation type, "
+	"triggeredBy is a closer specification which animation was triggered. See *-anim.tbm specifications. ",
+	"boolean",
+	"True if successful, false or nil otherwise")
+{
+	object_h* objh;
+	const char* type = nullptr;
+	const char* trigger = nullptr;
+
+	if (!ade_get_args(L, "oss", l_Ship.GetPtr(&objh), &type, &trigger))
+		return ADE_RETURN_NIL;
+
+	if (!objh->IsValid())
+		return ADE_RETURN_NIL;
+
+	auto animtype = animation::anim_match_type(type);
+	if (animtype == animation::ModelAnimationTriggerType::None)
+		return ADE_RETURN_FALSE;
+
+	ship* shipp = &Ships[objh->objp->instance];
+
+	Ship_info[shipp->ship_info_index].animations.parseScripted(model_get_instance(shipp->model_instance_num), animtype, trigger).setFlag(animation::Animation_Instance_Flags::Stop_after_next_loop);
+	return ADE_RETURN_TRUE;
+}
+
 ADE_FUNC(setAnimationSpeed, l_Ship, "string type, string triggeredBy, [number speedMultiplier = 1.0]",
 	"Sets the speed multiplier at which an animation runs. Anything other than 1 will not work in multiplayer. Type is the string name of the animation type, "
 	"triggeredBy is a closer specification which animation should trigger. See *-anim.tbm specifications.",
@@ -2020,7 +2285,6 @@ ADE_FUNC(getDisplayString, l_Ship, nullptr, "Returns the string which should be 
 
 ADE_FUNC(vanish, l_Ship, nullptr, "Vanishes this ship from the mission. Works in Singleplayer only and will cause the ship exit to not be logged.", "boolean", "True if the deletion was successful, false otherwise.")
 {
-
 	object_h* objh = nullptr;
 
 	if (!ade_get_args(L, "o", l_Ship.GetPtr(&objh)))
@@ -2032,6 +2296,45 @@ ADE_FUNC(vanish, l_Ship, nullptr, "Vanishes this ship from the mission. Works in
 	ship_actually_depart(objh->objp->instance, SHIP_VANISHED);
 
 	return ade_set_args(L, "b", true);
+}
+
+ADE_FUNC(setGlowPointBankActive, l_Ship, "boolean active, [number bank]", "Activates or deactivates one or more of a ship's glow point banks - this function can accept an arbitrary number of bank arguments.  Omit the bank number or specify -1 to activate or deactivate all banks.", nullptr, "Returns nothing")
+{
+	object_h* objh = nullptr;
+	bool active, at_least_one = false, do_all = false;
+	int bank_num;
+
+	if (!ade_get_args(L, "ob", l_Ship.GetPtr(&objh), &active))
+		return ADE_RETURN_NIL;
+	int skip_args = 1;	// not 2 because there will be one more before we read the first number
+
+	if (!objh->IsValid())
+		return ADE_RETURN_NIL;
+
+	auto shipp = &Ships[objh->objp->instance];
+
+	// read as many bank numbers as we have
+	while (internal::Ade_get_args_skip = ++skip_args, ade_get_args(L, "|i", &bank_num) > 0)
+	{
+		if (bank_num < 0)
+		{
+			do_all = true;
+			break;
+		}
+		at_least_one = true;
+
+		if (static_cast<size_t>(bank_num) < shipp->glow_point_bank_active.size())
+			shipp->glow_point_bank_active[bank_num] = active;
+	}
+
+	// set all banks
+	if (!at_least_one || do_all)
+	{
+		for (size_t i = 0; i < shipp->glow_point_bank_active.size(); ++i)
+			shipp->glow_point_bank_active[i] = active;
+	}
+
+	return ADE_RETURN_NIL;
 }
 
 

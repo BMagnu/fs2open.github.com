@@ -330,7 +330,7 @@ void techroom_select_new_entry()
 			i++;
 		}
 
-		Techroom_ship_modelnum = model_load(sip->pof_file, sip->n_subsystems, &sip->subsystems[0]);
+		Techroom_ship_modelnum = model_load(sip, true);
 
 		if (Techroom_ship_model_instance >= 0) {
 			model_delete_instance(Techroom_ship_model_instance);
@@ -530,16 +530,8 @@ void techroom_ships_render(float frametime)
 	g3_start_frame(1);
 	g3_set_view_matrix(&sip->closeup_pos, &vmd_identity_matrix, sip->closeup_zoom * 1.3f);
 
-	
-
-	// lighting for techroom
-	light_reset();
-	vec3d light_dir = vmd_zero_vector;
-	light_dir.xyz.y = 1.0f;	
-	light_dir.xyz.x = 0.0000001f;	
-	light_add_directional(&light_dir, 0.85f, 1.0f, 1.0f, 1.0f);
-	light_rotate_all();
-	// lighting for techroom
+	//setup lights
+	common_setup_room_lights();
 
 	Glowpoint_use_depth_buffer = false;
 

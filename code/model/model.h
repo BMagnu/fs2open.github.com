@@ -71,6 +71,8 @@ extern int model_render_flags_size;
 #define SUBSYSTEM_UNKNOWN			11
 #define SUBSYSTEM_MAX				12				//	maximum value for subsystem_xxx, for error checking
 
+enum class modelread_status { FAIL, SUCCESS_REAL, SUCCESS_VIRTUAL };
+
 // Goober5000
 extern const char *Subsystem_types[SUBSYSTEM_MAX];
 
@@ -868,14 +870,54 @@ public:
 	vertex_buffer detail_buffers[MAX_MODEL_DETAIL_LEVELS];
 };
 
+struct model_read_deferred_tasks {
+	struct model_subsystem_parse {
+		int subobj_nr;
+		float rad;
+		vec3d pnt;
+		SCP_string props;
+	};
+
+	struct engine_subsystem_parse {
+		int thruster_nr;
+	};
+
+	struct weapon_subsystem_parse {
+		int turret_nr;
+		int gun_subobj_nr;
+		vec3d turretNorm;
+		int n_slots;
+		SCP_vector<vec3d> firingpoints;
+	};
+
+	struct texture_idx_replace {
+		SCP_map<int, int> replacementIds;
+	};
+
+	//Key: Subsystem Name
+	SCP_unordered_map<SCP_string, model_subsystem_parse, SCP_string_lcase_hash, SCP_string_lcase_equal_to> model_subsystems;
+	using model_subsystem_pair = decltype(model_subsystems)::value_type;
+	//Key: Subsystem Name
+	SCP_unordered_map<SCP_string, engine_subsystem_parse, SCP_string_lcase_hash, SCP_string_lcase_equal_to> engine_subsystems;
+	using engine_subsystem_pair = decltype(engine_subsystems)::value_type;
+	//Key: Parent Subobject Nr
+	SCP_unordered_map<int, weapon_subsystem_parse> weapons_subsystems;
+	using weapon_subsystem_pair = decltype(weapons_subsystems)::value_type;
+	//Key: Subobject Nr
+	SCP_unordered_map<int, texture_idx_replace> texture_replacements;
+	using texture_replacement_pair = decltype(texture_replacements)::value_type;
+};
+
+using model_parse_depth = SCP_unordered_map<SCP_string, int, SCP_string_lcase_hash, SCP_string_lcase_equal_to>;
+
 // Iterate over a submodel tree, starting at the given submodel root node, and running the given function for each node.  The function's signature should be:
 //
 // void func(int submodel, int level, bool isLeaf);
 //
 // The "level" parameter indicates how deep the nesting level is, and the "isLeaf" parameter indicates whether the submodel is a leaf node.
 // To find the model's detail0 root node, use pm->submodel[pm->detail[0]].
-template <typename Func, typename... AdditionalParams>
-void model_iterate_submodel_tree(polymodel* pm, int submodel, Func func, int level, AdditionalParams... params)
+template <typename pm_t, typename Func, typename... AdditionalParams>
+void model_iterate_submodel_tree(pm_t* pm, int submodel, Func func, int level, AdditionalParams... params)
 {
 	Assertion(pm != nullptr, "pm must not be null!");
 	Assertion(submodel >= 0 && submodel < pm->n_models, "submodel must be in range!");
@@ -892,8 +934,8 @@ void model_iterate_submodel_tree(polymodel* pm, int submodel, Func func, int lev
 }
 
 //This wrapper function is needed due to a bug in clang versions before 11 which breaks default parameters before parameter packs
-template <typename Func>
-inline void model_iterate_submodel_tree(polymodel* pm, int submodel, Func func)
+template <typename pm_t, typename Func>
+inline void model_iterate_submodel_tree(pm_t* pm, int submodel, Func func)
 {
 	model_iterate_submodel_tree(pm, submodel, func, 0);
 }
@@ -903,10 +945,15 @@ void model_init();
 
 // call to unload a model (works like bm_unload()), "force" SHOULD NEVER BE SET outside of modelread.cpp!!!!
 void model_unload(int modelnum, int force = 0);
+// Directly frees polymodel data, regardless of state and usage in ship classes. Use with caution. Will not clear textures
+void model_free(polymodel* pm);
 
 // Call to free all existing models
 void model_free_all();
 void model_instance_free_all();
+
+// Alias to model_load, checks if a pof tech model exists and loads it if specified, otherwise loads the default pof. --wookieejedi
+int model_load(ship_info* sip, bool prefer_tech_model);
 
 // Loads a model from disk and returns the model number it loaded into.
 int model_load(const char *filename, int n_subsystems, model_subsystem *subsystems, int ferror = 1, int duplicate = 0);
@@ -916,6 +963,8 @@ void model_delete_instance(int model_instance_num);
 
 // Goober5000
 void model_load_texture(polymodel *pm, int i, char *file);
+
+SCP_set<int> model_get_textures_used(const polymodel* pm, int submodel);
 
 // Returns a pointer to the polymodel structure for model 'n'
 polymodel *model_get(int model_num);
@@ -1136,6 +1185,7 @@ void submodel_get_cross_sectional_avg_pos(int model_num, int submodel_num, float
 void submodel_get_cross_sectional_random_pos(int model_num, int submodel_num, float z_slice_pos, vec3d* pos);
   
 extern int model_find_submodel_index(int modelnum, const char *name);
+extern int model_find_submodel_index(const polymodel* pm, const char* name);
 
 // gets the index into the docking_bays array of the specified type of docking point
 // Returns the index.  second functions returns the index of the docking bay with
@@ -1388,6 +1438,8 @@ void model_page_in_textures(int modelnum, int ship_info_index = -1);
 
 // given a model, unload all of its textures
 void model_page_out_textures(int model_num, bool release = false);
+// given a model, without respect to usage state of the polymodel
+void model_page_out_textures(polymodel* pm, bool release = false, const SCP_set<int>& skipTextures = {}, const SCP_set<int>& skipGlowBanks = {});
 
 void model_do_intrinsic_motions(object *objp);
 

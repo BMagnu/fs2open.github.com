@@ -1897,6 +1897,9 @@ int CFred_mission_save::save_cutscenes()
 					case MOVIE_PRE_DEBRIEF:
 						strcpy_s(type, "$Debriefing Cutscene:");
 						break;
+					case MOVIE_POST_DEBRIEF:
+						strcpy_s(type, "$Post-debriefing Cutscene:");
+						break;
 					case MOVIE_END_CAMPAIGN:
 						strcpy_s(type, "$Campaign End Cutscene:");
 						break;
@@ -2965,29 +2968,29 @@ int CFred_mission_save::save_music()
 	bypass_comment(";;FSO 3.6.8;; $Substitute Music:");
 
 	// old stuff
-	if (Mission_music[SCORE_DEBRIEF_SUCCESS] != event_music_get_spooled_music_index("Success")) {
+	if (Mission_music[SCORE_DEBRIEFING_SUCCESS] != event_music_get_spooled_music_index("Success")) {
 		if (optional_string_fred("$Debriefing Success Music:")) {
 			parse_comments(1);
 		} else {
 			fout("\n$Debriefing Success Music:");
 		}
-		fout(" %s", Mission_music[SCORE_DEBRIEF_SUCCESS] < 0 ? "None" : Spooled_music[Mission_music[SCORE_DEBRIEF_SUCCESS]].name);
+		fout(" %s", Mission_music[SCORE_DEBRIEFING_SUCCESS] < 0 ? "None" : Spooled_music[Mission_music[SCORE_DEBRIEFING_SUCCESS]].name);
 	}
-	if (Mission_save_format != FSO_FORMAT_RETAIL && Mission_music[SCORE_DEBRIEF_AVERAGE] != event_music_get_spooled_music_index("Average")) {
+	if (Mission_save_format != FSO_FORMAT_RETAIL && Mission_music[SCORE_DEBRIEFING_AVERAGE] != event_music_get_spooled_music_index("Average")) {
 		if (optional_string_fred("$Debriefing Average Music:")) {
 			parse_comments(1);
 		} else {
 			fout("\n$Debriefing Average Music:");
 		}
-		fout(" %s", Mission_music[SCORE_DEBRIEF_AVERAGE] < 0 ? "None" : Spooled_music[Mission_music[SCORE_DEBRIEF_AVERAGE]].name);
+		fout(" %s", Mission_music[SCORE_DEBRIEFING_AVERAGE] < 0 ? "None" : Spooled_music[Mission_music[SCORE_DEBRIEFING_AVERAGE]].name);
 	}
-	if (Mission_music[SCORE_DEBRIEF_FAIL] != event_music_get_spooled_music_index("Failure")) {
+	if (Mission_music[SCORE_DEBRIEFING_FAILURE] != event_music_get_spooled_music_index("Failure")) {
 		if (optional_string_fred("$Debriefing Fail Music:")) {
 			parse_comments(1);
 		} else {
 			fout("\n$Debriefing Fail Music:");
 		}
-		fout(" %s", Mission_music[SCORE_DEBRIEF_FAIL] < 0 ? "None" : Spooled_music[Mission_music[SCORE_DEBRIEF_FAIL]].name);
+		fout(" %s", Mission_music[SCORE_DEBRIEFING_FAILURE] < 0 ? "None" : Spooled_music[Mission_music[SCORE_DEBRIEFING_FAILURE]].name);
 	}
 
 	// Goober5000 - save using the special comment prefix

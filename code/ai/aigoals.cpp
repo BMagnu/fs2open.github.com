@@ -21,6 +21,7 @@
 #include "object/objectdock.h"
 #include "object/waypoint.h"
 #include "parse/sexp.h"
+#include "parse/sexp/LuaAISEXP.h"
 #include "playerman/player.h"
 #include "scripting/scripting.h"
 #include "ship/ship.h"
@@ -168,7 +169,8 @@ void ai_goal_reset(ai_goal *aigp, bool adding_goal, int ai_mode, int ai_submode,
 	aigp->docker.name = nullptr;
 	aigp->dockee.name = nullptr;
 
-	aigp->lua_ai_target.clear();
+	aigp->lua_ai_target.target.clear();
+	aigp->lua_ai_target.arguments.clear();
 }
 
 void ai_maybe_add_form_goal(wing* wingp)
@@ -305,6 +307,14 @@ void ai_remove_ship_goal( ai_info *aip, int index )
 		// rearm/repair needs a bit of extra cleanup
 		if (aip->goals[index].ai_mode == AI_GOAL_REARM_REPAIR)
 			ai_abort_rearm_request(&Objects[Ships[aip->shipnum].objnum]);
+
+		// wookieejedi - play dead needs some extra cleanup, too
+		// there is an early return for the mode AIM_PLAY_DEAD in AI frame, so it needs to be set back to AIM_NONE
+		if (aip->ai_profile_flags[AI::Profile_Flags::Fixed_removing_play_dead_order] && 
+			(aip->goals[index].ai_mode == AI_GOAL_PLAY_DEAD || aip->goals[index].ai_mode == AI_GOAL_PLAY_DEAD_PERSISTENT)) {
+			aip->mode = AIM_NONE;
+			aip->submode_start_time = Missiontime;
+		}
 
 		aip->active_goal = AI_GOAL_NONE;
 	}
@@ -684,7 +694,7 @@ void ai_goal_fixup_dockpoints(ai_info *aip, ai_goal *aigp)
 // from the mission goals (i.e. those goals which come from events) in that we don't
 // use sexpressions for goals from the player...so we enumerate all the parameters
 
-void ai_add_goal_sub_player(int type, int mode, int submode, char *target_name, ai_goal *aigp, const object_ship_wing_point_team& lua_target )
+void ai_add_goal_sub_player(int type, int mode, int submode, char *target_name, ai_goal *aigp, const ai_lua_parameters& lua_target )
 {
 	Assert ( (type == AIG_TYPE_PLAYER_WING) || (type == AIG_TYPE_PLAYER_SHIP) );
 
@@ -812,7 +822,7 @@ void ai_add_ship_goal_scripting(int mode, int submode, int priority, char *shipn
 // is issued to ship or wing (from player),  mode is AI_GOAL_*. submode is the submode the
 // ship should go into.  shipname is the object of the action.  aip is the ai_info pointer
 // of the ship receiving the order
-void ai_add_ship_goal_player( int type, int mode, int submode, char *shipname, ai_info *aip, const object_ship_wing_point_team& lua_target)
+void ai_add_ship_goal_player( int type, int mode, int submode, char *shipname, ai_info *aip, const ai_lua_parameters& lua_target)
 {
 	int empty_index;
 	ai_goal *aigp;
@@ -833,7 +843,7 @@ void ai_add_ship_goal_player( int type, int mode, int submode, char *shipname, a
 
 // adds a goal from the player to the given wing (which in turn will add it to the proper
 // ships in the wing
-void ai_add_wing_goal_player( int type, int mode, int submode, char *shipname, int wingnum, const object_ship_wing_point_team& lua_target)
+void ai_add_wing_goal_player( int type, int mode, int submode, char *shipname, int wingnum, const ai_lua_parameters& lua_target)
 {
 	int i, empty_index;
 	wing *wingp = &Wings[wingnum];
@@ -1065,12 +1075,16 @@ void ai_add_goal_sub_sexp( int sexp, int type, ai_info *aip, ai_goal *aigp, char
 			aigp->ai_mode = AI_GOAL_LUA;
 			aigp->ai_submode = op;
 			
+
+			object_ship_wing_point_team target;
 			if(luaAIMode->needsTarget) {
-				eval_object_ship_wing_point_team(&aigp->lua_ai_target, localnode);
+				eval_object_ship_wing_point_team(&target, localnode);
 				localnode = CDR(localnode);
 			}
 
 			aigp->priority = atoi( CTEXT(localnode) );
+
+			aigp->lua_ai_target = { std::move(target), luaAIMode->sexp.getSEXPArgumentList(CDR(localnode)) };
 		}
 		else {
 			UNREACHABLE("Invalid SEXP-OP number %d for an AI goal!", op);

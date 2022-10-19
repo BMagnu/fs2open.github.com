@@ -64,6 +64,7 @@
 #include "parse/sexp_container.h"
 #include "scripting/hook_api.h"
 #include "scripting/scripting.h"
+#include "species_defs/species_defs.h"
 #include "playerman/player.h"
 #include "popup/popup.h"
 #include "popup/popupdead.h"
@@ -151,7 +152,7 @@ p_object *Player_start_pobject;
 // name of all ships to use while parsing a mission (since a ship might be referenced by
 // something before that ship has even been loaded yet)
 char Parse_names[MAX_SHIPS + MAX_WINGS][NAME_LENGTH];
-int Num_parse_names;
+size_t Num_parse_names;
 
 SCP_vector<texture_replace> Fred_texture_replacements;
 
@@ -323,7 +324,7 @@ flag_def_list_new<Mission::Parse_Object_Flags> Parse_object_flags[] = {
     { "aspect-immune",						Mission::Parse_Object_Flags::SF_Aspect_immune, true, false }
 };
 
-const size_t num_parse_object_flags = sizeof(Parse_object_flags) / sizeof(flag_def_list_new<Mission::Parse_Object_Flags>);
+const size_t Num_parse_object_flags = sizeof(Parse_object_flags) / sizeof(flag_def_list_new<Mission::Parse_Object_Flags>);
 
 // These are only the flags that are saved to the mission file.  See the MEF_ #defines.
 flag_def_list Mission_event_flags[] = {
@@ -352,13 +353,7 @@ matrix Parse_viewer_orient;
 
 int Loading_screen_bm_index=-1;
 
-// definitions for timestamps for eval'ing arrival/departure cues
-int Mission_arrival_timestamp;
-int Mission_departure_timestamp;
 fix Mission_end_time;
-
-#define ARRIVAL_TIMESTAMP		2000		// every 2 seconds
-#define DEPARTURE_TIMESTAMP	2200		// every 2.2 seconds -- just to be a little different
 
 // calculates a "unique" file signature as a ushort (checksum) and an int (file length)
 // the amount of The_mission we're going to checksum
@@ -618,15 +613,9 @@ void parse_mission_info(mission *pm, bool basic = false)
 	pm->support_ships.support_available_for_species = 0;
 
 	// for each species, store whether support is available
-	for (int species = 0; species < (int)Species_info.size(); species++)
-	{
-        for (auto it = Ship_info.cbegin(); it != Ship_info.cend(); ++it)
-		{
-			if ((it->flags[Ship::Info_Flags::Support]) && (it->species == species))
-			{
-				pm->support_ships.support_available_for_species |= (1 << species);
-				break;
-			}
+	for (int species = 0; species < (int)Species_info.size(); species++) {
+		if (Species_info[species].support_ship_index >= 0) {
+			pm->support_ships.support_available_for_species |= (1 << species);
 		}
 	}
 
@@ -1011,17 +1000,24 @@ void parse_cutscenes(mission *pm)
 		while (!optional_string("#end"))
 		{
 			// this list should correspond to the MOVIE_* #defines
-			scene.type = optional_string_one_of(6,
+			scene.type = optional_string_one_of(8,
 				"$Fiction Viewer Cutscene:",
 				"$Command Brief Cutscene:",
 				"$Briefing Cutscene:",
 				"$Pre-game Cutscene:",
 				"$Debriefing Cutscene:",
-				"$Campaign End Cutscene:");
+				"$Post-debriefing Cutscene:",
+				"$Campaign End Cutscene:",
+				// this is not a #define, but a synonym for one
+				"$Post-briefing Cutscene:");
 
 			// no more cutscenes specified?
 			if (scene.type < 0)
 				break;
+
+			// post-briefing is the same as pre-game
+			if (scene.type == 7)
+				scene.type = MOVIE_PRE_GAME;
 
 			// get the cutscene file
 			stuff_string(scene.filename, F_NAME, NAME_LENGTH);
@@ -1144,7 +1140,7 @@ void parse_music(mission *pm, int flags)
 		stuff_string(temp, F_NAME, NAME_LENGTH);
 		index = event_music_get_spooled_music_index(temp);
 		if ((index >= 0) && ((Spooled_music[index].flags & SMF_VALID) || Fred_running)) {
-			event_music_set_score(SCORE_DEBRIEF_SUCCESS, temp);
+			event_music_set_score(SCORE_DEBRIEFING_SUCCESS, temp);
 		}
 	}
 
@@ -1154,17 +1150,17 @@ void parse_music(mission *pm, int flags)
 		stuff_string(temp, F_NAME, NAME_LENGTH);
 		index = event_music_get_spooled_music_index(temp);
 		if ((index >= 0) && ((Spooled_music[index].flags & SMF_VALID) || Fred_running)) {
-			event_music_set_score(SCORE_DEBRIEF_AVERAGE, temp);
+			event_music_set_score(SCORE_DEBRIEFING_AVERAGE, temp);
 		}
 	}
 
 	// old stuff
-	if (optional_string("$Debriefing Fail Music:"))
+	if (optional_string("$Debriefing Fail Music:") || optional_string("$Debriefing Failure Music:"))
 	{
 		stuff_string(temp, F_NAME, NAME_LENGTH);
 		index = event_music_get_spooled_music_index(temp);
 		if ((index >= 0) && ((Spooled_music[index].flags & SMF_VALID) || Fred_running)) {
-			event_music_set_score(SCORE_DEBRIEF_FAIL, temp);
+			event_music_set_score(SCORE_DEBRIEFING_FAILURE, temp);
 		}
 	}
 
@@ -3136,7 +3132,7 @@ int parse_object(mission *pm, int  /*flag*/, p_object *p_objp)
     if (optional_string("+Flags:"))
     {
         SCP_vector<SCP_string> unparsed;
-        parse_string_flag_list(p_objp->flags, Parse_object_flags, num_parse_object_flags, &unparsed);
+        parse_string_flag_list(p_objp->flags, Parse_object_flags, Num_parse_object_flags, &unparsed);
         if (!unparsed.empty()) {
             for (size_t k = 0; k < unparsed.size(); ++k) {
                 WarningEx(LOCATION, "Unknown flag in parse object flags: %s", unparsed[k].c_str());
@@ -3148,7 +3144,7 @@ int parse_object(mission *pm, int  /*flag*/, p_object *p_objp)
     if (optional_string("+Flags2:"))
     {
         SCP_vector<SCP_string> unparsed;
-        parse_string_flag_list(p_objp->flags, Parse_object_flags, num_parse_object_flags, &unparsed);
+        parse_string_flag_list(p_objp->flags, Parse_object_flags, Num_parse_object_flags, &unparsed);
         if (!unparsed.empty()) {
             for (size_t k = 0; k < unparsed.size(); ++k) {
 				// catch typos or deprecations
@@ -4080,12 +4076,13 @@ int find_wing_name(char *name)
 * @brief						Tries to create a wing of ships
 * @param[inout]	wingp			Pointer to the wing structure of the wing to be created
 * @param[in] num_to_create		Number of ships to create
-* @param[in] force				If set to 1, the wing will be created regardless of whether or not the arrival conditions
+* @param[in] force_create		If true, the wing will be created regardless of whether or not the arrival conditions
 *								have been met yet.
+* @param[in] force_arrival		If true, the wing will assume its arrival cue is true
 * @param[in] specific_instance	Set this to create a specific ship from this wing
 * @returns						Number of ships created
 */
-int parse_wing_create_ships( wing *wingp, int num_to_create, int force, int specific_instance )
+int parse_wing_create_ships( wing *wingp, int num_to_create, bool force_create, bool force_arrival, int specific_instance )
 {
 	int wingnum, objnum, num_create_save;
 	int time_to_arrive;
@@ -4095,14 +4092,14 @@ int parse_wing_create_ships( wing *wingp, int num_to_create, int force, int spec
 	// we need to send this in multiplayer
 	pre_create_count = wingp->total_arrived_count;
 
-	// force is used to force creation of the wing -- used for multiplayer
-	if ( !force ) {
+	// force_create is used to force creation of the wing -- used for multiplayer
+	if ( !force_create ) {
 		// we only want to evaluate the arrival cue of the wing if:
 		// 1) single player
 		// 2) multiplayer and I am the host of the game
 		// can't create any ships if the arrival cue is false or the timestamp has not elapsed.
 
-		if ( !eval_sexp(wingp->arrival_cue) ) /* || !timestamp_elapsed(wingp->arrival_delay) ) */
+		if ( !force_arrival && !eval_sexp(wingp->arrival_cue) )
 			return 0;
 
 		// once the sexpressions becomes true, then check the arrival delay on the wing.  The first time, the
@@ -6210,7 +6207,7 @@ bool post_process_mission()
 
 	// convert all ship name indices to ship indices now that mission has been loaded
 	if (Fred_running) {
-		for (i=0; i<Num_parse_names; i++) {
+		for (i=0; i<(int)Num_parse_names; i++) {
 			indices[i] = ship_name_lookup(Parse_names[i], 1);
 			if (indices[i] < 0)
 				Warning(LOCATION, "Ship name \"%s\" referenced, but this ship doesn't exist", Parse_names[i]);
@@ -6356,8 +6353,6 @@ bool post_process_mission()
 	ets_init_ship(Player_obj);	// init ETS data for the player
 
 	// put the timestamp stuff here for now
-	Mission_arrival_timestamp = timestamp( ARRIVAL_TIMESTAMP );
-	Mission_departure_timestamp = timestamp( DEPARTURE_TIMESTAMP );
 	Mission_end_time = -1;
 
 	Allow_arrival_music_timestamp=timestamp(0);
@@ -7185,12 +7180,10 @@ void mission_parse_mark_reinforcement_available(char *name)
  * @return -1 if not created.  
  * @return objnum of created ship otherwise
  */
-int mission_did_ship_arrive(p_object *objp)
+int mission_did_ship_arrive(p_object *objp, bool force_arrival)
 {
-	int should_arrive;
-
-	// find out in the arrival cue became true
-	should_arrive = eval_sexp(objp->arrival_cue);
+	// find out if the arrival cue became true
+	bool should_arrive = force_arrival || eval_sexp(objp->arrival_cue);
 
 	// we must first check to see if this ship is a reinforcement or not.  If so, then don't
 	// process
@@ -7201,12 +7194,22 @@ int mission_did_ship_arrive(p_object *objp)
 		if ( should_arrive ) {
 			mission_parse_mark_reinforcement_available(objp->name);
 		}
-		return -1;
+
+		// if we're forcing the arrival, then "use" the reinforcement; otherwise don't process anything else
+		if (force_arrival) {
+			for (int i = 0; i < Num_reinforcements; i++) {
+				auto rp = &Reinforcements[i];
+				if (!stricmp(rp->name, objp->name)) {
+					rp->num_uses++;
+					break;
+				}
+			}
+		} else {
+			return -1;
+		}
 	}
 
 	if ( should_arrive ) { 		// has the arrival criteria been met?
-		int object_num;
-
 		// check to see if the delay field <= 0.  if so, then create a timestamp and then maybe
 		// create the object
 		if ( objp->arrival_delay <= 0 ) {
@@ -7254,10 +7257,7 @@ int mission_did_ship_arrive(p_object *objp)
 		}
 
 		// create the ship
-		object_num = parse_create_object(objp);
-
-		// since this ship is not in a wing, create a SHIP_ARRIVE entry
-		//mission_log_add_entry( LOG_SHIP_ARRIVE, objp->name, NULL );
+		int object_num = parse_create_object(objp);
 		Assert(object_num >= 0 && object_num < MAX_OBJECTS);
 		
 		// Play the music track for an arrival
@@ -7273,18 +7273,31 @@ int mission_did_ship_arrive(p_object *objp)
 }
 
 // Goober5000
-void mission_maybe_make_ship_arrive(p_object *p_objp)
+bool mission_maybe_make_ship_arrive(p_object *p_objp, bool force_arrival)
 {
-	// try to create ship
-	int objnum = mission_did_ship_arrive(p_objp);
-	if (objnum < 0)
-		return;
+	if (p_objp->wingnum >= 0)
+	{
+		Warning(LOCATION, "Parse objects (%s) belonging to wings must arrive through the wing code!", p_objp->name);
+		return false;
+	}
 
-	// remove from arrival list
+	if (p_objp->created_object != nullptr)
+	{
+		Warning(LOCATION, "Cannot create a parse object (%s) more than once!", p_objp->name);
+		return false;
+	}
+
+	// try to create ship
+	int objnum = mission_did_ship_arrive(p_objp, force_arrival);
+	if (objnum < 0)
+		return false;
+
 	if (p_objp == Arriving_support_ship)
-		mission_parse_support_arrived(objnum);
-	else
-		list_remove(&Ship_arrival_list, p_objp);
+		mission_parse_support_arrived(objnum);		// support ships have some unique housekeeping and are never on the arrival list
+	else if (parse_object_on_arrival_list(p_objp))
+		list_remove(&Ship_arrival_list, p_objp);	// remove from arrival list
+
+	return true;
 }
 
 // Goober5000
@@ -7372,9 +7385,7 @@ int parse_object_on_arrival_list(p_object *pobjp)
  */
 void mission_eval_arrivals()
 {
-	int i;
 	int rship = -1;
-	wing *wingp;
 
 	// before checking arrivals, check to see if we should play a message concerning arrivals
 	// of other wings.  We use the timestamps to delay the arrival message slightly for
@@ -7384,9 +7395,9 @@ void mission_eval_arrivals()
 		int use_terran_cmd;
 
 		// use terran command 25% of time
-		use_terran_cmd = ((frand() - 0.75) > 0.0f)?1:0;
+		use_terran_cmd = ((frand() - 0.75) > 0.0f) ? 1 : 0;
 
-		rship = ship_get_random_player_wing_ship( SHIP_GET_UNSILENCED );
+		rship = ship_get_random_player_wing_ship(SHIP_GET_UNSILENCED);
 		if ((rship < 0) || use_terran_cmd)
 			message_send_builtin_to_player(MESSAGE_ARRIVE_ENEMY, NULL, MESSAGE_PRIORITY_LOW, MESSAGE_TIME_SOON, 0, 0, -1, -1);
 		else if (rship >= 0)
@@ -7400,7 +7411,7 @@ void mission_eval_arrivals()
 	// remove a bunch of objects and completely screw up the list linkage
 	for (SCP_vector<p_object>::iterator ii = Parse_objects.begin(); ii != Parse_objects.end(); ++ii)
 	{
-		p_object *pobjp = &(*ii);
+		p_object* pobjp = &(*ii);
 
 		// make sure we're on the arrival list
 		if (!parse_object_on_arrival_list(pobjp))
@@ -7424,123 +7435,142 @@ void mission_eval_arrivals()
 	// we must also check to see if there are waves of a wing that must
 	// reappear if all the ships of the current wing have been destroyed or
 	// have departed. If this is the case, then create the next wave.
-	for (i = 0; i < Num_wings; i++)
+	for (int i = 0; i < Num_wings; i++)
 	{
-		wingp = &Wings[i];
+		// make it arrive
+		mission_maybe_make_wing_arrive(i);
+	}
+}
 
-		// should we process this wing anymore
-		if (wingp->flags[Ship::Wing_Flags::Gone])
-			continue;
+bool mission_maybe_make_wing_arrive(int wingnum, bool force_arrival)
+{
+	int rship = -1;
+	auto wingp = &Wings[wingnum];
 
-		// if we have a reinforcement wing, then don't try to create new ships automatically.
-		if (wingp->flags[Ship::Wing_Flags::Reinforcement])
-		{
-			// check to see in the wings arrival cue is true, and if so, then mark the reinforcement
-			// as available
-			if (eval_sexp(wingp->arrival_cue))
-				mission_parse_mark_reinforcement_available(wingp->name);
+	// should we process this wing anymore
+	if (wingp->flags[Ship::Wing_Flags::Gone])
+		return false;
 
-			// reinforcement wings skip the rest of the loop
-			continue;
-		}
-		
-		// don't do evaluations for departing wings
-		if (wingp->flags[Ship::Wing_Flags::Departing])
-			continue;
+	// if we have a reinforcement wing, then don't try to create new ships automatically.
+	if (wingp->flags[Ship::Wing_Flags::Reinforcement])
+	{
+		// check to see in the wings arrival cue is true, and if so, then mark the reinforcement
+		// as available
+		if (force_arrival || eval_sexp(wingp->arrival_cue))
+			mission_parse_mark_reinforcement_available(wingp->name);
 
-		// must check to see if we are at the last wave.  Code above to determine when a wing is gone only
-		// gets run when a ship is destroyed (not every N seconds like it used to).  Do a quick check here.
-		if (wingp->current_wave == wingp->num_waves)
-			continue;
-
-		// If the current wave of this wing is 0, then we haven't created the ships in the wing yet.
-		// If the threshold of the wing has been reached, then we need to create more ships.
-		if ((wingp->current_wave == 0) || (wingp->current_count <= wingp->threshold))
-		{
-			// Call parse_wing_create_ships to try and create it.  That function will eval the arrival
-			// cue of the wing and create the ships if necessary.
-			int created = parse_wing_create_ships(wingp, wingp->wave_count);
-
-			// if we didn't create any ships, nothing more to do for this wing
-			if (created <= 0)
-				continue;
-
-			// If this wing was a reinforcement wing, then we need to reset the reinforcement flag for the wing
-			// so the user can call in another set if need be.
-			if (wingp->flags[Ship::Wing_Flags::Reset_reinforcement])
-			{
-                wingp->flags.remove(Ship::Wing_Flags::Reset_reinforcement);
-                wingp->flags.set(Ship::Wing_Flags::Reinforcement);
-			}
-
-			// probably send a message to the player when this wing arrives.
-			// if no message, nothing more to do for this wing
-			if (wingp->flags[Ship::Wing_Flags::No_arrival_message])
-				continue;
-
-			// multiplayer team vs. team
-			if(MULTI_TEAM)
-			{
-				// send a hostile wing arrived message
-				rship = wingp->ship_index[wingp->special_ship];
-
-				int multi_team_filter = Ships[rship].team;
-
-				// there are two timestamps at work here.  One to control how often the player receives
-				// messages about incoming hostile waves, and the other to control how long after
-				// the wing arrives does the player actually get the message.
-				if (timestamp_elapsed(Allow_arrival_message_timestamp_m[multi_team_filter]))
-				{
-					if (!timestamp_valid(Arrival_message_delay_timestamp_m[multi_team_filter]))
-					{
-						Arrival_message_delay_timestamp_m[multi_team_filter] = timestamp_rand(ARRIVAL_MESSAGE_DELAY_MIN, ARRIVAL_MESSAGE_DELAY_MAX);
-					}
-					Allow_arrival_message_timestamp_m[multi_team_filter] = timestamp(ARRIVAL_MESSAGE_MIN_SEPARATION);
-						
-					// send to the proper team
-					message_send_builtin_to_player(MESSAGE_ARRIVE_ENEMY, NULL, MESSAGE_PRIORITY_LOW, MESSAGE_TIME_SOON, 0, 0, -1, multi_team_filter);
+		// if we're forcing the arrival, then "use" the reinforcement; otherwise don't process anything else
+		if (force_arrival && wingp->current_count == 0) {
+			for (int i = 0; i < Num_reinforcements; i++) {
+				auto rp = &Reinforcements[i];
+				if (!stricmp(rp->name, wingp->name)) {
+					rp->num_uses++;
+					break;
 				}
 			}
-			// does the player attack this ship?
-			else if (iff_x_attacks_y(Player_ship->team, Ships[wingp->ship_index[0]].team))
-			{
-				// there are two timestamps at work here.  One to control how often the player receives
-				// messages about incoming hostile waves, and the other to control how long after
-				// the wing arrives does the player actually get the message.
-				if (timestamp_elapsed(Allow_arrival_message_timestamp))
-				{
-					if (!timestamp_valid(Arrival_message_delay_timestamp))
-					{
-						Arrival_message_delay_timestamp = timestamp_rand(ARRIVAL_MESSAGE_DELAY_MIN, ARRIVAL_MESSAGE_DELAY_MAX);
-					}
-					Allow_arrival_message_timestamp = timestamp(ARRIVAL_MESSAGE_MIN_SEPARATION);
-				}
-			}
-			// everything else
-			else
-			{
-				rship = ship_get_random_ship_in_wing(i, SHIP_GET_UNSILENCED);
-				if (rship >= 0)
-				{
-					int j;
-					SCP_string message_name;
-					sprintf(message_name, "%s Arrived", wingp->name);
-
-					// see if this wing has an arrival message associated with it
-					for (j = 0; j < MAX_BUILTIN_MESSAGE_TYPES; j++)
-					{
-						if (!stricmp(message_name.c_str(), Builtin_messages[j].name))
-						{
-							message_send_builtin_to_player(j, &Ships[rship], MESSAGE_PRIORITY_LOW, MESSAGE_TIME_SOON, 0, 0, -1, -1);
-							break;
-						}
-					}
-				}
-			}
+		} else {
+			// reinforcement wings skip the rest of the function
+			return false;
 		}
 	}
+		
+	// don't do evaluations for departing wings
+	if (wingp->flags[Ship::Wing_Flags::Departing])
+		return false;
 
-	Mission_arrival_timestamp = timestamp(ARRIVAL_TIMESTAMP);
+	// must check to see if we are at the last wave.  Code above to determine when a wing is gone only
+	// gets run when a ship is destroyed (not every N seconds like it used to).  Do a quick check here.
+	if (wingp->current_wave == wingp->num_waves)
+		return false;
+
+	// If the current wave of this wing is 0, then we haven't created the ships in the wing yet.
+	// If the threshold of the wing has been reached, then we need to create more ships.
+	if ((wingp->current_wave == 0) || (wingp->current_count <= wingp->threshold))
+	{
+		// Call parse_wing_create_ships to try and create it.  That function will eval the arrival
+		// cue of the wing and create the ships if necessary.
+		int created = parse_wing_create_ships(wingp, wingp->wave_count, false, force_arrival);
+
+		// if we didn't create any ships, nothing more to do for this wing
+		if (created <= 0)
+			return false;
+
+		// If this wing was a reinforcement wing, then we need to reset the reinforcement flag for the wing
+		// so the user can call in another set if need be.
+		if (wingp->flags[Ship::Wing_Flags::Reset_reinforcement])
+		{
+            wingp->flags.remove(Ship::Wing_Flags::Reset_reinforcement);
+            wingp->flags.set(Ship::Wing_Flags::Reinforcement);
+		}
+
+		// probably send a message to the player when this wing arrives.
+		// if no message, nothing more to do for this wing
+		if (wingp->flags[Ship::Wing_Flags::No_arrival_message])
+			return true;
+
+		// multiplayer team vs. team
+		if(MULTI_TEAM)
+		{
+			// send a hostile wing arrived message
+			rship = wingp->ship_index[wingp->special_ship];
+
+			int multi_team_filter = Ships[rship].team;
+
+			// there are two timestamps at work here.  One to control how often the player receives
+			// messages about incoming hostile waves, and the other to control how long after
+			// the wing arrives does the player actually get the message.
+			if (timestamp_elapsed(Allow_arrival_message_timestamp_m[multi_team_filter]))
+			{
+				if (!timestamp_valid(Arrival_message_delay_timestamp_m[multi_team_filter]))
+				{
+					Arrival_message_delay_timestamp_m[multi_team_filter] = timestamp_rand(ARRIVAL_MESSAGE_DELAY_MIN, ARRIVAL_MESSAGE_DELAY_MAX);
+				}
+				Allow_arrival_message_timestamp_m[multi_team_filter] = timestamp(ARRIVAL_MESSAGE_MIN_SEPARATION);
+						
+				// send to the proper team
+				message_send_builtin_to_player(MESSAGE_ARRIVE_ENEMY, NULL, MESSAGE_PRIORITY_LOW, MESSAGE_TIME_SOON, 0, 0, -1, multi_team_filter);
+			}
+		}
+		// does the player attack this ship?
+		else if (iff_x_attacks_y(Player_ship->team, Ships[wingp->ship_index[0]].team))
+		{
+			// there are two timestamps at work here.  One to control how often the player receives
+			// messages about incoming hostile waves, and the other to control how long after
+			// the wing arrives does the player actually get the message.
+			if (timestamp_elapsed(Allow_arrival_message_timestamp))
+			{
+				if (!timestamp_valid(Arrival_message_delay_timestamp))
+				{
+					Arrival_message_delay_timestamp = timestamp_rand(ARRIVAL_MESSAGE_DELAY_MIN, ARRIVAL_MESSAGE_DELAY_MAX);
+				}
+				Allow_arrival_message_timestamp = timestamp(ARRIVAL_MESSAGE_MIN_SEPARATION);
+			}
+		}
+		// everything else
+		else
+		{
+			rship = ship_get_random_ship_in_wing(wingnum, SHIP_GET_UNSILENCED);
+			if (rship >= 0)
+			{
+				SCP_string message_name;
+				sprintf(message_name, "%s Arrived", wingp->name);
+
+				// see if this wing has an arrival message associated with it
+				for (int j = 0; j < MAX_BUILTIN_MESSAGE_TYPES; j++)
+				{
+					if (!stricmp(message_name.c_str(), Builtin_messages[j].name))
+					{
+						message_send_builtin_to_player(j, &Ships[rship], MESSAGE_PRIORITY_LOW, MESSAGE_TIME_SOON, 0, 0, -1, -1);
+						break;
+					}
+				}
+			}
+		}
+
+		return true;
+	}
+
+	return false;
 }
 
 
@@ -7763,7 +7793,6 @@ void mission_eval_departures()
 			}
 		}
 	}
-	Mission_departure_timestamp = timestamp(DEPARTURE_TIMESTAMP);
 }
 
 /**
@@ -7890,14 +7919,14 @@ int get_parse_name_index(const char *name)
 {
 	int i;
 
-	for (i=0; i<Num_parse_names; i++)
+	for (i=0; i<(int)Num_parse_names; i++)
 		if (!stricmp(name, Parse_names[i]))
 			return i;
 
 	Assert(i < MAX_SHIPS + MAX_WINGS);
 	Assert(strlen(name) < NAME_LENGTH);
 	strcpy_s(Parse_names[i], name);
-	return Num_parse_names++;
+	return (int)Num_parse_names++;
 }
 
 // Goober5000
@@ -8084,7 +8113,7 @@ void mission_bring_in_support_ship( object *requester_objp )
 	vec3d center, warp_in_pos;
 	p_object *pobj;
 	ship *requester_shipp;
-	int i, requester_species;
+	int i;
 
 	Assert ( requester_objp->type == OBJ_SHIP );
 	requester_shipp = &Ships[requester_objp->instance];	//	MK, 10/23/97, used to be ->type, bogus, no?
@@ -8093,6 +8122,17 @@ void mission_bring_in_support_ship( object *requester_objp )
 	if ( Arriving_support_ship ) {
 		mission_add_to_arriving_support( requester_objp );
 		return;
+	}
+
+	// If the support ship class was set via SEXP, use it. Otherwise, look it up by the requester's species.
+	int ship_class = The_mission.support_ships.ship_class;
+	if (ship_class < 0) {
+		int requester_species = Ship_info[requester_shipp->ship_info_index].species;
+		ship_class = Species_info[requester_species].support_ship_index;
+		if ( ship_class < 0 ) {
+			Warning(LOCATION, "Couldn't determine the support ship class to bring in\n");
+			return;
+		}
 	}
 	
 	// create a parse object, and put it onto the ship arrival list.  This whole thing kind of stinks.
@@ -8103,6 +8143,7 @@ void mission_bring_in_support_ship( object *requester_objp )
 
 	Arriving_support_ship = &Support_ship_pobj;
 	pobj = Arriving_support_ship;
+	pobj->ship_class = ship_class;
 
 	// get average position of all ships
 	obj_get_average_ship_pos( &center );
@@ -8135,33 +8176,6 @@ void mission_bring_in_support_ship( object *requester_objp )
 	} while(1);
 
 	vm_set_identity( &(pobj->orient) );
-
-	// *sigh*.  Gotta get the ship class.  For now, this will amount to finding a ship in the ship_info
-	// array with the same team as the requester of type SIF_SUPPORT.  Might need to be changed, but who knows
-
-	// Goober5000 - who knew of the SCP release? ;) only determine ship class if not set by SEXP
-	pobj->ship_class = The_mission.support_ships.ship_class;
-	if (pobj->ship_class < 0)
-	{
-		requester_species = Ship_info[requester_shipp->ship_info_index].species;
-
-		// 5/6/98 -- MWA  Don't need to do anything for multiplayer.  I think that we always want to use
-		// the species of the caller ship.
-
-		i = -1;
-		// get index of correct species support ship
-		for (auto it = Ship_info.cbegin(); it != Ship_info.cend(); ++it) {
-            if ((it->species == requester_species) && (it->flags[Ship::Info_Flags::Support])) {
-				i = (int)std::distance(Ship_info.cbegin(), it);
-				break;
-			}
-		}
-
-		if ( i != -1 )
-			pobj->ship_class = i;
-		else
-			Int3();				// BOGUS!!!!  gotta figure something out here
-	}
 
 	// set support ship hitpoints
 	pobj->ship_max_hull_strength = Ship_info[i].max_hull_strength;

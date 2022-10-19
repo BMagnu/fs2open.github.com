@@ -12,6 +12,7 @@
 #include "executor/GameStateExecutionContext.h"
 #include "executor/global_executors.h"
 #include "gamesequence/gamesequence.h"
+#include "gamesnd/eventmusic.h"
 #include "hud/hudescort.h"
 #include "hud/hudmessage.h"
 #include "iff_defs/iff_defs.h"
@@ -21,6 +22,7 @@
 #include "mission/missionlog.h"
 #include "mission/missionmessage.h"
 #include "mission/missiontraining.h"
+#include "missionui/missionbrief.h"
 #include "missionui/missioncmdbrief.h"
 #include "missionui/redalert.h"
 #include "nebula/neb.h"
@@ -31,6 +33,7 @@
 #include "parse/sexp/LuaSEXP.h"
 #include "parse/sexp/LuaAISEXP.h"
 #include "parse/sexp/sexp_lookup.h"
+#include "playerman/player.h"
 #include "scripting/api/LuaPromise.h"
 #include "scripting/api/objs/LuaSEXP.h"
 #include "scripting/api/objs/luaaisexp.h"
@@ -47,6 +50,7 @@
 #include "scripting/api/objs/parse_object.h"
 #include "scripting/api/objs/promise.h"
 #include "scripting/api/objs/sexpvar.h"
+#include "scripting/api/objs/ship_registry_entry.h"
 #include "scripting/api/objs/ship.h"
 #include "scripting/api/objs/shipclass.h"
 #include "scripting/api/objs/sound.h"
@@ -68,6 +72,12 @@
 #include <utility>
 
 extern bool Ships_inited;
+
+extern bool Game_shudder_perpetual;
+extern bool Game_shudder_everywhere;
+extern TIMESTAMP Game_shudder_time;
+extern int Game_shudder_total;
+extern float Game_shudder_intensity;
 
 namespace scripting {
 namespace api {
@@ -328,6 +338,35 @@ ADE_FUNC(__len, l_Mission_SEXPVariables, NULL, "Current number of SEXP variables
 	return ade_set_args(L, "i", sexp_variable_count());
 }
 
+//****SUBLIBRARY: Mission/ShipRegistry
+ADE_LIB_DERIV(l_Mission_ShipRegistry, "ShipRegistry", nullptr, "The mission's ship registry: all ships parsed, created, or exited that the mission knows about", l_Mission);
+
+ADE_INDEXER(l_Mission_ShipRegistry, "number/string IndexOrName", "Gets ship registry entry", "ship_registry_entry", "Ship registry entry handle, or invalid handle if index was invalid")
+{
+	const char* name;
+	if(!ade_get_args(L, "*s", &name))
+		return ade_set_error(L, "o", l_ShipRegistryEntry.Set(-1));
+
+	int idx = ship_registry_get_index(name);
+	if (idx < 0)
+	{
+		idx = atoi(name);	// will return 0 if not parseable
+
+		//Lua-->FS2
+		idx--;
+	}
+
+	return ade_set_args(L, "o", l_ShipRegistryEntry.Set(idx));
+}
+
+ADE_FUNC(__len, l_Mission_ShipRegistry, nullptr,
+		 "Number of ship registry entries in the mission.  The value returned is generally stable but will change if a ship is created using ship-create or if additional wing waves arrive.",
+		 "number",
+		 "Number of ship registry entries in the mission")
+{
+	return ade_set_args(L, "i", (int)Ship_registry.size());
+}
+
 //****SUBLIBRARY: Mission/Ships
 ADE_LIB_DERIV(l_Mission_Ships, "Ships", NULL, "Ships in the mission", l_Mission);
 
@@ -378,6 +417,46 @@ ADE_FUNC(__len, l_Mission_Ships, NULL,
 		return ade_set_args(L, "i", ship_get_num_ships());
 	else
 		return ade_set_args(L, "i", 0);
+}
+
+//****SUBLIBRARY: Mission/ParsedShips
+ADE_LIB_DERIV(l_Mission_ParsedShips, "ParsedShips", nullptr, "Parsed ships (aka parse objects) in the mission", l_Mission);
+
+ADE_INDEXER(l_Mission_ParsedShips, "number/string IndexOrName", "Gets parsed ship", "parse_object", "Parsed ship handle, or invalid handle if index was invalid")
+{
+	const char *name;
+	if (!ade_get_args(L, "*s", &name))
+		return ade_set_error(L, "o", l_ParseObject.Set(parse_object_h(nullptr)));
+
+	auto pobjp = mission_parse_get_parse_object(name);
+
+	if (pobjp)
+	{
+		return ade_set_args(L, "o", l_ParseObject.Set(parse_object_h(pobjp)));
+	}
+	else
+	{
+		auto idx = atoi(name);
+		if (idx > 0)
+		{
+			idx--;	// Lua -> C++
+
+			if (idx < static_cast<int>(Parse_objects.size()))
+			{
+				return ade_set_args(L, "o", l_ParseObject.Set(parse_object_h(&Parse_objects[idx])));
+			}
+		}
+	}
+
+	return ade_set_error(L, "o", l_ParseObject.Set(parse_object_h(nullptr)));
+}
+
+ADE_FUNC(__len, l_Mission_ParsedShips, NULL,
+		 "Number of parsed ships in the mission. This function is quick and the value returned can be relied on to be stable for the entire mission.",
+		 "number",
+		 "Number of parsed ships in the most recently loaded mission, or 0 if no mission has been parsed yet")
+{
+	return ade_set_args(L, "i", static_cast<int>(Parse_objects.size()));
 }
 
 //****SUBLIBRARY: Mission/Waypoints
@@ -1180,7 +1259,7 @@ ADE_FUNC(startMission,
 		// if mission is not running
 	} else {
 		// due safety checks of the game_start_mission() function allow only main menu for now.
-		if (gameseq_get_state(gameseq_get_depth()) == GS_STATE_MAIN_MENU) {
+		if ((gameseq_get_state(gameseq_get_depth()) == GS_STATE_MAIN_MENU) || (gameseq_get_state(gameseq_get_depth()) == GS_STATE_SIMULATOR_ROOM)) {
 			strcpy_s(Game_current_mission_filename, name_copy);
 			if (b == true) {
 				// start mission - go via briefing screen
@@ -1195,11 +1274,8 @@ ADE_FUNC(startMission,
 	return ade_set_args(L, "b", false);
 }
 
-ADE_FUNC(getMissionTime, l_Mission, NULL, "Game time in seconds since the mission was started; is affected by time compression", "number", "Mission time (seconds), or 0 if game is not in a mission")
+ADE_FUNC(getMissionTime, l_Mission, nullptr, "Game time in seconds since the mission was started; is affected by time compression", "number", "Mission time (seconds) of the current or most recently played mission.")
 {
-	if(!(Game_mode & GM_IN_MISSION))
-		return ade_set_error(L, "f", 0.0f);
-
 	return ade_set_args(L, "x", Missiontime);
 }
 
@@ -1229,7 +1305,7 @@ ADE_FUNC(loadMission, l_Mission, "string missionName", "Loads a mission", "boole
 
 ADE_FUNC(unloadMission, l_Mission, NULL, "Stops the current mission and unloads it", NULL, NULL)
 {
-	(void)L; // unused parameter
+	SCP_UNUSED(L); // unused parameter
 
 	if(Game_mode & GM_IN_MISSION)
 	{
@@ -1258,25 +1334,112 @@ ADE_FUNC(renderFrame, l_Mission, NULL, "Renders mission frame, but does not move
 	return ADE_RETURN_TRUE;
 }
 
-ADE_FUNC(applyShudder, l_Mission, "number time, number intesity", "Applies a shudder effects to the camera. Time is in seconds. Intensity specifies the shudder effect strength, the Maxim has a value of 1440.", "boolean", "true if successfull, false otherwise")
+ADE_FUNC(applyShudder, l_Mission, "number time, number intensity, [boolean perpetual, boolean everywhere]", "Applies a shudder effect to the camera. Time is in seconds. Intensity specifies the shudder effect strength; the Maxim has a value of 1440. If perpetual is true, the shudder does not decay. If everywhere is true, the shudder is applied regardless of view.", "boolean", "true if successful, false otherwise")
 {
 	float time = -1.0f;
 	float intensity = -1.0f;
+	bool perpetual = false;
+	bool everywhere = false;
 
-	if (!ade_get_args(L, "ff", &time, &intensity))
+	if (!ade_get_args(L, "ff|bb", &time, &intensity, &perpetual, &everywhere))
 		return ADE_RETURN_FALSE;
 
 	if (time < 0.0f || intensity < 0.0f)
 	{
-		LuaError(L, "Illegal shudder values given. Must be bigger than zero, got time of %f and intensity of %f.", time, intensity);
+		LuaError(L, "Illegal shudder values given. Must be bigger than zero; got time of %f and intensity of %f.", time, intensity);
 		return ADE_RETURN_FALSE;
 	}
 
 	int int_time = fl2i(time * 1000.0f);
 
-	game_shudder_apply(int_time, intensity * 0.01f);
+	game_shudder_apply(int_time, intensity * 0.01f, perpetual, everywhere);
 
 	return ADE_RETURN_TRUE;
+}
+
+ADE_VIRTVAR(ShudderPerpetual, l_Mission, "boolean", "Gets or sets whether the shudder is perpetual, i.e. with a constant intensity that does not decay.", "boolean", "the shudder perpetual flag")
+{
+	bool perpetual = Game_shudder_perpetual;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*b", &perpetual))
+	{
+		Game_shudder_perpetual = perpetual;
+	}
+
+	return ade_set_args(L, "b", perpetual);
+}
+
+ADE_VIRTVAR(ShudderEverywhere, l_Mission, "boolean", "Gets or sets whether the shudder is applied everywhere regardless of camera view.", "boolean", "the shudder everywhere flag")
+{
+	bool everywhere = Game_shudder_everywhere;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*b", &everywhere))
+	{
+		Game_shudder_everywhere = everywhere;
+	}
+
+	return ade_set_args(L, "b", everywhere);
+}
+
+ADE_VIRTVAR(ShudderTimeLeft, l_Mission, "number", "Gets or sets the number of seconds until the shudder stops.  This is independent of the decay time.", "number", "the shudder time left variable")
+{
+	float time_left = Game_shudder_time.isValid()
+		? timestamp_until(Game_shudder_time) / static_cast<float>(MILLISECONDS_PER_SECOND)
+		: 0.0f;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*f", &time_left))
+	{
+		if (time_left < 0.0f)
+		{
+			LuaError(L, "Illegal shudder time left.  Must be bigger than zero; got %f.", time_left);
+			time_left = 0.0f;
+		}
+
+		Game_shudder_time = _timestamp(static_cast<int>(time_left * MILLISECONDS_PER_SECOND));
+	}
+
+	return ade_set_args(L, "f", time_left);
+}
+
+ADE_VIRTVAR(ShudderDecayTime, l_Mission, "number", "Gets or sets the shudder decay time in seconds.  This can be zero in which case the shudder will not decay.", "number", "the shudder decay time variable")
+{
+	float total = Game_shudder_total / static_cast<float>(MILLISECONDS_PER_SECOND);
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*f", &total))
+	{
+		if (total < 0.0f)
+		{
+			LuaError(L, "Illegal shudder decay time.  Must be bigger than zero; got %f.", total);
+			total = 0.0f;
+		}
+
+		Game_shudder_total = static_cast<int>(total * MILLISECONDS_PER_SECOND);
+	}
+
+	return ade_set_args(L, "f", total);
+}
+
+ADE_VIRTVAR(ShudderIntensity, l_Mission, "number", "Gets or sets the shudder intensity variable.  For comparison, the Maxim has a value of 1440.", "number", "the shudder intensity variable")
+{
+	float intensity = Game_shudder_intensity * 100.0f;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*f", &intensity))
+	{
+		if (intensity < 0.0f)
+		{
+			LuaError(L, "Illegal shudder intensity.  Must be bigger than zero; got %f.", intensity);
+			intensity = 0.0f;
+		}
+
+		Game_shudder_intensity = intensity * 0.01f;
+	}
+
+	return ade_set_args(L, "f", intensity);
+}
+
+ADE_FUNC(isInMission, l_Mission, nullptr, "get whether or not a mission is currently being played", "boolean", "true if in mission, false otherwise")
+{
+	return ade_set_args(L, "b", (Game_mode & GM_IN_MISSION) != 0);
 }
 
 ADE_FUNC(isInCampaign, l_Mission, NULL, "Get whether or not the current mission being played in a campaign (as opposed to the tech room's simulator)", "boolean", "true if in campaign, false if not")
@@ -1288,6 +1451,31 @@ ADE_FUNC(isInCampaign, l_Mission, NULL, "Get whether or not the current mission 
 	}
 
 	return ade_set_args(L, "b", b);
+}
+
+ADE_FUNC(isInCampaignLoop, l_Mission, nullptr, "Get whether or not the current mission being played is a loop mission in the context of a campaign", "boolean", "true if in loop and campaign, false if not")
+{
+	return ade_set_args(L, "b", (Campaign.loop_enabled) && (Game_mode & GM_CAMPAIGN_MODE));
+}
+
+ADE_FUNC(isTraining, l_Mission, nullptr, "Get whether or not the current mission being played is a training mission", "boolean", "true if in training, false if not")
+{
+	return ade_set_args(L, "b", (The_mission.game_type & MISSION_TYPE_TRAINING) != 0);
+}
+
+ADE_FUNC(isScramble, l_Mission, nullptr, "Get whether or not the current mission being played is a scramble mission", "boolean", "true if scramble, false if not")
+{
+	return ade_set_args(L, "b", (brief_only_allow_briefing() == 1));
+}
+
+ADE_FUNC(isMissionSkipAllowed, l_Mission, nullptr, "Get whether or not the player has reached the failure limit", "boolean", "true if limit reached, false if not")
+{
+	return ade_set_args(L, "b", (Player->failures_this_session >= PLAYER_MISSION_FAILURE_LIMIT));
+}
+
+ADE_FUNC(hasNoBriefing, l_Mission, nullptr, "Get whether or not the mission is set to skip the briefing", "boolean", "true if it should be skipped, false if not")
+{
+	return ade_set_args(L, "b", (The_mission.flags[Mission::Mission_Flags::No_briefing]));
 }
 
 ADE_FUNC(isNebula, l_Mission, nullptr, "Get whether or not the current mission being played is set in a nebula", "boolean", "true if in nebula, false if not")
@@ -1312,6 +1500,10 @@ ADE_FUNC(isSubspace, l_Mission, nullptr, "Get whether or not the current mission
 
 ADE_FUNC(getMissionTitle, l_Mission, NULL, "Get the title of the current mission", "string", "The mission title or an empty string if currently not in mission") {
 	return ade_set_args(L, "s", The_mission.name);
+}
+
+ADE_FUNC(getMissionModifiedDate, l_Mission, NULL, "Get the modified date of the current mission", "string", "The mission modified date or an empty string if currently not in mission") {
+	return ade_set_args(L, "s", The_mission.modified);
 }
 
 static int addBackgroundBitmap_sub(bool uses_correct_angles, lua_State* L)
@@ -1511,6 +1703,67 @@ ADE_FUNC(hasCommandBriefing,
 	"true if command briefing, false otherwise.")
 {
 	return ade_set_args(L, "b", mission_has_cmd_brief() != 0);
+}
+
+ADE_FUNC(hasGoalsStage,
+	l_Mission,
+	nullptr,
+	"Determines if the current mission will show a Goals briefing stage",
+	"boolean",
+	"true if stage is active, false otherwise.")
+{
+	bool goals = The_mission.flags[Mission::Mission_Flags::Toggle_showing_goals] == !!(The_mission.game_type & MISSION_TYPE_TRAINING);
+	
+	return ade_set_args(L, "b", goals);
+}
+
+ADE_FUNC(hasDebriefing,
+	l_Mission,
+	nullptr,
+	"Determines if the current mission has a debriefing",
+	"boolean",
+	"true if debriefing, false otherwise.")
+{
+	return ade_set_args(L, "b", !(The_mission.flags[Mission::Mission_Flags::Toggle_debriefing]));
+}
+
+ADE_FUNC(getMusicScore, l_Mission, "enumeration score", "Returns the music.tbl entry name for the specified mission music score", "string", "The name, or nil if the score is invalid")
+{
+	enum_h score;
+	if (!ade_get_args(L, "o", l_Enum.Get(&score)))
+		return ADE_RETURN_NIL;
+
+	if (!score.IsValid() || score.index < LE_SCORE_BRIEFING || score.index > LE_SCORE_FICTION_VIEWER)
+	{
+		Warning(LOCATION, "Invalid music score index %d", score.index);
+		return ADE_RETURN_NIL;
+	}
+
+	int spooled_index = Mission_music[score.index - LE_SCORE_BRIEFING];
+
+	const char *name = nullptr;
+	if (spooled_index >= 0 && (size_t)spooled_index < Spooled_music.size())
+		name = Spooled_music[spooled_index].name;
+
+	return ade_set_args(L, "s", name);
+}
+
+ADE_FUNC(setMusicScore, l_Mission, "enumeration score, string name", "Sets the music.tbl entry for the specified mission music score", nullptr, nullptr)
+{
+	enum_h score;
+	const char *name;
+	if (!ade_get_args(L, "os", l_Enum.Get(&score), &name))
+		return ADE_RETURN_NIL;
+
+	if (!score.IsValid() || score.index < LE_SCORE_BRIEFING || score.index > LE_SCORE_FICTION_VIEWER)
+	{
+		Warning(LOCATION, "Invalid music score index %d", score.index);
+		return ADE_RETURN_NIL;
+	}
+
+	event_music_set_score(score.index - LE_SCORE_BRIEFING, name);
+
+	return ADE_RETURN_TRUE;
 }
 
 int testLineOfSight_internal(lua_State* L, bool returnDist_and_Obj) {

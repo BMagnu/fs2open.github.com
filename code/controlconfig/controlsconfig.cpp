@@ -174,7 +174,7 @@ int Control_check_count = 0;
 
 static int Tab;  // which tab we are currently in
 static int Binding_mode = 0;  // are we waiting for a key to bind it?
-static int Bind_time = 0;
+static UI_TIMESTAMP Bind_time = UI_TIMESTAMP::invalid();
 static int Search_mode = 0;  // are we waiting for a key to bind it?
 static int Last_key = -1;
 static int Selected_line = 0;  // line that is currently selected for binding
@@ -1173,7 +1173,7 @@ void control_config_do_bind()
 	control_config_detect_axis_reset();
 
 	Binding_mode = 1;
-	Bind_time = timer_get_milliseconds();
+	Bind_time = ui_timestamp();
 	Search_mode = 0;
 	Last_key = -1;
 	Axis_override.clear();
@@ -1970,7 +1970,7 @@ void control_config_do_frame(float frametime)
 			}
 
 			// Debounce timer to allow mouse double-click (maybe?)
-			if (!done && (Bind_time + 375 < timer_get_milliseconds())) {
+			if (!done && (ui_timestamp_since(Bind_time) > 375)) {
 				for (i=0; i<NUM_BUTTONS; i++){
 					if ( (CC_Buttons[gr_screen.res][i].button.is_mouse_on()) && (CC_Buttons[gr_screen.res][i].button.enabled()) ){
 						break;
@@ -2794,7 +2794,7 @@ void control_get_axes_readings(int *axis_v, float frame_time)
 
 			switch (item.type) {
 			case CC_TYPE_AXIS_ABS:
-				axis_v[action] = item.used;
+				axis_v[action] = item.analog_value;
 				break;
 			case CC_TYPE_AXIS_REL:
 				axis_v[action] = 0;
@@ -2803,12 +2803,13 @@ void control_get_axes_readings(int *axis_v, float frame_time)
 			case CC_TYPE_AXIS_BTN_POS:
 			default:
 				//This should never happen, especially with the above Assertion. This is required as incomplete switches on an enum generate warnings
+				UNREACHABLE("Unhandled control item type");
 				break;
 			}
 		}
 
 		//Store values for possible lua override
-		item.used = axis_v[action];
+		item.analog_value = axis_v[action];
 	}
 }
 
@@ -2821,7 +2822,7 @@ void control_used(int id)
 
 	// This check needs to be done because the control code might call this function more than once per frame,
 	// and we don't want to run the hooks more than once per frame
-	if (Control_config[id].used < Last_frame_timestamp) {
+	if (!Control_config[id].digital_used.isValid() || timestamp_compare(Control_config[id].digital_used, Last_frame_timestamp) < 0) {
 		if (!Control_config[id].continuous_ongoing) {
 			Script_system.SetHookVar("Action", 's', Control_config[id].text);
 			Script_system.RunCondition(CHA_ONACTION, nullptr, nullptr, id);
@@ -2831,14 +2832,16 @@ void control_used(int id)
 				Control_config[id].continuous_ongoing = true;
 		}
 
-		Control_config[id].used = timestamp();
+		Control_config[id].digital_used = Last_frame_timestamp;
 	}
 }
 
 void control_config_clear_used_status()
 {
+	// note: this is only for digital controls like button presses,
+	// so we don't need to clear the analog value
 	for (auto &item : Control_config) {
-		item.used = 0;
+		item.digital_used = TIMESTAMP::invalid();
 	}
 }
 

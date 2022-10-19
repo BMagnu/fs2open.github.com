@@ -14,6 +14,7 @@
 
 #include "globalincs/globals.h"
 #include "globalincs/systemvars.h"
+#include "globalincs/pstypes.h"
 
 #include "actions/Program.h"
 #include "decals/decals.h"
@@ -29,6 +30,8 @@
 #include "weapon/swarm.h"
 #include "weapon/trails.h"
 #include "weapon/weapon_flags.h"
+#include "model/modelrender.h"
+#include "render/3d.h"
 
 class object;
 class ship_subsys;
@@ -617,7 +620,8 @@ public:
 	void reset();
 };
 
-extern flag_def_list_new<Weapon::Info_Flags> Weapon_Info_Flags[];
+extern special_flag_def_list_new<Weapon::Info_Flags, weapon_info*, flagset<Weapon::Info_Flags>&> Weapon_Info_Flags[];
+
 extern const size_t num_weapon_info_flags;
 
 // Data structure to track the active missiles

@@ -206,6 +206,8 @@ enum shader_type {
 
 	SDR_TYPE_ENVMAP_SPHERE_WARP,
 
+	SDR_TYPE_IRRADIANCE_MAP_GEN,
+
 	NUM_SHADER_TYPES
 };
 
@@ -251,7 +253,8 @@ enum class uniform_block_type {
 	DecalGlobals = 4,
 	DeferredGlobals = 5,
 	Matrices = 6,
-	GenericData = 7,
+	MovieData = 7,
+	GenericData = 8,
 
 	NUM_BLOCK_TYPES
 };
@@ -697,6 +700,7 @@ typedef struct screen {
 	int rendering_to_face = 0;    // wich face of the texture we are rendering to, -1 if the back buffer
 
 	int envmap_render_target = 0;
+	int irrmap_render_target = -1; // Irradiance map for diffuse env lighting.
 
 	float line_width = 0.0f;
 
@@ -715,8 +719,14 @@ typedef struct screen {
 	// dumps the current screen to a file
 	std::function<void(const char* filename)> gf_print_screen;
 
+	// dumps the current screen to a html blob string
+	std::function<SCP_string()> gf_blob_screen;
+
 	// transforms and dumps the current environment map to a file
 	std::function<void(const char* filename)> gf_dump_envmap;
+
+	// generate diffuse irradiance cubemap for IBL.
+	std::function<void()> gf_calculate_irrmap;
 
 	// Retrieves the zbuffer mode.
 	std::function<int()> gf_zbuffer_get;
@@ -790,7 +800,7 @@ typedef struct screen {
 	std::function<void()> gf_post_process_save_zbuffer;
 	std::function<void()> gf_post_process_restore_zbuffer;
 
-	std::function<void()> gf_deferred_lighting_begin;
+	std::function<void(bool clearNonColorBufs)> gf_deferred_lighting_begin;
 	std::function<void()> gf_deferred_lighting_end;
 	std::function<void()> gf_deferred_lighting_finish;
 
@@ -1002,6 +1012,7 @@ extern void gr_activate(int active);
 // old Descent-style gr_xxx calls.
 
 #define gr_print_screen		GR_CALL(gr_screen.gf_print_screen)
+#define gr_blob_screen		GR_CALL(gr_screen.gf_blob_screen)
 #define gr_dump_envmap		GR_CALL(gr_screen.gf_dump_envmap)
 
 //#define gr_flip				GR_CALL(gr_screen.gf_flip)

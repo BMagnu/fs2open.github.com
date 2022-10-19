@@ -205,8 +205,8 @@ void outwnd_print(const char *id, const char *tmp)
 		Outwnd_no_filter_file = 2;
 
 		outwnd_print("general", "==========================================================================\n");
-		outwnd_print("general", "DEBUG SPEW: No debug_filter.cfg found, so only general, error, and warning\n");
-		outwnd_print("general", "categories can be shown and no debug_filter.cfg info will be saved.\n");
+		outwnd_print("general", "DEBUG SPEW: No debug_filter.cfg found, so only general, error, warning and\n");
+		outwnd_print("general", "scripting categories can be shown and no debug_filter.cfg info will be saved.\n");
 		outwnd_print("general", "==========================================================================\n");
 	}
 
@@ -222,8 +222,9 @@ void outwnd_print(const char *id, const char *tmp)
 		outwnd_filter_struct new_filter;
 
 		strcpy_s(new_filter.name, id);
-		new_filter.enabled = stricmp(new_filter.name, "general") == 0 || stricmp(new_filter.name, "error") == 0 || stricmp(new_filter.name, "warning") == 0;
-
+		for (const char *name : FILTERS_ENABLED_BY_DEFAULT){
+			new_filter.enabled = new_filter.enabled || stricmp(new_filter.name, name) == 0;
+		}
 		filter_vector().push_back( new_filter );
 		save_filter_info();
 	}

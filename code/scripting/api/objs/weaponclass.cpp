@@ -4,6 +4,9 @@
 #include "weaponclass.h"
 #include "model.h"
 #include "weapon/weapon.h"
+#include "graphics/matrix.h"
+#include "vecmath.h"
+#include "missionui/missionscreencommon.h"
 
 namespace scripting {
 namespace api {
@@ -161,6 +164,40 @@ ADE_VIRTVAR(TechAnimationFilename, l_Weaponclass, "string", "Weapon class animat
 	}
 
 	return ade_set_args(L, "s", Weapon_info[idx].tech_anim_filename);
+}
+
+ADE_VIRTVAR(SelectIconFilename, l_Weaponclass, "string", "Weapon class select icon filename", "string", "Filename, or empty string if handle is invalid")
+{
+	int idx;
+	const char* s = nullptr;
+	if(!ade_get_args(L, "o|s", l_Weaponclass.Get(&idx), &s))
+		return ade_set_error(L, "s", "");
+
+	if(idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "s", "");
+
+	if(ADE_SETTING_VAR) {
+		LuaError(L, "Setting Select Icon is not supported");
+	}
+
+	return ade_set_args(L, "s", Weapon_info[idx].icon_filename);
+}
+
+ADE_VIRTVAR(SelectAnimFilename, l_Weaponclass, "string", "Weapon class select animation filename", "string", "Filename, or empty string if handle is invalid")
+{
+	int idx;
+	const char* s = nullptr;
+	if(!ade_get_args(L, "o|s", l_Weaponclass.Get(&idx), &s))
+		return ade_set_error(L, "s", "");
+
+	if(idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "s", "");
+
+	if(ADE_SETTING_VAR) {
+		LuaError(L, "Setting Select Anim is not supported");
+	}
+
+	return ade_set_args(L, "s", Weapon_info[idx].anim_filename);
 }
 
 ADE_VIRTVAR(TechDescription, l_Weaponclass, "string", "Weapon class tech description string", "string", "Description string, or empty string if handle is invalid")
@@ -399,6 +436,22 @@ ADE_VIRTVAR(Speed, l_Weaponclass, "number", "Weapon max speed, aka $Velocity in 
 	return ade_set_args(L, "f", Weapon_info[idx].max_speed);
 }
 
+ADE_VIRTVAR(EnergyConsumed, l_Weaponclass, nullptr, nullptr, "number", "Energy Consumed, or 0 if handle is invalid")
+{
+	int idx;
+	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "f", 0.0f);
+
+	if(idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "f", 0.0f);
+
+	if(ADE_SETTING_VAR) {
+		LuaError(L, "Setting Energy Consumed is not supported");
+	}
+
+	return ade_set_args(L, "f", Weapon_info[idx].energy_consumed);
+}
+
 
 ADE_VIRTVAR(InnerRadius, l_Weaponclass, "number", "Radius at which the full explosion damage is done. Marks the line where damage attenuation begins. Same as $Inner Radius in weapons.tbl", "number", "Inner Radius, or 0 if handle is invalid")
 {
@@ -552,6 +605,255 @@ ADE_FUNC(isValid, l_Weaponclass, NULL, "Detects whether handle is valid", "boole
 	return ADE_RETURN_TRUE;
 }
 
+ADE_FUNC(renderTechModel,
+	l_Weaponclass,
+	"number X1, number Y1, number X2, number Y2, [number RotationPercent =0, number PitchPercent =0, number "
+	"BankPercent=40, number Zoom=1.3, boolean Lighting=true]",
+	"Draws weapon tech model. True for regular lighting, false for flat lighting.",
+	"boolean",
+	"Whether weapon was rendered")
+{
+	int x1, y1, x2, y2;
+	angles rot_angles = {0.0f, 0.0f, 40.0f};
+	int idx;
+	float zoom = 1.3f;
+	bool lighting = true;
+	if (!ade_get_args(L,
+			"oiiii|ffffb",
+			l_Weaponclass.Get(&idx),
+			&x1,
+			&y1,
+			&x2,
+			&y2,
+			&rot_angles.h,
+			&rot_angles.p,
+			&rot_angles.b,
+			&zoom,
+			&lighting))
+		return ade_set_error(L, "b", false);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_args(L, "b", false);
+
+	if (x2 < x1 || y2 < y1)
+		return ade_set_args(L, "b", false);
+
+	CLAMP(rot_angles.p, 0.0f, 100.0f);
+	CLAMP(rot_angles.b, 0.0f, 100.0f);
+	CLAMP(rot_angles.h, 0.0f, 100.0f);
+
+	weapon_info* wip = &Weapon_info[idx];
+	model_render_params render_info;
+
+	int modelNum;
+	//Load the model if it exists or exit early
+	if (VALID_FNAME(wip->tech_model)) {
+		modelNum = model_load(wip->tech_model, 0, nullptr, 0);
+	} else {
+		return ade_set_args(L, "b", false);
+	}
+
+	if (modelNum < 0)
+		return ade_set_args(L, "b", false);
+
+	// Handle angles
+	matrix orient = vmd_identity_matrix;
+	angles view_angles = {-0.6f, 0.0f, 0.0f};
+	vm_angles_2_matrix(&orient, &view_angles);
+
+	rot_angles.p = (rot_angles.p * 0.01f) * PI2;
+	rot_angles.b = (rot_angles.b * 0.01f) * PI2;
+	rot_angles.h = (rot_angles.h * 0.01f) * PI2;
+	vm_rotate_matrix_by_angles(&orient, &rot_angles);
+
+	// Clip
+	gr_set_clip(x1, y1, x2 - x1, y2 - y1, GR_RESIZE_NONE);
+
+	// Handle 3D init stuff
+	g3_start_frame(1);
+	g3_set_view_matrix(&wip->closeup_pos, &vmd_identity_matrix, wip->closeup_zoom * zoom);
+
+	gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
+	gr_set_view_matrix(&Eye_position, &Eye_matrix);
+
+	// Handle light
+	light_reset();
+	vec3d light_dir = vmd_zero_vector;
+	light_dir.xyz.y = 1.0f;
+	light_add_directional(&light_dir, 0.65f, 1.0f, 1.0f, 1.0f);
+	light_rotate_all();
+
+	// Draw the ship!!
+	model_clear_instance(modelNum);
+	render_info.set_detail_level_lock(0);
+
+	uint render_flags = MR_AUTOCENTER | MR_NO_FOGGING;
+
+	if (!lighting || (wip->wi_flags[Weapon::Info_Flags::Mr_no_lighting]))
+		render_flags |= MR_NO_LIGHTING;
+
+	render_info.set_flags(render_flags);
+
+	model_render_immediate(&render_info, modelNum, &orient, &vmd_zero_vector);
+
+	// OK we're done
+	gr_end_view_matrix();
+	gr_end_proj_matrix();
+
+	// Bye!!
+	g3_end_frame();
+	gr_reset_clip();
+
+	return ade_set_args(L, "b", true);
+}
+
+// Nuke's alternate tech model rendering function
+ADE_FUNC(renderTechModel2,
+	l_Weaponclass,
+	"number X1, number Y1, number X2, number Y2, [orientation Orientation=nil, number Zoom=1.3]",
+	"Draws weapon tech model",
+	"boolean",
+	"Whether weapon was rendered")
+{
+	int x1, y1, x2, y2;
+	int idx;
+	float zoom = 1.3f;
+	matrix_h* mh = nullptr;
+	if (!ade_get_args(L, "oiiiio|f", l_Weaponclass.Get(&idx), &x1, &y1, &x2, &y2, l_Matrix.GetPtr(&mh), &zoom))
+		return ade_set_error(L, "b", false);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_args(L, "b", false);
+
+	if (x2 < x1 || y2 < y1)
+		return ade_set_args(L, "b", false);
+
+	weapon_info* wip = &Weapon_info[idx];
+	model_render_params render_info;
+
+	int modelNum;
+	// Load the model if it exists or exit early
+	if (VALID_FNAME(wip->tech_model)) {
+		modelNum = model_load(wip->tech_model, 0, nullptr, 0);
+	} else {
+		return ade_set_args(L, "b", false);
+	}
+
+	if (modelNum < 0)
+		return ade_set_args(L, "b", false);
+
+	// Handle angles
+	matrix* orient = mh->GetMatrix();
+
+	// Clip
+	gr_set_clip(x1, y1, x2 - x1, y2 - y1, GR_RESIZE_NONE);
+
+	// Handle 3D init stuff
+	g3_start_frame(1);
+	g3_set_view_matrix(&wip->closeup_pos, &vmd_identity_matrix, wip->closeup_zoom * zoom);
+
+	gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
+	gr_set_view_matrix(&Eye_position, &Eye_matrix);
+
+	// Handle light
+	light_reset();
+	vec3d light_dir = vmd_zero_vector;
+	light_dir.xyz.y = 1.0f;
+	light_add_directional(&light_dir, 0.65f, 1.0f, 1.0f, 1.0f);
+	light_rotate_all();
+
+	// Draw the ship!!
+	model_clear_instance(modelNum);
+	render_info.set_detail_level_lock(0);
+
+	uint render_flags = MR_AUTOCENTER | MR_NO_FOGGING;
+
+	if (wip->wi_flags[Weapon::Info_Flags::Mr_no_lighting])
+		render_flags |= MR_NO_LIGHTING;
+
+	render_info.set_flags(render_flags);
+
+	model_render_immediate(&render_info, modelNum, orient, &vmd_zero_vector);
+
+	// OK we're done
+	gr_end_view_matrix();
+	gr_end_proj_matrix();
+
+	// Bye!!
+	g3_end_frame();
+	gr_reset_clip();
+
+	return ade_set_args(L, "b", true);
+}
+
+ADE_FUNC(renderSelectModel,
+	l_Weaponclass,
+	"number x, number y, [number width = 629, number height = 355, number = currentEffectSetting]",
+	"Draws the 3D select weapon model with the chosen effect at the specified coordinates. Restart should "
+	"be true on the first frame this is called and false on subsequent frames. Note that primary weapons "
+	"will not render anything if they do not have a valid pof model defined! Valid selection effects are 1 (fs1) or 2 (fs2), "
+	"defaults to the mod setting or the model's setting.",
+	"boolean",
+	"true if rendered, false if error")
+{
+	int idx;
+	bool restart;
+	int x1;
+	int y1;
+	int x2 = 629;
+	int y2 = 355;
+	int effect = -1;
+	if (!ade_get_args(L, "obii|iii", l_Weaponclass.Get(&idx), &restart, &x1, &y1, &x2, &y2, &effect))
+		return ADE_RETURN_NIL;
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_args(L, "b", false);
+
+	if (effect == 0 || effect > 2) {
+		LuaError(L, "Valid effect values are 1 or 2, got %i", effect);
+		return ade_set_args(L, "b", false);
+	}
+
+	if (restart) {
+		anim_timer_start = timer_get_milliseconds();
+	}
+
+	weapon_info* wip = &Weapon_info[idx];
+
+	if (effect == -1) {
+		effect = wip->selection_effect;
+	}
+
+	int modelNum;
+	if (VALID_FNAME(wip->tech_model)) {
+		modelNum = model_load(wip->tech_model, 0, nullptr, 0);
+	} else if (wip->render_type != WRT_LASER) {
+		modelNum = model_load(wip->pofbitmap_name, 0, nullptr);
+	} else {
+		return ade_set_args(L, "b", false);
+	}
+
+	static float WepRot = 0.0f;
+
+	model_render_params render_info;
+
+	draw_model_rotating(&render_info,
+		modelNum,
+		x1,
+		y1,
+		x2,
+		y2,
+		&WepRot,
+		&wip->closeup_pos,
+		wip->closeup_zoom * 0.65f,
+		REVOLUTION_RATE,
+		MR_IS_MISSILE | MR_AUTOCENTER | MR_NO_FOGGING,
+		GR_RESIZE_NONE,
+		effect);
+
+	return ade_set_args(L, "b", true);
+}
+
 ADE_FUNC(getWeaponClassIndex, l_Weaponclass, NULL, "Gets the index value of the weapon class", "number", "index value of the weapon class")
 {
 	int idx;
@@ -637,6 +939,28 @@ ADE_FUNC(isBeam, l_Weaponclass, NULL, "Return true if the weapon is a beam", "bo
 		return ADE_RETURN_TRUE;
 	else
 		return ADE_RETURN_FALSE;
+}
+
+ADE_FUNC(isWeaponRequired,
+	l_Weaponclass,
+	nullptr,
+	"Checks if a weapon is required for the currently loaded mission",
+	"boolean",
+	"true if required, false if otherwise. Nil if the weapon class is invalid or a mission has not been loaded")
+{
+	int idx = -1;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_NIL;
+
+	//This could be requested before Common_team has been initialized, so let's check.
+	if (Common_select_inited) {
+		return ade_set_args(L, "b", Team_data[Common_team].weapon_required[idx]);
+	} else {
+		return ADE_RETURN_NIL;
+	}
 }
 
 // Checks if a weapon has been paged in (counted as used)

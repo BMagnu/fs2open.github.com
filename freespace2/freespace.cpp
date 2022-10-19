@@ -119,6 +119,7 @@
 #include "missionui/missionweaponchoice.h"
 #include "missionui/redalert.h"
 #include "mod_table/mod_table.h"
+#include "model/modelreplace.h"
 #include "nebula/neb.h"
 #include "nebula/neblightning.h"
 #include "network/multi.h"
@@ -541,7 +542,9 @@ float Sun_spot = 0.0f;
 big_expl_flash Big_expl_flash = {0.0f, 0.0f, 0};
 
 // game shudder stuff (in ms)
-int Game_shudder_time = -1;
+bool Game_shudder_perpetual = false;
+bool Game_shudder_everywhere = false;
+TIMESTAMP Game_shudder_time = TIMESTAMP::invalid();
 int Game_shudder_total = 0;
 float Game_shudder_intensity = 0.0f;			// should be between 0.0 and 100.0
 
@@ -944,7 +947,8 @@ void game_level_close()
 uint load_gl_init;
 uint load_mission_load;
 uint load_post_level_init;
-
+extern bool Cmdline_reuse_rng_seed;
+extern uint Cmdline_rng_seed;
 /**
  * Intializes game stuff.  
  *
@@ -963,6 +967,8 @@ void game_level_init()
 
 		// semirand function needs to get re-initted every time in multiplayer
 		init_semirand();
+	} else if(Cmdline_reuse_rng_seed) {
+		Random::seed( Cmdline_rng_seed );
 	}
 
 	Framecount = 0;
@@ -972,7 +978,7 @@ void game_level_init()
 	Key_normal_game = (Game_mode & GM_NORMAL);
 	Cheats_enabled = 0;
 
-	Game_shudder_time = -1;
+	Game_shudder_time = TIMESTAMP::invalid();
 
 	Perspective_locked = false;
 
@@ -1934,6 +1940,7 @@ void game_init()
 	sexp::dynamic_sexp_init();
 
 	obj_init();	
+	virtual_pof_init();
 	mflash_game_init();	
 	armor_init();
 	ai_init();
@@ -2921,9 +2928,11 @@ void game_whack_apply( float x, float y )
 }
 
 // call to apply a "shudder"
-void game_shudder_apply(int time, float intensity)
+void game_shudder_apply(int time, float intensity, bool perpetual, bool everywhere)
 {
-	Game_shudder_time = timestamp(time);
+	Game_shudder_perpetual = perpetual;
+	Game_shudder_everywhere = everywhere;
+	Game_shudder_time = _timestamp(time);
 	Game_shudder_total = time;
 	Game_shudder_intensity = intensity;
 }
@@ -2934,8 +2943,7 @@ float get_shake(float intensity, int decay_time, int max_decay_time)
 
 	float shake = intensity * (float)(r-Random::HALF_MAX_VALUE) * Random::INV_F_MAX_VALUE;
 	
-	if (decay_time >= 0) {
-		Assert(max_decay_time > 0);
+	if (decay_time >= 0 && max_decay_time > 0) {
 		shake *= (0.5f - fl_abs(0.5f - (float) decay_time / (float) max_decay_time));
 	}
 
@@ -2947,6 +2955,7 @@ extern int Wash_on;
 extern float sn_shudder;
 void apply_view_shake(matrix *eye_orient)
 {
+	bool do_global_shudder = false;
 	angles tangles;
 	tangles.p = 0.0f;
 	tangles.h = 0.0f;
@@ -2975,15 +2984,7 @@ void apply_view_shake(matrix *eye_orient)
 			joy_ff_play_dir_effect(FF_SCALE * wash_intensity * rand_vec.xyz.x, FF_SCALE * wash_intensity * rand_vec.xyz.y);
 		}
 
-		// Make eye shake due to shuddering
-		if (Game_shudder_time != -1) {
-			if (timestamp_elapsed(Game_shudder_time)) {
-				Game_shudder_time = -1;
-			} else {
-				tangles.p += get_shake(Game_shudder_intensity * 0.005f, timestamp_until(Game_shudder_time), Game_shudder_total);
-				tangles.h += get_shake(Game_shudder_intensity * 0.005f, timestamp_until(Game_shudder_time), Game_shudder_total);
-			}
-		}
+		do_global_shudder = true;
 	}
 	// do shakes that affect external cameras
 	else {
@@ -2993,10 +2994,29 @@ void apply_view_shake(matrix *eye_orient)
 			tangles.p += get_shake(0.07f * cut_pct * sn_shudder, -1, 0);
 			tangles.h += get_shake(0.07f * cut_pct * sn_shudder, -1, 0);
 		}
+
+		if (Game_shudder_everywhere) {
+			do_global_shudder = true;
+		}
+	}
+
+	if (do_global_shudder) {	
+		// Make eye shake due to shuddering
+		if (Game_shudder_perpetual) {
+			tangles.p += get_shake(Game_shudder_intensity * 0.005f, -1, 0);
+			tangles.h += get_shake(Game_shudder_intensity * 0.005f, -1, 0);
+		} else if (Game_shudder_time.isValid()) {
+			if (timestamp_elapsed(Game_shudder_time)) {
+				Game_shudder_time = TIMESTAMP::invalid();
+			} else {
+				tangles.p += get_shake(Game_shudder_intensity * 0.005f, timestamp_until(Game_shudder_time), Game_shudder_total);
+				tangles.h += get_shake(Game_shudder_intensity * 0.005f, timestamp_until(Game_shudder_time), Game_shudder_total);
+			}
+		}
 	}
 
 	// maybe bail
-	if (tangles.p == 0.0f && tangles.h == 0.0f && tangles.b == 0.0f)
+	if (fl_near_zero(tangles.p) && fl_near_zero(tangles.h) && fl_near_zero(tangles.b))
 		return;
 
 	matrix	tm, tm2;
@@ -3416,18 +3436,19 @@ void game_render_frame( camid cid )
 	batching_render_all(true);
 
 	Shadow_override = true;
-	//Draw the viewer 'cause we didn't before.
-	//This is so we can change the minimum clipping distance without messing everything up.
-	if (Viewer_obj && (Viewer_obj->type == OBJ_SHIP)
-		&& (Ship_info[Ships[Viewer_obj->instance].ship_info_index].flags[Ship::Info_Flags::Show_ship_model])
-		&& (!Viewer_mode || (Viewer_mode & VM_PADLOCK_ANY) || (Viewer_mode & VM_OTHER_SHIP) || (Viewer_mode & VM_TRACK)
-			|| !(Viewer_mode & VM_EXTERNAL)))
-	{
-		gr_post_process_save_zbuffer();
-		ship_render_show_ship_cockpit(Viewer_obj);
-		gr_post_process_restore_zbuffer();
-	}
 
+	//Draw the viewer 'cause we didn't before.
+	//This is currently seperate to facilitate deferred rendering on different view/proj matrices and with different settings
+	if (Viewer_obj && Viewer_obj->type == OBJ_SHIP && Viewer_obj->instance >= 0) {
+		gr_end_proj_matrix();
+		gr_end_view_matrix();
+
+		GR_DEBUG_SCOPE("Render Cockpit");
+		ship_render_player_ship(Viewer_obj);
+
+		gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
+		gr_set_view_matrix(&Eye_position, &Eye_matrix);
+	}
 
 #ifndef NDEBUG
 	debug_sphere::render();
@@ -3435,22 +3456,6 @@ void game_render_frame( camid cid )
 	extern void snd_spew_debug_info();
 	snd_spew_debug_info();
 #endif
-
-	gr_end_proj_matrix();
-	gr_end_view_matrix();
-
-	//Draw viewer cockpit
-	if(Viewer_obj != nullptr && Viewer_mode != VM_TOPDOWN && Ship_info[Ships[Viewer_obj->instance].ship_info_index].cockpit_model_num > 0)
-	{
-		GR_DEBUG_SCOPE("Render Cockpit");
-
-		gr_post_process_save_zbuffer();
-		ship_render_cockpit(Viewer_obj);
-		gr_post_process_restore_zbuffer();
-	}
-
-	gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
-	gr_set_view_matrix(&Eye_position, &Eye_matrix);
 
 	// Do the sunspot
 	game_sunspot_process(flFrametime);
@@ -4157,7 +4162,8 @@ void game_frame(bool paused)
 
 fix Last_time = 0;						// The absolute time of game at end of last frame (beginning of this frame)
 fix Last_delta_time = 0;				// While game is paused, this keeps track of how much elapsed in the frame before paused.
-int Last_frame_timestamp = 0;
+TIMESTAMP Last_frame_timestamp = TIMESTAMP::invalid();
+UI_TIMESTAMP Last_frame_ui_timestamp = UI_TIMESTAMP::invalid();
 static bool Time_paused = false;
 
 void game_time_level_init()
@@ -4302,16 +4308,6 @@ void game_set_frametime(int state)
 	if (Frametime > MAX_FRAMETIME)	{
 #ifndef NDEBUG
 		mprintf(("Frame %2i too long!!: frametime = %.3f (%.3f)\n", Framecount, f2fl(Frametime), f2fl(debug_frametime)));
-
-		// If the frame took more than 5 seconds, assume we're tracing through a debugger.  If timestamps are running, correct the elapsed time.
-		if (!Cmdline_slow_frames_ok && !timestamp_is_paused() && (Last_frame_timestamp != 0) && (f2fl(Frametime) > 5.0f)) {
-			auto delta_timestamp = timestamp() - Last_frame_timestamp;
-			// could be 0 if we have time compression slowed to a crawl
-			if (delta_timestamp > 0) {
-				mprintf(("Adjusting timestamp by %2i milliseconds to compensate\n", delta_timestamp));
-				timestamp_adjust_pause_offset(delta_timestamp);
-			}
-		}
 #endif
 		Frametime = MAX_FRAMETIME;
 	}
@@ -4345,7 +4341,15 @@ void game_set_frametime(int state)
 	}
 
 	Last_time = thistime;
-	Last_frame_timestamp = timestamp();
+
+	// Unlike Last_frame_ui_timestamp, it's probably ok to leave this here for the following reasons:
+	// 1) Frametime-related values have always been updated in this specific function
+	// 2) The only time this function is not called during a frame is when the game is paused, which is a state
+	//    wherein timestamps don't need to be updated anyway (the internal Timestamp_paused_at_counter variable
+	//    only needs to be set when the pause starts)
+	// 3) The only place Last_frame_timestamp is used is for checking control key or button presses, and in that
+	//    situation there is no check for duration, only whether the timestamp has changed
+	Last_frame_timestamp = _timestamp();
 
 	flFrametime = f2fl(Frametime);
 
@@ -5125,6 +5129,7 @@ void game_leave_state( int old_state, int new_state )
 			if ( (new_state != GS_STATE_VIEW_MEDALS) && (new_state != GS_STATE_OPTIONS_MENU) ) {
 				debrief_close();				
 				fsspeech_stop();
+				common_maybe_play_cutscene(MOVIE_POST_DEBRIEF);
 			}
 			break;
 
@@ -6082,6 +6087,20 @@ void mouse_force_pos(int x, int y);
 // do stuff that may need to be done regardless of state
 void game_do_state_common(int state,int no_networking)
 {
+#ifndef NDEBUG
+	// If the frame took more than 5 seconds, assume we're tracing through a debugger.  If timestamps are running, correct the elapsed time.
+	if (!Cmdline_slow_frames_ok && !timestamp_is_paused() && Last_frame_ui_timestamp.isValid()) {
+		auto delta_timestamp = ui_timestamp_since(Last_frame_ui_timestamp);
+		if (delta_timestamp > 5 * MILLISECONDS_PER_SECOND) {
+			delta_timestamp -= 20;	// suppose last frame was 50 FPS
+			mprintf(("Too much time passed between frames.  Adjusting timestamp by %i milliseconds to compensate\n", delta_timestamp));
+			timestamp_adjust_pause_offset(delta_timestamp);
+		}
+	}
+#endif
+	Last_frame_ui_timestamp = ui_timestamp();
+
+
 	io::mouse::CursorManager::doFrame();		// determine if to draw the mouse this frame
 	snd_do_frame();								// update sound system
 	event_music_do_frame();						// music needs to play across many states
