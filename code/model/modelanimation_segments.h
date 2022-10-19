@@ -325,7 +325,7 @@ namespace animation {
 		std::map<int, instance_data> m_instances;
 
 		ModelAnimationSegment* copy() const override;
-		void recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) override;
+		void recalculate(ModelAnimationSubmodelBuffer& base, ModelAnimationSubmodelBuffer& /*currentAnimDelta*/, polymodel_instance* pmi) override;
 		void calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const override;
 
 	public:
@@ -344,7 +344,7 @@ namespace animation {
 		std::map<int, instance_data> m_instances;
 
 		ModelAnimationSegment* copy() const override;
-		void recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) override;
+		void recalculate(ModelAnimationSubmodelBuffer& base, ModelAnimationSubmodelBuffer& /*currentAnimDelta*/, polymodel_instance* pmi) override;
 		void calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const override;
 
 	public:

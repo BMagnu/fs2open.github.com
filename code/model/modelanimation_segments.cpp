@@ -1654,7 +1654,7 @@ namespace animation {
 		return new ModelAnimationSegmentKeyframedRotation(*this);
 	}
 
-	void ModelAnimationSegmentKeyframedRotation::recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) {
+	void ModelAnimationSegmentKeyframedRotation::recalculate(ModelAnimationSubmodelBuffer& base, ModelAnimationSubmodelBuffer& /*currentAnimDelta*/, polymodel_instance* pmi) {
 		auto& instance = m_instances[pmi->id];
 		float& duration = m_duration[pmi->id];
 
@@ -1709,7 +1709,7 @@ namespace animation {
 		return new ModelAnimationSegmentKeyframedTranslation(*this);
 	}
 
-	void ModelAnimationSegmentKeyframedTranslation::recalculate(ModelAnimationSubmodelBuffer& base, polymodel_instance* pmi) {
+	void ModelAnimationSegmentKeyframedTranslation::recalculate(ModelAnimationSubmodelBuffer& base, ModelAnimationSubmodelBuffer& /*currentAnimDelta*/, polymodel_instance* pmi) {
 		auto& instance = m_instances[pmi->id];
 		float& duration = m_duration[pmi->id];
 
