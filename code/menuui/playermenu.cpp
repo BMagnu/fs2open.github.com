@@ -23,6 +23,7 @@
 #include "localization/localize.h"
 #include "menuui/mainhallmenu.h"
 #include "menuui/playermenu.h"
+#include "menuui/snazzyui.h"
 #include "mission/missioncampaign.h"
 #include "mod_table/mod_table.h"
 #include "network/multi.h"
@@ -54,6 +55,8 @@ int Max_lines;  //Max number of pilots displayed in Window. Gets set in player_s
 #define ACCEPT_BUTTON				5		//
 #define SINGLE_BUTTON				6		//
 #define MULTI_BUTTON				7		//
+
+static bool hasValidBitmaps = false;
 
 // list text display area
 int Choose_list_coords[GR_NUM_RESOLUTIONS][4] = {
@@ -296,6 +299,15 @@ void player_select_init()
 	barracks_buttons *b;
 	UI_WINDOW *w;
 
+	static bool bitmapsValid = snazzy_validate_bitmaps(hasValidBitmaps,
+		make_snazzyui_bitmap_source(Player_select_buttons, &barracks_buttons::filename, 3),
+		make_snazzyui_bitmap_source(Player_select_background_bitmap_name),
+		make_snazzyui_bitmap_source(Player_select_background_mask_bitmap)
+	);
+
+	if (!bitmapsValid) //Bail if no UI is found
+		return;
+
 	// start a looping ambient sound
 	main_hall_start_ambient();
 
@@ -397,6 +409,9 @@ static bool Startup_warning_dialog_displayed = false;
 void player_select_do()
 {
 	int k;
+
+	if (!hasValidBitmaps) //Bail if no UI
+		return;
 
 	// Goober5000 - display a popup warning about problems in the mod
 	if ((Global_warning_count > 10 || Global_error_count > 0) && !Startup_warning_dialog_displayed) {
@@ -503,6 +518,9 @@ void player_select_do()
 
 void player_select_close()
 {
+	if (!hasValidBitmaps) //Bail if no UI
+		return;
+
 	// destroy the player select window
 	Player_select_window.destroy();
 
