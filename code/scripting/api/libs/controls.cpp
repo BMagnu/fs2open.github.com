@@ -4,9 +4,12 @@
 #include "controls.h"
 #include "scripting/api/objs/enums.h"
 #include "scripting/api/objs/control_binding.h"
+#include "scripting/api/objs/promise.h"
 
 #include "io/mouse.h"
 #include "io/cursor.h"
+#include "executor/GameStateExecutionContext.h"
+#include "executor/global_executors.h"
 #include "graphics/2d.h"
 #include "globalincs/systemvars.h"
 #include "gamesequence/gamesequence.h"
@@ -417,6 +420,138 @@ ADE_FUNC(getTrackIRZ, l_Mouse, nullptr, "Gets z position from last update", "num
 		return ade_set_error(L, "f", 0.0f);
 
 	return ade_set_args(L, "f", headtracking::getStatus()->z);
+}
+
+static struct lua_text_input_handler {
+	lua_State* L;
+	bool textInputRunning = false;
+	SCP_string textInputText = "";
+	os::events::ListenerIdentifier textInputListener;
+	os::events::ListenerIdentifier inputListener;
+	luacpp::LuaFunction luaUpdater;
+	enum class promise_state { RUNNING, COMPLETE, ABORT } state;
+} luaTextInputHandler;
+
+ADE_FUNC(startTextInput, l_Mouse, "function(string text) -> void update, [boolean escapeAbortsInput = false, string initialText = \"\", string | nil limitCharacters = nil]",
+	"Starts the text input listener which respects the users keyboard layout. The update function will be called every time the text changes."
+	" The characters a user can enter will be limited to the characters contained in limitCharacters or unlimited if nil.",
+	"promise", "The returned promise resolves when enter is pressed or io.stopTextInput(true) is called. The returned promise aborts when "
+	"escape is pressed (if enabled by the argument) or if io.stopTextInput(false) is called. Returns nil on error.")
+{
+	if (luaTextInputHandler.textInputRunning)
+		return ADE_RETURN_NIL;
+
+	luacpp::LuaFunction listener;
+	bool allowEscape = false;
+	const char* allowedCharsIn = "";
+	const char* text = "";
+
+	if (!ade_get_args(L, "u|bss", &listener, &allowEscape, &text, &allowedCharsIn))
+		return ADE_RETURN_NIL;
+
+	SCP_string allowedChars{ allowedCharsIn };
+
+	luaTextInputHandler.textInputText = text;
+	luaTextInputHandler.state = lua_text_input_handler::promise_state::RUNNING;
+	luaTextInputHandler.luaUpdater = std::move(listener);
+	luaTextInputHandler.L = L;
+	luaTextInputHandler.textInputListener = os::events::addEventListener(SDL_TEXTINPUT, 100, [allowedChars](const SDL_Event& event) -> bool {
+		if (!allowedChars.empty() && allowedChars.find(event.text.text) == SCP_string::npos)
+			return false;
+
+		if (event.text.text[0] != '\0' && event.text.text[0] != '\1') {
+			for (char c : event.text.text) {
+				if (c < 32)
+					break;
+
+				luaTextInputHandler.textInputText += c;
+			}
+			luaTextInputHandler.luaUpdater.call(luaTextInputHandler.L, luacpp::LuaValueList{ luacpp::LuaValue::createValue(luaTextInputHandler.L, luaTextInputHandler.textInputText) });
+		}
+		
+		return true;
+	});
+	luaTextInputHandler.inputListener = os::events::addEventListener(SDL_KEYDOWN, 101, [allowEscape](const SDL_Event& event) -> bool {
+		if (allowEscape && event.key.keysym.sym == SDLK_ESCAPE) {
+			luaTextInputHandler.state = lua_text_input_handler::promise_state::ABORT;
+		}
+		else if (event.key.keysym.sym == SDLK_RETURN) {
+			luaTextInputHandler.state = lua_text_input_handler::promise_state::COMPLETE;
+		}
+		else if (event.key.keysym.sym == SDLK_BACKSPACE) {
+			luaTextInputHandler.textInputText.pop_back();
+			luaTextInputHandler.luaUpdater.call(luaTextInputHandler.L, luacpp::LuaValueList{ luacpp::LuaValue::createValue(luaTextInputHandler.L, luaTextInputHandler.textInputText) });
+		}
+		else
+			return false;
+
+		return true;
+	});
+	SDL_StartTextInput();
+
+	class io_text_resolve_context : public resolve_context, public std::enable_shared_from_this<io_text_resolve_context> {
+	public:
+		io_text_resolve_context() {
+			static int unique_id_counter = 0;
+			m_unique_id = unique_id_counter++;
+			nprintf(("scripting", "startTextInput: Creating asynchronous context %d.\n", m_unique_id));
+		}
+		void setResolver(Resolver resolver) override
+		{
+			// Keep checking the time until the input is complete
+			auto self = shared_from_this();
+			auto cb = [this, self, resolver](
+				executor::IExecutionContext::State contextState) {
+					if (contextState == executor::IExecutionContext::State::Invalid) {
+						mprintf(("startTextInput: Context is invalid, possibly due to a game state change (current state is %s).  Aborting asynchronous context %d.\n", GS_state_text[gameseq_get_state()], m_unique_id));
+						SDL_StopTextInput();
+						luaTextInputHandler.textInputRunning = false;
+						resolver(true, luacpp::LuaValueList{ luacpp::LuaValue::createValue(luaTextInputHandler.L, luaTextInputHandler.textInputText) });
+						return executor::Executor::CallbackResult::Done;
+					}
+
+					if (luaTextInputHandler.state == lua_text_input_handler::promise_state::COMPLETE) {
+						nprintf(("scripting", "startTextInput: Text input has completed %d.\n", m_unique_id));
+						SDL_StopTextInput();
+						luaTextInputHandler.textInputRunning = false;
+						resolver(false, luacpp::LuaValueList{ luacpp::LuaValue::createValue(luaTextInputHandler.L, luaTextInputHandler.textInputText) });
+						return executor::Executor::CallbackResult::Done;
+					}
+
+					if (luaTextInputHandler.state == lua_text_input_handler::promise_state::ABORT) {
+						nprintf(("scripting", "startTextInput: Text input has aborted %d.\n", m_unique_id));
+						SDL_StopTextInput();
+						luaTextInputHandler.textInputRunning = false;
+						resolver(true, luacpp::LuaValueList{ luacpp::LuaValue::createValue(luaTextInputHandler.L, luaTextInputHandler.textInputText) });
+						return executor::Executor::CallbackResult::Done;
+					}
+
+					return executor::Executor::CallbackResult::Reschedule;
+			};
+
+			// Use an game state execution context here to clean up references to this as soon as possible
+			executor::OnSimulationExecutor->post(
+				executor::runInContext(executor::GameStateExecutionContext::captureContext(), std::move(cb)));
+		}
+
+	private:
+		int m_unique_id = -1;
+	};
+
+	return ade_set_args(L, "o", l_Promise.Set(LuaPromise(std::make_shared<io_text_resolve_context>())));
+}
+
+ADE_FUNC(stopTextInput, l_Mouse, "[bool complete = true]", "Stops the text input listener. Will resolve the promise if complete is true, and abort it otherwise", nullptr, nullptr)
+{
+	if (!luaTextInputHandler.textInputRunning)
+		return ADE_RETURN_NIL;
+
+	bool graceful = true;
+	ade_get_args(L, "|b", &graceful);
+
+	luaTextInputHandler.state = graceful ? lua_text_input_handler::promise_state::COMPLETE : lua_text_input_handler::promise_state::ABORT;
+
+	return ADE_RETURN_NIL;
 }
 
 }
