@@ -103,7 +103,7 @@ void LuaAISEXP::parseTable() {
 
 	int paramNum = 1;
 	if (optional_string("$Target Parameter:")) {
-		needsTarget = true;
+		needsTarget = ai_mode_lua::ai_target_mode::OSWPT;
 		required_string("+Description:");
 
 		SCP_string param_desc;
@@ -117,7 +117,11 @@ void LuaAISEXP::parseTable() {
 		stuff_string(type_str, F_NAME);
 
 		auto type = LuaSEXP::get_parameter_type(type_str);
-		if (type.second < 0 || allowed_oswpt_parameters.count(type.second) <= 0) {
+		if(type.second < 0 && SCP_string_lcase_equal_to()(type_str, "subsystem")) {
+			//Subsystem target mode. Adds ship + subsystem as target parameters. Not allowed for normal lua SEXPs or parameters since it adds two parameters with dependencies on one another, except for this special case.
+
+		}
+		else if (type.second < 0 || allowed_oswpt_parameters.count(type.second) <= 0) {
 			error_display(0, "Parameter type '%s' is not a valid target type!", type_str.c_str());
 			type = LuaSEXP::get_parameter_type("ship");
 		}

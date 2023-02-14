@@ -14,7 +14,7 @@ namespace sexp {
 class LuaAISEXP : public LuaSEXP {
 	
 	int _arg_type = -1;
-	bool needsTarget = false;
+	ai_mode_lua::ai_target_mode needsTarget = ai_mode_lua::ai_target_mode::NONE;
 	const char* hudText = nullptr;
 
 	luacpp::LuaFunction _actionEnter;

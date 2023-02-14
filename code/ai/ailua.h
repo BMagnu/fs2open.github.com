@@ -11,7 +11,7 @@ namespace sexp { class LuaAISEXP; }
 
 struct ai_mode_lua {
 	const sexp::LuaAISEXP& sexp;
-	bool needsTarget;
+	enum class ai_target_mode { NONE, OSWPT, SUBSYSTEM } target;
 	const char* hudText;
 };
 

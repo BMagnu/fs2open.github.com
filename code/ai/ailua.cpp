@@ -8,6 +8,7 @@
 #include "scripting/api/objs/enums.h"
 #include "scripting/api/objs/oswpt.h"
 #include "scripting/api/objs/ship.h"
+#include "scripting/api/objs/subsystem.h"
 #include "scripting/scripting.h"
 
 static std::unordered_map<int, ai_mode_lua> Lua_ai_modes;
@@ -57,9 +58,24 @@ void run_ai_lua_action(const luacpp::LuaFunction& action, const ai_mode_lua& lua
 
 	luacpp::LuaValueList luaParameters;
 	luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_AI_Helper.Set(object_h(&Objects[Ships[aip->shipnum].objnum]))));
-	if (lua_ai.needsTarget) {
-		luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_OSWPT.Set(aip->lua_ai_target.target)));
+
+	switch (lua_ai.target) {
+	case ai_mode_lua::ai_target_mode::OSWPT:
+		luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_OSWPT.Set(mpark::get<object_ship_wing_point_team>(aip->lua_ai_target.target))));
+		break;
+	case ai_mode_lua::ai_target_mode::SUBSYSTEM: {
+		const auto& indices = mpark::get<std::pair<int, int>>(aip->lua_ai_target.target);
+		if(indices.first < 0 || indices.second < 0)
+			luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_Subsystem.Set(scripting::api::ship_subsys_h())));
+		else
+			luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_Subsystem.Set(scripting::api::ship_subsys_h(&Objects[indices.first], Ships[Objects[indices.first].instance].subsys_list_indexer[indices.second]))));
+		break;
 	}
+	default:
+		//NOOP
+		break;
+	}
+
 	for (const auto& additionalParam : aip->lua_ai_target.arguments) {
 		luaParameters.push_back(additionalParam);
 	}
@@ -162,7 +178,7 @@ bool ai_lua_is_valid_target(int sexp_op, int target_objnum, ship* self, size_t o
 	const ai_mode_lua& mode = *ai_lua_find_mode(sexp_op);
 
 	//All targetless AI modes are fine
-	if (mode.needsTarget) {
+	if (mode.target != ai_mode_lua::ai_target_mode::NONE) {
 
 		//No target is then not valid
 		if (target_objnum == -1)

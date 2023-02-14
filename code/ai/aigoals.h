@@ -19,6 +19,8 @@
 #include "scripting/lua/LuaTypes.h"
 #include "scripting/lua/LuaValue.h"
 
+#include <mpark/variant.hpp>
+
 struct wing;
 struct ai_info;
 
@@ -101,7 +103,8 @@ struct ai_info;
 enum class ai_achievability { ACHIEVABLE, NOT_ACHIEVABLE, NOT_KNOWN, SATISFIED };
 
 struct ai_lua_parameters {
-	object_ship_wing_point_team target;
+	//None | OSWPT | (obj idx, ss idx)
+	mpark::variant<mpark::monostate, object_ship_wing_point_team, std::pair<int, int>> target;
 	luacpp::LuaValueList arguments;
 };
 

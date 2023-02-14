@@ -1095,15 +1095,34 @@ void ai_add_goal_sub_sexp( int sexp, int type, ai_info *aip, ai_goal *aigp, char
 			aigp->ai_submode = op;
 			
 
-			object_ship_wing_point_team target;
-			if(luaAIMode->needsTarget) {
+			decltype(ai_lua_parameters::target) target_variant;
+			switch(luaAIMode->target) {
+			case ai_mode_lua::ai_target_mode::OSWPT: {
+				object_ship_wing_point_team target;
 				eval_object_ship_wing_point_team(&target, localnode);
 				localnode = CDR(localnode);
+				target_variant = std::move(target);
+				break;
+			}
+			case ai_mode_lua::ai_target_mode::SUBSYSTEM: {
+				const ship_registry_entry* ship_entry = eval_ship(localnode);
+				localnode = CDR(localnode);
+				ship_subsys* subsys = ship_get_subsys(ship_entry->shipp, CTEXT(localnode));
+				localnode = CDR(localnode);
+				if(ship_entry->status == ShipStatus::PRESENT)
+					target_variant = std::pair<int, int>(OBJ_INDEX(ship_entry->objp), ship_get_subsys_index(subsys));
+				else
+					target_variant = std::pair<int, int>(-1, -1);
+				break;
+			}
+			default:
+				//NOOP
+				break;
 			}
 
 			aigp->priority = atoi( CTEXT(localnode) );
 
-			aigp->lua_ai_target = { std::move(target), luaAIMode->sexp.getSEXPArgumentList(CDR(localnode)) };
+			aigp->lua_ai_target = { std::move(target_variant), luaAIMode->sexp.getSEXPArgumentList(CDR(localnode)) };
 		}
 		else {
 			UNREACHABLE("Invalid SEXP-OP number %d for an AI goal!", op);
@@ -1299,7 +1318,11 @@ int ai_remove_goal_sexp_sub( int sexp, ai_goal* aigp )
 			goalmode = AI_GOAL_LUA;
 			goalsubmode = op;
 
-			if(luaAIMode->needsTarget) {
+			switch (luaAIMode->target) {
+			case ai_mode_lua::ai_target_mode::OSWPT:
+				localnode = CDR(localnode);
+				/* fall-through */
+			case ai_mode_lua::ai_target_mode::SUBSYSTEM: 
 				localnode = CDR(localnode);
 			}
 
