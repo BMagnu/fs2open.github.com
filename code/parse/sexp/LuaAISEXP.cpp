@@ -21,7 +21,14 @@ void LuaAISEXP::initialize() {
 };
 
 int LuaAISEXP::getMinimumArguments() const {
-	return _arg_type == -1 ? 1 : 2;
+	switch (needsTarget) {
+	case ai_mode_lua::ai_target_mode::NONE:
+		return 1;
+	case ai_mode_lua::ai_target_mode::OSWPT:
+		return 2;
+	case ai_mode_lua::ai_target_mode::SUBSYSTEM:
+		return 3;
+	}
 };
 
 int LuaAISEXP::getMaximumArguments() const {
@@ -33,7 +40,18 @@ int LuaAISEXP::getMaximumArguments() const {
 int LuaAISEXP::getArgumentType(int argnum) const {
 	const int minArgs = getMinimumArguments();
 	if (argnum < minArgs) {
-		return argnum == 0 && _arg_type != -1 ? _arg_type : OPF_POSITIVE;
+		if (argnum == minArgs - 1)
+			return OPF_POSITIVE;
+
+		switch (needsTarget) {
+		case ai_mode_lua::ai_target_mode::NONE:
+			UNREACHABLE("Bad LuaAI internal type resolve");
+			return -1;
+		case ai_mode_lua::ai_target_mode::OSWPT:
+			return _arg_type;
+		case ai_mode_lua::ai_target_mode::SUBSYSTEM:
+			return argnum == 0 ? OPF_SHIP : OPF_SUBSYSTEM;
+		}
 	}
 	else {
 		return LuaSEXP::getArgumentType(argnum - minArgs);
@@ -103,14 +121,9 @@ void LuaAISEXP::parseTable() {
 
 	int paramNum = 1;
 	if (optional_string("$Target Parameter:")) {
-		needsTarget = ai_mode_lua::ai_target_mode::OSWPT;
 		required_string("+Description:");
-
 		SCP_string param_desc;
 		stuff_string(param_desc, F_NAME);
-
-		help_text << "\t1";
-		help_text << ": " << param_desc << "\r\n";
 
 		required_string("+Type:");
 		SCP_string type_str;
@@ -119,15 +132,24 @@ void LuaAISEXP::parseTable() {
 		auto type = LuaSEXP::get_parameter_type(type_str);
 		if(type.second < 0 && SCP_string_lcase_equal_to()(type_str, "subsystem")) {
 			//Subsystem target mode. Adds ship + subsystem as target parameters. Not allowed for normal lua SEXPs or parameters since it adds two parameters with dependencies on one another, except for this special case.
-
+			needsTarget = ai_mode_lua::ai_target_mode::SUBSYSTEM;
+			help_text << "\t1";
+			help_text << ": The ship home to the following subsystem\r\n";
+			help_text << "\t2";
+			help_text << ": " << param_desc << "\r\n";
+			paramNum++;
 		}
 		else if (type.second < 0 || allowed_oswpt_parameters.count(type.second) <= 0) {
 			error_display(0, "Parameter type '%s' is not a valid target type!", type_str.c_str());
 			type = LuaSEXP::get_parameter_type("ship");
 		}
-
+		else {
+			needsTarget = ai_mode_lua::ai_target_mode::OSWPT;
+			help_text << "\t1";
+			help_text << ": " << param_desc << "\r\n";
+		}
+		
 		_arg_type = type.second;
-
 		paramNum++;
 	}
 

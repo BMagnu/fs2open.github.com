@@ -49,7 +49,26 @@ const player_order_lua* ai_lua_find_player_order(int sexp_op) {
 		return &aiLuaOrder->second;
 }
 
-void run_ai_lua_action(const luacpp::LuaFunction& action, const ai_mode_lua& lua_ai, ai_info* aip) {
+static void push_ai_lua_target_params(lua_State* L, ai_mode_lua::ai_target_mode mode, luacpp::LuaValueList& arguments, const ai_lua_parameters::target_type& target) {
+	switch (mode) {
+	case ai_mode_lua::ai_target_mode::OSWPT:
+		arguments.push_back(luacpp::LuaValue::createValue(L, scripting::api::l_OSWPT.Set(mpark::get<object_ship_wing_point_team>(target))));
+		break;
+	case ai_mode_lua::ai_target_mode::SUBSYSTEM: {
+		const auto& indices = mpark::get<std::pair<int, int>>(target);
+		if (indices.first < 0 || indices.second < 0)
+			arguments.push_back(luacpp::LuaValue::createValue(L, scripting::api::l_Subsystem.Set(scripting::api::ship_subsys_h())));
+		else
+			arguments.push_back(luacpp::LuaValue::createValue(L, scripting::api::l_Subsystem.Set(scripting::api::ship_subsys_h(&Objects[indices.first], Ships[Objects[indices.first].instance].subsys_list_indexer[indices.second]))));
+		break;
+	}
+	default:
+		//NOOP
+		break;
+	}
+}
+
+static void run_ai_lua_action(const luacpp::LuaFunction& action, const ai_mode_lua& lua_ai, ai_info* aip) {
 	if (!action.isValid()) {
 		Error(LOCATION,
 			"Lua AI SEXP called without a valid action function! A script probably failed to set the action for some reason.");
@@ -58,23 +77,7 @@ void run_ai_lua_action(const luacpp::LuaFunction& action, const ai_mode_lua& lua
 
 	luacpp::LuaValueList luaParameters;
 	luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_AI_Helper.Set(object_h(&Objects[Ships[aip->shipnum].objnum]))));
-
-	switch (lua_ai.target) {
-	case ai_mode_lua::ai_target_mode::OSWPT:
-		luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_OSWPT.Set(mpark::get<object_ship_wing_point_team>(aip->lua_ai_target.target))));
-		break;
-	case ai_mode_lua::ai_target_mode::SUBSYSTEM: {
-		const auto& indices = mpark::get<std::pair<int, int>>(aip->lua_ai_target.target);
-		if(indices.first < 0 || indices.second < 0)
-			luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_Subsystem.Set(scripting::api::ship_subsys_h())));
-		else
-			luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_Subsystem.Set(scripting::api::ship_subsys_h(&Objects[indices.first], Ships[Objects[indices.first].instance].subsys_list_indexer[indices.second]))));
-		break;
-	}
-	default:
-		//NOOP
-		break;
-	}
+	push_ai_lua_target_params(action.getLuaState(), lua_ai.target, luaParameters, aip->lua_ai_target.target);
 
 	for (const auto& additionalParam : aip->lua_ai_target.arguments) {
 		luaParameters.push_back(additionalParam);
@@ -119,7 +122,7 @@ void ai_lua_start(ai_goal* aigp, object* objp){
 	run_ai_lua_action(action, lua_ai, aip);
 }
 
-bool ai_lua_is_valid_target_intrinsic(int sexp_op, int target_objnum, ship* self) {
+static bool ai_lua_is_valid_target_intrinsic(int sexp_op, int target_objnum, ship* self) {
 	ship* target = &Ships[Objects[target_objnum].instance];
 
 	const player_order_lua& order = *ai_lua_find_player_order(sexp_op);
@@ -149,18 +152,30 @@ bool ai_lua_is_valid_target_intrinsic(int sexp_op, int target_objnum, ship* self
 	return false;
 }
 
-bool ai_lua_is_valid_target_lua(const ai_mode_lua& mode, int target_objnum, ship* self) {
+static bool ai_lua_is_valid_target_lua(const ai_mode_lua& mode, ai_info* aip, ship* self) {
 
 	const auto& action = mode.sexp.getTargetRestrict();
 
 	if (!action.isValid())
 		return true;
 
+	ai_lua_parameters::target_type lua_target;
+	switch (mode.target) {
+	case ai_mode_lua::ai_target_mode::OSWPT:
+		if (aip->target_objnum >= 0)
+			lua_target = object_ship_wing_point_team(&Ships[Objects[aip->target_objnum].instance]);
+		break;
+	case ai_mode_lua::ai_target_mode::SUBSYSTEM:
+		if (aip->target_objnum >= 0 && aip->targeted_subsys != nullptr)
+			lua_target = std::pair<int, int>(aip->target_objnum, ship_get_subsys_index(aip->targeted_subsys));
+		break;
+	default:
+		break;
+	}
+
 	luacpp::LuaValueList luaParameters;
 	luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_Ship.Set(object_h(&Objects[self->objnum]))));
-	if (mode.needsTarget) {
-		luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_OSWPT.Set(object_ship_wing_point_team(&Ships[Objects[target_objnum].instance]))));
-	}
+	push_ai_lua_target_params(action.getLuaState(), mode.target, luaParameters, lua_target);
 
 	auto retVals = action.call(Script_system.GetLuaSession(), luaParameters);
 
@@ -174,32 +189,32 @@ bool ai_lua_is_valid_target_lua(const ai_mode_lua& mode, int target_objnum, ship
 	return true;
 }
 
-bool ai_lua_is_valid_target(int sexp_op, int target_objnum, ship* self, size_t order) {
+bool ai_lua_is_valid_target(int sexp_op, ai_info* aip, ship* self, size_t order) {
 	const ai_mode_lua& mode = *ai_lua_find_mode(sexp_op);
 
 	//All targetless AI modes are fine
 	if (mode.target != ai_mode_lua::ai_target_mode::NONE) {
 
 		//No target is then not valid
-		if (target_objnum == -1)
+		if (aip->target_objnum == -1)
 			return false;
 
 		//As of now, only accept ships
-		if (Objects[target_objnum].type != OBJ_SHIP)
+		if (Objects[aip->target_objnum].type != OBJ_SHIP)
 			return false;
 
-		if (!ai_lua_is_valid_target_intrinsic(sexp_op, target_objnum, self))
+		if (!ai_lua_is_valid_target_intrinsic(sexp_op, aip->target_objnum, self))
 			return false;
 
 		// check if this order can be issued against the target
-		ship *shipp = &Ships[Objects[target_objnum].instance];
+		ship *shipp = &Ships[Objects[aip->target_objnum].instance];
 		if (shipp->orders_allowed_against.find(order) == shipp->orders_allowed_against.end()) {
 			return false;
 		}
 	}
 
 	//If we haven't bailed yet, query the custom callback
-	return ai_lua_is_valid_target_lua(mode, target_objnum, self);
+	return ai_lua_is_valid_target_lua(mode, aip, self);
 }
 
 ai_achievability ai_lua_is_achievable(const ai_goal* aigp, int objnum){
@@ -212,9 +227,7 @@ ai_achievability ai_lua_is_achievable(const ai_goal* aigp, int objnum){
 
 	luacpp::LuaValueList luaParameters;
 	luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_Ship.Set(object_h(&Objects[objnum]))));
-	if (lua_ai.needsTarget) {
-		luaParameters.push_back(luacpp::LuaValue::createValue(action.getLuaState(), scripting::api::l_OSWPT.Set(aigp->lua_ai_target.target)));
-	}
+	push_ai_lua_target_params(action.getLuaState(), lua_ai.target, luaParameters, aigp->lua_ai_target.target);
 	for (const auto& additionalParam : aigp->lua_ai_target.arguments) {
 		luaParameters.push_back(additionalParam);
 	}

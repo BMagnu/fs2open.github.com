@@ -103,8 +103,9 @@ struct ai_info;
 enum class ai_achievability { ACHIEVABLE, NOT_ACHIEVABLE, NOT_KNOWN, SATISFIED };
 
 struct ai_lua_parameters {
+	using target_type = mpark::variant<mpark::monostate, object_ship_wing_point_team, std::pair<int, int>>;
 	//None | OSWPT | (obj idx, ss idx)
-	mpark::variant<mpark::monostate, object_ship_wing_point_team, std::pair<int, int>> target;
+	target_type target;
 	luacpp::LuaValueList arguments;
 };
 

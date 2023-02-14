@@ -775,7 +775,7 @@ bool hud_squadmsg_is_target_order_valid(size_t order, ai_info *aip )
 
 	//If it's a lua order, defer to luaai
 	if (Player_orders[order].lua_id != -1) {
-		return ai_lua_is_valid_target(Player_orders[order].lua_id, target_objnum, ordering_shipp, order);
+		return ai_lua_is_valid_target(Player_orders[order].lua_id, aip, ordering_shipp, order);
 	}
 
 	// orders which don't operate on targets are always valid
@@ -1265,8 +1265,21 @@ int hud_squadmsg_send_ship_command( int shipnum, int command, int send_message, 
 			ai_submode = Player_orders[command].lua_id;
 			auto lua_porder = ai_lua_find_player_order(Player_orders[command].lua_id);
 			message = lua_porder->ai_message;
-			if (ainfo->target_objnum != -1)
-				lua_target = { object_ship_wing_point_team(&Ships[Objects[ainfo->target_objnum].instance]), {} };
+	
+			auto lua_ai_mode = ai_lua_find_mode(ai_submode);
+			Assertion(lua_ai_mode != nullptr, "Player order %s had an invalid LuaAI mode ID!", Player_orders[command].localized_name.c_str());
+			switch (lua_ai_mode->target) {
+			case ai_mode_lua::ai_target_mode::OSWPT:
+				if(ainfo->target_objnum >= 0)
+					lua_target = { object_ship_wing_point_team(&Ships[Objects[ainfo->target_objnum].instance]), {} };
+				break;
+			case ai_mode_lua::ai_target_mode::SUBSYSTEM:
+				if (ainfo->target_objnum >= 0 && ainfo->targeted_subsys != nullptr)
+					lua_target = { std::pair<int, int>(ainfo->target_objnum, ship_get_subsys_index(ainfo->targeted_subsys)), {} };
+				break;
+			default:
+				break;
+			}
 			break;
 		}
 
