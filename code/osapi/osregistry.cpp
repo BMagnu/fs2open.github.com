@@ -478,17 +478,17 @@ typedef struct KeyValue
 	struct KeyValue *next;
 } KeyValue;
 
-typedef struct Section
+typedef struct ProfileSection
 {
 	char *name;
 
 	struct KeyValue *pairs;
-	struct Section *next;
-} Section;
+	struct ProfileSection *next;
+} ProfileSection;
 
 typedef struct Profile
 {
-	struct Section *sections;
+	struct ProfileSection *sections;
 } Profile;
 
 // For string config functions
@@ -605,8 +605,8 @@ static Profile *profile_read(const char *file)
 	Profile *profile = (Profile *)vm_malloc(sizeof(Profile));
 	profile->sections = NULL;
 
-	Section **sp_ptr = &(profile->sections);
-	Section *sp = NULL;
+	ProfileSection **sp_ptr = &(profile->sections);
+	ProfileSection *sp = NULL;
 
 	KeyValue **kvp_ptr = NULL;
 
@@ -623,7 +623,7 @@ static Profile *profile_read(const char *file)
 				*pend = 0;
 
 				if (*ptr) {
-					sp = (Section *)vm_malloc(sizeof(Section));
+					sp = (ProfileSection *)vm_malloc(sizeof(ProfileSection));
 					sp->next = NULL;
 
 					sp->name = vm_strdup(ptr);
@@ -678,9 +678,9 @@ static void profile_free(Profile *profile)
 	if (profile == NULL)
 		return;
 
-	Section *sp = profile->sections;
+	ProfileSection *sp = profile->sections;
 	while (sp != NULL) {
-		Section *st = sp;
+		ProfileSection *st = sp;
 		KeyValue *kvp = sp->pairs;
 
 		while (kvp != NULL) {
@@ -712,8 +712,8 @@ static Profile *profile_update(Profile *profile, const char *section, const char
 
 	KeyValue *kvp;
 
-	Section **sp_ptr = &(profile->sections);
-	Section *sp = profile->sections;
+	ProfileSection **sp_ptr = &(profile->sections);
+	ProfileSection *sp = profile->sections;
 
 	while (sp != NULL) {
 		if (strcmp(section, sp->name) == 0) {
@@ -761,7 +761,7 @@ static Profile *profile_update(Profile *profile, const char *section, const char
 	}
 
 	/* section not found */
-	sp = (Section *)vm_malloc(sizeof(Section));
+	sp = (ProfileSection *)vm_malloc(sizeof(ProfileSection));
 	sp->next = NULL;
 	sp->name = vm_strdup(section);
 
@@ -782,7 +782,7 @@ static char *profile_get_value(Profile *profile, const char *section, const char
 	if (profile == NULL)
 		return NULL;
 
-	Section *sp = profile->sections;
+	ProfileSection *sp = profile->sections;
 
 	while (sp != NULL) {
 		if (stricmp(section, sp->name) == 0) {
@@ -817,7 +817,7 @@ static void profile_save(Profile *profile, const char *file)
 	if (fp == NULL)
 		return;
 
-	Section *sp = profile->sections;
+	ProfileSection *sp = profile->sections;
 
 	while (sp != NULL) {
 		sprintf(tmp, NOX("[%s]\n"), sp->name);
