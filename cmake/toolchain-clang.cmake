@@ -39,6 +39,10 @@ elseif(IS_ARM)
 	endif ()
 endif()
 
+if (USE_STATIC_LIBCXX)
+	set(CXX_BASE_FLAGS "${CXX_BASE_FLAGS} -static-libstdc++")
+endif()
+
 # For C and C++, the values can be overwritten independently
 if(DEFINED ENV{CXXFLAGS})
 	set(CXX_BASE_FLAGS $ENV{CXXFLAGS})
