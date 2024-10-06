@@ -15,6 +15,10 @@
 #include "graphics/material.h"
 #include "tracing/tracing.h"
 
+#ifdef FSO_SIMD_AVX
+#include <immintrin.h>
+#endif
+
 static SCP_map<batch_info, primitive_batch> Batching_primitives;
 static SCP_map<batch_buffer_key, primitive_batch_buffer> Batching_buffers;
 static int lineTexture = -1;
@@ -284,8 +288,7 @@ void batching_add_bitmap_rotated_internal(primitive_batch *batch, int texture, v
 		angle -= PI2;
 
 	vec3d PNT(pnt->world);
-	vec3d p[4];
-	vec3d fvec, rvec, uvec;
+	vec3d fvec, uvec;
 	batch_vertex verts[6];
 
 	vm_vec_sub(&fvec, &View_position, &PNT);
@@ -293,19 +296,79 @@ void batching_add_bitmap_rotated_internal(primitive_batch *batch, int texture, v
 
 	vm_rot_point_around_line(&uvec, &View_matrix.vec.uvec, angle, &vmd_zero_vector, &View_matrix.vec.fvec);
 
+#ifdef FSO_SIMD_AVX2
+	struct avx_vec {
+		vec3d v;
+		float _pad = 0.f;
+	};
+
+	avx_vec p[4] = {{}, {}, {}, {}};
+
+	vm_vec_cross(&p[0].v, &View_matrix.vec.fvec, &uvec);
+	vm_vec_normalize_safe(&p[0].v);
+	vm_vec_cross(&p[1].v, &View_matrix.vec.fvec, &p[0].v);
+
+	vm_vec_scale_add(&p[2].v, &PNT, &fvec, depth);
+
+	static_assert(sizeof(avx_vec) == 16, "Struct for AVX loads not correctly packed!");
+
+	auto ruvec_mm = _mm256_loadu_ps(reinterpret_cast<float *>(&p[0]));
+
+	auto rad_mm = _mm256_set1_ps(rad);
+	auto ruvec_scale_mm = _mm256_mul_ps(ruvec_mm, rad_mm);
+
+	auto rvec_scale_half_mm = _mm256_castps256_ps128(ruvec_scale_mm);
+	auto rvec_scale_mm = _mm256_broadcast_ps(&rvec_scale_half_mm);
+	auto uvec_scale_half_mm = _mm256_extractf128_ps(ruvec_scale_mm, 1);
+	auto uvec_scale_mm = _mm256_broadcast_ps(&uvec_scale_half_mm);
+
+	auto rvec_sign_mm = _mm256_mul_ps(rvec_scale_mm, _mm256_set_ps(1, 1, 1, 1, -1, -1, -1, -1));
+	auto uvec_sign_mm = _mm256_mul_ps(uvec_scale_mm, _mm256_set_ps(1, 1, 1, 1, -1, -1, -1, -1));
+
+	//This may look illegal, casting a float ptr to a xmm register pointer.
+	//BUT: VBROADCASTF128, called by _mm256_broadcast_ps is actually capable of loading from memory by the spec, thus being capable to serve as a load
+	auto pnt_double_mm = _mm256_broadcast_ps(reinterpret_cast<__m128 *>(&p[2]));
+
+	auto p_0_2_pre_mm = _mm256_add_ps(pnt_double_mm, rvec_sign_mm);
+
+	auto p_0_2_mm = _mm256_add_ps(p_0_2_pre_mm, uvec_sign_mm);
+	auto p_1_3_mm = _mm256_add_ps(_mm256_permute2f128_ps(p_0_2_pre_mm, p_0_2_pre_mm, 1), uvec_sign_mm);
+
+	_mm256_storeu_ps(reinterpret_cast<float*>(&p[0]), p_0_2_mm);
+	_mm256_storeu_ps(reinterpret_cast<float*>(&p[2]), p_1_3_mm);
+
+	//move all the data from the vecs into the verts
+	//tri 1
+	verts[5].position = p[2 + 1].v;
+	verts[4].position = p[0 + 1].v;
+	verts[3].position = p[2 + 0].v;
+
+	//tri 2
+	verts[2].position = p[2 + 1].v;
+	verts[1].position = p[2 + 0].v;
+	verts[0].position = p[0 + 0].v;
+
+#else
+	vec3d rvec;
+
 	vm_vec_cross(&rvec, &View_matrix.vec.fvec, &uvec);
 	vm_vec_normalize_safe(&rvec);
 	vm_vec_cross(&uvec, &View_matrix.vec.fvec, &rvec);
 
 	vm_vec_scale_add(&PNT, &PNT, &fvec, depth);
-	vm_vec_scale_add(&p[0], &PNT, &rvec, rad);
-	vm_vec_scale_add(&p[2], &PNT, &rvec, -rad);
 
-	vm_vec_scale_add(&p[1], &p[2], &uvec, rad);
-	vm_vec_scale_add(&p[3], &p[0], &uvec, -rad);
-	vm_vec_scale_add(&p[0], &p[0], &uvec, rad);
-	vm_vec_scale_add(&p[2], &p[2], &uvec, -rad);
+	vec3d p[4];
 
+	vm_vec_scale(&rvec, rad);
+	vm_vec_scale(&uvec, rad);
+
+	vm_vec_add(&p[0], &PNT, &rvec);
+	vm_vec_sub(&p[2], &PNT, &rvec);
+
+	vm_vec_add(&p[1], &p[2], &uvec);
+	vm_vec_sub(&p[3], &p[0], &uvec);
+	vm_vec_add(&p[0], &p[0], &uvec);
+	vm_vec_sub(&p[2], &p[2], &uvec);
 
 	//move all the data from the vecs into the verts
 	//tri 1
@@ -317,6 +380,7 @@ void batching_add_bitmap_rotated_internal(primitive_batch *batch, int texture, v
 	verts[2].position = p[3];
 	verts[1].position = p[1];
 	verts[0].position = p[0];
+#endif
 
 	//tri 1
 	verts[5].tex_coord.xyzw.x = 0.0f;	verts[5].tex_coord.xyzw.y = 0.0f;
