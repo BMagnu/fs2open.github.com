@@ -40,7 +40,8 @@ elseif(IS_ARM)
 endif()
 
 if (USE_STATIC_LIBCXX)
-	set(CXX_BASE_FLAGS "${CXX_BASE_FLAGS} -static-libstdc++")
+	set(CXX_BASE_FLAGS "${CXX_BASE_FLAGS} -static-libstdc++ -Qunused-arguments")
+	set(CLANG_USE_LIBCXX ON)
 endif()
 
 # For C and C++, the values can be overwritten independently
@@ -65,10 +66,6 @@ set(COMPILER_FLAGS "${COMPILER_FLAGS} ${_flags}")
 
 set(COMPILER_FLAGS "${COMPILER_FLAGS} -fsigned-char -Wno-unknown-pragmas")
 
-# Omit "argument unused during compilation" when clang is used with ccache.
-if(${CMAKE_CXX_COMPILER} MATCHES "ccache")
-	set(COMPILER_FLAGS "${COMPILER_FLAGS} -Qunused-arguments")
-endif()
 
 if ("${CMAKE_GENERATOR}" STREQUAL "Ninja")
 	# Force color diagnostics for Ninja generator
