@@ -21,6 +21,6 @@ else()
 endif()
 
 set(IS_X86 FALSE)
-if (NOT IS_ARM)
+if (NOT IS_ARM64)
     set(IS_X86 TRUE)
 endif()
