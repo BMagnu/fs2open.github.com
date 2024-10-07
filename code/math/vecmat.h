@@ -115,74 +115,270 @@ typedef struct plane {
 
 //adds two vectors, fills in dest, returns ptr to dest
 //ok for dest to equal either source, but should use vm_vec_add2() if so
-void vm_vec_add(vec3d *dest, const vec3d *src0, const vec3d *src1);
+//dest = src0 + src1
+inline void vm_vec_add(vec3d *dest, const vec3d *src0, const vec3d *src1)
+{
+	dest->xyz.x = src0->xyz.x + src1->xyz.x;
+	dest->xyz.y = src0->xyz.y + src1->xyz.y;
+	dest->xyz.z = src0->xyz.z + src1->xyz.z;
+}
 
 //Component-wise multiplication of two vectors
-void vm_vec_cmult(vec3d* dest, const vec3d* src0, const vec3d* src1);
-void vm_vec_cmult2(vec3d* dest, const vec3d* src);
+inline void vm_vec_cmult(vec3d* dest, const vec3d* src0, const vec3d* src1) {
+	dest->xyz.x = src0->xyz.x * src1->xyz.x;
+	dest->xyz.y = src0->xyz.y * src1->xyz.y;
+	dest->xyz.z = src0->xyz.z * src1->xyz.z;
+}
+inline void vm_vec_cmult2(vec3d* dest, const vec3d* src) {
+	dest->xyz.x *= src->xyz.x;
+	dest->xyz.y *= src->xyz.y;
+	dest->xyz.z *= src->xyz.z;
+}
 
 //Component-wise division of two vectors
-void vm_vec_cdiv(vec3d* dest, const vec3d* src0, const vec3d* src1);
-void vm_vec_cdiv2(vec3d* dest, const vec3d* src);
-
-//adds src onto dest vector, returns ptr to dest
-void vm_vec_add2(vec3d *dest, const vec3d *src);
-
-
-//scales a vector and subs from to another
-//dest -= k * src
-void vm_vec_scale_sub2(vec3d *dest, const vec3d *src, float k);
+inline void vm_vec_cdiv(vec3d* dest, const vec3d* src0, const vec3d* src1) {
+	dest->xyz.x = src0->xyz.x / src1->xyz.x;
+	dest->xyz.y = src0->xyz.y / src1->xyz.y;
+	dest->xyz.z = src0->xyz.z / src1->xyz.z;
+}
+inline void vm_vec_cdiv2(vec3d* dest, const vec3d* src) {
+	dest->xyz.x /= src->xyz.x;
+	dest->xyz.y /= src->xyz.y;
+	dest->xyz.z /= src->xyz.z;
+}
 
 //subs two vectors, fills in dest, returns ptr to dest
 //ok for dest to equal either source, but should use vm_vec_sub2() if so
-void vm_vec_sub(vec3d *dest, const vec3d *src0, const vec3d *src1);
+//dest = src0 - src1
+inline void vm_vec_sub(vec3d *dest, const vec3d *src0, const vec3d *src1)
+{
+	dest->xyz.x = src0->xyz.x - src1->xyz.x;
+	dest->xyz.y = src0->xyz.y - src1->xyz.y;
+	dest->xyz.z = src0->xyz.z - src1->xyz.z;
+}
 
+
+//adds one vector to another. returns ptr to dest
+//dest can equal source
+//dest += src
+inline void vm_vec_add2(vec3d *dest, const vec3d *src)
+{
+	dest->xyz.x += src->xyz.x;
+	dest->xyz.y += src->xyz.y;
+	dest->xyz.z += src->xyz.z;
+}
 
 //subs one vector from another, returns ptr to dest
 //dest can equal source
-void vm_vec_sub2(vec3d *dest, const vec3d *src);
-
-//averages n vectors
-vec3d *vm_vec_avg_n(vec3d *dest, int n, const vec3d src[]);
-
+//dest -= src
+inline void vm_vec_sub2(vec3d *dest, const vec3d *src)
+{
+	dest->xyz.x -= src->xyz.x;
+	dest->xyz.y -= src->xyz.y;
+	dest->xyz.z -= src->xyz.z;
+}
 
 //averages two vectors. returns ptr to dest
 //dest can equal either source
-vec3d *vm_vec_avg(vec3d *dest, const vec3d *src0, const vec3d *src1);
+//dest = (src0 + src1) * 0.5
+inline vec3d *vm_vec_avg(vec3d *dest, const vec3d *src0, const vec3d *src1)
+{
+	dest->xyz.x = (src0->xyz.x + src1->xyz.x) * 0.5f;
+	dest->xyz.y = (src0->xyz.y + src1->xyz.y) * 0.5f;
+	dest->xyz.z = (src0->xyz.z + src1->xyz.z) * 0.5f;
 
-vec3d *vm_vec_avg3(vec3d *dest, const vec3d *src0, const vec3d *src1, const vec3d *src2);
+	return dest;
+}
+
+//averages three vectors. returns ptr to dest
+//dest can equal any source
+//dest = (src0 + src1 + src2) *0.33
+inline vec3d *vm_vec_avg3(vec3d *dest, const vec3d *src0, const vec3d *src1, const vec3d *src2)
+{
+	dest->xyz.x = (src0->xyz.x + src1->xyz.x + src2->xyz.x) * 0.333333333f;
+	dest->xyz.y = (src0->xyz.y + src1->xyz.y + src2->xyz.y) * 0.333333333f;
+	dest->xyz.z = (src0->xyz.z + src1->xyz.z + src2->xyz.z) * 0.333333333f;
+	return dest;
+}
 
 //averages four vectors. returns ptr to dest
 //dest can equal any source
-vec3d *vm_vec_avg4(vec3d *dest, const vec3d *src0, const vec3d *src1, const vec3d *src2, const vec3d *src3);
+//dest = (src0 + src1 + src2 + src3) * 0.25
+inline vec3d *vm_vec_avg4(vec3d *dest, const vec3d *src0, const vec3d *src1, const vec3d *src2, const vec3d *src3)
+{
+	dest->xyz.x = (src0->xyz.x + src1->xyz.x + src2->xyz.x + src3->xyz.x) * 0.25f;
+	dest->xyz.y = (src0->xyz.y + src1->xyz.y + src2->xyz.y + src3->xyz.y) * 0.25f;
+	dest->xyz.z = (src0->xyz.z + src1->xyz.z + src2->xyz.z + src3->xyz.z) * 0.25f;
+	return dest;
+}
 
-//scales a vector in place.  returns ptr to vector
-void vm_vec_scale(vec3d *dest, float s);
 
-//scales a 4-component vector in place. returns ptr to vector
-void vm_vec_scale(vec4 *dest, float s);
+//scales a vector in place.
+//dest *= s
+inline void vm_vec_scale(vec3d *dest, float s)
+{
+	dest->xyz.x = dest->xyz.x * s;
+	dest->xyz.y = dest->xyz.y * s;
+	dest->xyz.z = dest->xyz.z * s;
+}
 
-//scales and copies a vector.  returns ptr to dest
-void vm_vec_copy_scale(vec3d *dest, const vec3d *src, float s);
+//scales a 4-component vector in place.
+// dest *= s
+inline void vm_vec_scale(vec4 *dest, float s)
+{
+	dest->xyzw.x = dest->xyzw.x * s;
+	dest->xyzw.y = dest->xyzw.y * s;
+	dest->xyzw.z = dest->xyzw.z * s;
+	dest->xyzw.w = dest->xyzw.w * s;
+}
+
+//scales and copies a vector.
+// dest = src * s
+inline void vm_vec_copy_scale(vec3d *dest, const vec3d *src, float s)
+{
+	dest->xyz.x = src->xyz.x*s;
+	dest->xyz.y = src->xyz.y*s;
+	dest->xyz.z = src->xyz.z*s;
+}
 
 //scales a vector, adds it to another, and stores in a 3rd vector
 //dest = src1 + k * src2
-void vm_vec_scale_add(vec3d *dest, const vec3d *src1, const vec3d *src2, float k);
+inline void vm_vec_scale_add(vec3d *dest, const vec3d *src1, const vec3d *src2, float k)
+{
+	dest->xyz.x = src1->xyz.x + src2->xyz.x*k;
+	dest->xyz.y = src1->xyz.y + src2->xyz.y*k;
+	dest->xyz.z = src1->xyz.z + src2->xyz.z*k;
+}
 
-void vm_vec_scale_sub(vec3d *dest, const vec3d *src1, const vec3d *src2, float k);
+//scales a vector, subtracts it from another, and stores in a 3rd vector
+//dest = src1 - (k * src2)
+inline void vm_vec_scale_sub(vec3d *dest, const vec3d *src1, const vec3d *src2, float k)
+{
+	dest->xyz.x = src1->xyz.x - src2->xyz.x*k;
+	dest->xyz.y = src1->xyz.y - src2->xyz.y*k;
+	dest->xyz.z = src1->xyz.z - src2->xyz.z*k;
+}
 
 //scales a vector and adds it to another
 //dest += k * src
-void vm_vec_scale_add2(vec3d *dest, const vec3d *src, float k);
+inline void vm_vec_scale_add2(vec3d *dest, const vec3d *src, float k)
+{
+	dest->xyz.x += src->xyz.x*k;
+	dest->xyz.y += src->xyz.y*k;
+	dest->xyz.z += src->xyz.z*k;
+}
 
-//scales a vector in place, taking n/d for scale.  returns ptr to vector
+//scales a vector and subtracts it from another
+//dest -= k * src
+inline void vm_vec_scale_sub2(vec3d *dest, const vec3d *src, float k)
+{
+	dest->xyz.x -= src->xyz.x*k;
+	dest->xyz.y -= src->xyz.y*k;
+	dest->xyz.z -= src->xyz.z*k;
+}
+
+//scales a vector in place, taking n/d for scale.
 //dest *= n/d
-void vm_vec_scale2(vec3d *dest, float n, float d);
+inline void vm_vec_scale2(vec3d *dest, float n, float d)
+{
+	d = 1.0f/d;
+
+	dest->xyz.x = dest->xyz.x* n * d;
+	dest->xyz.y = dest->xyz.y* n * d;
+	dest->xyz.z = dest->xyz.z* n * d;
+}
 
 // interpolate between two vectors
-// dest = k * (src1 - src0)
+// dest = src0 + (k * (src1 - src0))
 // Might be helpful to think of vec0 as the before, and vec1 as the after
-void vm_vec_linear_interpolate(vec3d* dest, const vec3d* src0, const vec3d* src1, float k);
+inline void vm_vec_linear_interpolate(vec3d* dest, const vec3d* src0, const vec3d* src1, const float k)
+{
+	dest->xyz.x = ((src1->xyz.x - src0->xyz.x) * k) + src0->xyz.x;
+	dest->xyz.y = ((src1->xyz.y - src0->xyz.y) * k) + src0->xyz.y;
+	dest->xyz.z = ((src1->xyz.z - src0->xyz.z) * k) + src0->xyz.z;
+}
+
+//returns dot product of 2 vectors
+inline float vm_vec_dot(const vec3d *v0, const vec3d *v1)
+{
+	return (v1->xyz.x*v0->xyz.x)+(v1->xyz.y*v0->xyz.y)+(v1->xyz.z*v0->xyz.z);
+}
+
+
+//returns dot product of <x,y,z> and vector
+inline float vm_vec_dot3(float x, float y, float z, const vec3d *v)
+{
+	return (x*v->xyz.x)+(y*v->xyz.y)+(z*v->xyz.z);
+}
+
+//returns magnitude of a vector
+inline float vm_vec_mag(const vec3d *v)
+{
+	float mag1;
+
+	mag1 = (v->xyz.x * v->xyz.x) + (v->xyz.y * v->xyz.y) + (v->xyz.z * v->xyz.z);
+
+	if (mag1 <= 0.0f) {
+		return 0.0f;
+	}
+
+	return fl_sqrt(mag1);
+}
+
+//returns squared magnitude of a vector, useful if you want to compare distances
+inline float vm_vec_mag_squared(const vec3d *v)
+{
+	return ((v->xyz.x * v->xyz.x) + (v->xyz.y * v->xyz.y) + (v->xyz.z * v->xyz.z));
+}
+
+//returns the square of the difference between v0 and v1 (the distance, squared)
+//just like vm_vec_mag_squared, but the distance between two points instead.
+inline float vm_vec_dist_squared(const vec3d *v0, const vec3d *v1)
+{
+	float dx, dy, dz;
+
+	dx = v0->xyz.x - v1->xyz.x;
+	dy = v0->xyz.y - v1->xyz.y;
+	dz = v0->xyz.z - v1->xyz.z;
+	return dx*dx + dy*dy + dz*dz;
+}
+
+//computes the distance between two points. (does sub and mag)
+inline float vm_vec_dist(const vec3d *v0, const vec3d *v1)
+{
+	float t1;
+	vec3d t;
+
+	vm_vec_sub(&t,v0,v1);
+
+	t1 = vm_vec_mag(&t);
+
+	return t1;
+}
+
+inline bool vm_vec_is_normalized(const vec3d *v)
+{
+	// By the standards of FSO, it is sufficient to check that the magnitude is close to 1.
+	return vm_vec_mag(v) > 0.999f && vm_vec_mag(v) < 1.001f;
+}
+
+//computes cross product of two vectors.
+//Note: this magnitude of the resultant vector is the
+//product of the magnitudes of the two source vectors.  This means it is
+//quite easy for this routine to overflow and underflow.  Be careful that
+//your inputs are ok.
+//Dest cannot equal source
+inline vec3d *vm_vec_cross(vec3d *dest, const vec3d *src0, const vec3d *src1)
+{
+	dest->xyz.x = (src0->xyz.y * src1->xyz.z) - (src0->xyz.z * src1->xyz.y);
+	dest->xyz.y = (src0->xyz.z * src1->xyz.x) - (src0->xyz.x * src1->xyz.z);
+	dest->xyz.z = (src0->xyz.x * src1->xyz.y) - (src0->xyz.y * src1->xyz.x);
+
+	return dest;
+}
+
+//averages n vectors
+vec3d *vm_vec_avg_n(vec3d *dest, int n, const vec3d src[]);
 
 bool vm_vec_equal(const vec2d &self, const vec2d &other);
 
@@ -201,18 +397,6 @@ float vm_vec_projection_parallel (vec3d *component, const vec3d *src, const vec3
 // finds the projection of source vector onto a surface given by surface normal
 void vm_vec_projection_onto_plane (vec3d *projection, const vec3d *src, const vec3d *normal);
 
-//returns magnitude of a vector
-float vm_vec_mag(const vec3d *v);
-
-// returns the square of the magnitude of a vector (useful if comparing distances)
-float vm_vec_mag_squared(const vec3d* v);
-
-// returns the square of the distance between two points (fast and exact)
-float vm_vec_dist_squared(const vec3d *v0, const vec3d *v1);
-
-//computes the distance between two points. (does sub and mag)
-float vm_vec_dist(const vec3d *v0, const vec3d *v1);
-
 // these are now deprecated because experimental testing on Discord has found
 // that they are actually *slower* than their counterparts
 #define vm_vec_mag_quick				vm_vec_mag
@@ -221,8 +405,6 @@ float vm_vec_dist(const vec3d *v0, const vec3d *v1);
 #define vm_vec_normalize_quick			vm_vec_normalize
 #define vm_vec_normalized_dir_quick		vm_vec_normalized_dir
 #define vm_vec_rand_vec_quick			vm_vec_rand_vec
-
-bool vm_vec_is_normalized(const vec3d *v);
 
 //normalize a vector. returns mag of source vec
 float vm_vec_copy_normalize(vec3d *dest, const vec3d *src);
@@ -238,14 +420,7 @@ float vm_vec_normalize_safe(vec3d *v);
 //NOTE: the order of the parameters matches the vector subtraction
 float vm_vec_normalized_dir(vec3d *dest,const vec3d *end, const vec3d *start);
 
-////returns dot product of two vectors
-float vm_vec_dot(const vec3d *v0, const vec3d *v1);
-
 float vm_vec_dot3(float x, float y, float z, vec3d *v);
-
-//computes cross product of two vectors. returns ptr to dest
-//dest CANNOT equal either source
-vec3d *vm_vec_cross(vec3d *dest, const vec3d *src0, const vec3d *src1);
 
 /**
  * @brief Tests if the two vectors are parallel
@@ -319,31 +494,12 @@ matrix *vm_vector_2_matrix(matrix *m, const vec3d *fvec, const vec3d *uvec = nul
  */
 matrix *vm_vector_2_matrix_norm(matrix *m, const vec3d *fvec, const vec3d *uvec = NULL, const vec3d *rvec = NULL);
 
-//rotates a vector through a matrix. returns ptr to dest vector
-vec3d *vm_vec_rotate(vec3d *dest, const vec3d *src, const matrix *m);
-
-//rotates a vector through the transpose of the given matrix. 
-//returns ptr to dest vector
-// This is a faster replacement for this common code sequence:
-//    vm_copy_transpose(&tempm,src_matrix);
-//    vm_vec_rotate(dst_vec,src_vect,&tempm);
-// Replace with:
-//    vm_vec_unrotate(dst_vec,src_vect, src_matrix)
-//
-// THIS DOES NOT ACTUALLY TRANSPOSE THE SOURCE MATRIX!!! So if
-// you need it transposed later on, you should use the 
-// vm_vec_transpose() / vm_vec_rotate() technique.
-vec3d *vm_vec_unrotate(vec3d *dest, const vec3d *src, const matrix *m);
-
 //transpose a matrix in place. returns ptr to matrix
 matrix *vm_transpose(matrix *m);
 
 //copy and transpose a matrix. returns ptr to matrix
 //dest CANNOT equal source. use vm_transpose() if this is the case
 matrix *vm_copy_transpose(matrix *dest, const matrix *src);
-
-//mulitply 2 matrices, fill in dest.  returns ptr to dest
-matrix *vm_matrix_x_matrix(matrix *dest, const matrix *src0, const matrix *src1);
 
 //extract angles from a matrix
 angles *vm_extract_angles_matrix(angles *a, const matrix *m);
@@ -761,6 +917,46 @@ inline matrix operator*(const matrix& A, const matrix& B)
 	out.vec.fvec = BT * A.vec.fvec;
 
 	return out;
+}
+
+// rotates a vector through a matrix, writes to *dest and returns the pointer
+// if m is a rotation matrix it will preserve the length of *src, so normalised vectors will remain normalised
+inline vec3d *vm_vec_rotate(vec3d *dest, const vec3d *src, const matrix *m)
+{
+	*dest = (*m) * (*src);
+
+	return dest;
+}
+
+//rotates a vector through the transpose of the given matrix.
+//returns ptr to dest vector
+// This is a faster replacement for this common code sequence:
+//    vm_copy_transpose(&tempm,src_matrix);
+//    vm_vec_rotate(dst_vec,src_vect,&tempm);
+// Replace with:
+//    vm_vec_unrotate(dst_vec,src_vect, src_matrix)
+//
+// THIS DOES NOT ACTUALLY TRANSPOSE THE SOURCE MATRIX!!! So if
+// you need it transposed later on, you should use the
+// vm_vec_transpose() / vm_vec_rotate() technique.
+// like vm_vec_rotate, but uses the transpose matrix instead. for rotations, this is an inverse.
+inline vec3d *vm_vec_unrotate(vec3d *dest, const vec3d *src, const matrix *m)
+{
+	matrix mt;
+
+	vm_copy_transpose(&mt, m);
+	*dest = mt * (*src);
+
+	return dest;
+}
+
+// Old matrix multiplication routine. Note that the order of multiplication is inverted
+// compared to the mathematical standard: formally, this calculates src1 * src0
+inline matrix *vm_matrix_x_matrix(matrix *dest, const matrix *src0, const matrix *src1)
+{
+	*dest = (*src1) * (*src0);
+
+	return dest;
 }
 
 std::ostream& operator<<(std::ostream& os, const vec3d& vec);
