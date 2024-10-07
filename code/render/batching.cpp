@@ -322,17 +322,14 @@ void batching_add_bitmap_rotated_internal(primitive_batch *batch, int texture, v
 	auto uvec_scale_half_mm = _mm256_extractf128_ps(ruvec_scale_mm, 1);
 	auto uvec_scale_mm = _mm256_broadcast_ps(&uvec_scale_half_mm);
 
-	auto rvec_sign_mm = _mm256_mul_ps(rvec_scale_mm, _mm256_set_ps(1, 1, 1, 1, -1, -1, -1, -1));
-	auto uvec_sign_mm = _mm256_mul_ps(uvec_scale_mm, _mm256_set_ps(1, 1, 1, 1, -1, -1, -1, -1));
-
 	//This may look illegal, casting a float ptr to a xmm register pointer.
 	//BUT: VBROADCASTF128, called by _mm256_broadcast_ps is actually capable of loading from memory by the spec, thus being capable to serve as a load
 	auto pnt_double_mm = _mm256_broadcast_ps(reinterpret_cast<__m128 *>(&p[2]));
 
-	auto p_0_2_pre_mm = _mm256_add_ps(pnt_double_mm, rvec_sign_mm);
+	auto p_0_2_pre_mm = _mm256_fmadd_ps(rvec_scale_mm, _mm256_set_ps(1, 1, 1, 1, -1, -1, -1, -1), pnt_double_mm);
 
-	auto p_0_2_mm = _mm256_add_ps(p_0_2_pre_mm, uvec_sign_mm);
-	auto p_1_3_mm = _mm256_add_ps(_mm256_permute2f128_ps(p_0_2_pre_mm, p_0_2_pre_mm, 1), uvec_sign_mm);
+	auto p_0_2_mm = _mm256_fmadd_ps(uvec_scale_mm, _mm256_set_ps(1, 1, 1, 1, -1, -1, -1, -1), p_0_2_pre_mm);
+	auto p_1_3_mm = _mm256_fmadd_ps(uvec_scale_mm, _mm256_set_ps(1, 1, 1, 1, -1, -1, -1, -1), _mm256_permute2f128_ps(p_0_2_pre_mm, p_0_2_pre_mm, 1));
 
 	_mm256_storeu_ps(reinterpret_cast<float*>(&p[0]), p_0_2_mm);
 	_mm256_storeu_ps(reinterpret_cast<float*>(&p[2]), p_1_3_mm);
