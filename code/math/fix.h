@@ -5,28 +5,47 @@
  * or otherwise commercially exploit the source or things you created based on the 
  * source.
  *
-*/ 
-
-
+*/
 
 #ifndef _FIX_H
 #define _FIX_H
 
-#include "globalincs/pstypes.h"
+class fix {
+	std::int32_t _fix;
 
-#define F1_0 65536
-#define f1_0 65536
+  public:
+	constexpr fix() : _fix(0) {}
+	explicit constexpr fix(int in) : _fix(in << 16) { }
 
-fix fixmul(fix a, fix b);
-fix fixdiv(fix a, fix b);
-fix fixmuldiv(fix a, fix b, fix c);
+	explicit constexpr operator int() const {
+		return static_cast<int>(_fix >> 16);
+	}
+	constexpr operator float() const {
+		return static_cast<float>(_fix) / 65536.0f;
+	}
+	constexpr operator double() const {
+		return static_cast<double>(_fix) / 65536.0;
+	}
 
-constexpr int f2i(fix a) {
-	return static_cast<int>(a >> 16);
+	constexpr fix& operator-=(const fix& other) {
+		_fix -= other._fix;
+		return *this;
+	}
+
+	constexpr fix& operator+=(const fix& other) {
+		_fix += other._fix;
+		return *this;
+	}
+};
+
+constexpr fix operator-(fix l, const fix& r) {
+	return l -= r;
 }
 
-constexpr fix i2f(int a) {
-	return static_cast<fix>(a << 16);
+constexpr fix operator+(fix l, const fix& r) {
+	return l += r;
 }
+
+static constexpr fix F1_0(1);
 
 #endif

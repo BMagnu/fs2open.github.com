@@ -2167,7 +2167,7 @@ void game_show_framerate()
 {	
 	int line_height = gr_get_font_height() + 1;
 
-	float cur_time = f2fl(timer_get_approx_seconds());
+	float cur_time = timer_get_approx_seconds();
 	if (cur_time - Start_time > 30.0f) {
 		mprintf(("%i frames executed in %7.3f seconds, %7.3f frames per second.\n", Framecount, cur_time - Start_time, Framecount/(cur_time - Start_time)));
 		Start_time += 1000.0f;

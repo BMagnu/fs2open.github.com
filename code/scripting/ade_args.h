@@ -290,16 +290,11 @@ template <typename T>
 typename std::enable_if<!std::is_same<T, bool>::value && std::is_integral<T>::value, void>::type
 set_single_arg(lua_State* L, char fmt, T i)
 {
-	// fix is also an int for C++ so we need to check the format character to determine what should be done
-	Assertion(fmt == 'i' || fmt == 'x', "Invalid character '%c' for number type!", fmt);
-
-	if (fmt == 'x') {
-		lua_pushnumber(L, static_cast<lua_Number>(f2fl((fix)i)));
-	} else {
-		lua_pushinteger(L, static_cast<lua_Integer>(i));
-	}
+	Assertion(fmt == 'i', "Invalid character '%c' for number type!", fmt);
+	lua_pushinteger(L, static_cast<lua_Integer>(i));
 }
 void set_single_arg(lua_State* L, char fmt, const char* s);
+void set_single_arg(lua_State* L, char fmt, const fix& s);
 void set_single_arg(lua_State* L, char fmt, const SCP_string& s);
 template<typename T>
 void set_single_arg(lua_State* L, char fmt, ade_odata_setter<T>&& od)

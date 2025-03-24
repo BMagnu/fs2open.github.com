@@ -19,6 +19,7 @@
 #include "globalincs/toolchain.h"
 #include "globalincs/vmallocator.h"
 #include "utils/strings.h"
+#include "math/fix.h"
 
 #include <cstdio>    // For NULL, etc
 #include <cstdlib>
@@ -54,7 +55,6 @@ constexpr bool FSO_DEBUG = false;
 #endif
 
 typedef std::int32_t _fs_time_t;  // time_t here is 64-bit and we need 32-bit
-typedef std::int32_t fix;
 
 // PTR compatible sizes
 typedef ptrdiff_t ptr_s;

@@ -121,6 +121,12 @@ void set_single_arg(lua_State* L, char fmt, const char* s)
 	lua_pushstring(L, s);
 }
 
+void set_single_arg(lua_State* L, char fmt, const fix& s)
+{
+	Assertion(fmt == 'x', "Invalid character '%c' for number type!", fmt);
+	lua_pushnumber(L, static_cast<lua_Number>(static_cast<float>(s)));
+}
+
 void set_single_arg(lua_State* L, char fmt, const SCP_string& s)
 {
 	Assertion(fmt == 's', "Invalid format character '%c' for string type!", fmt);
