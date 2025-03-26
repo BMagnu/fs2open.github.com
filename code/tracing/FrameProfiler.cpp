@@ -189,7 +189,7 @@ void FrameProfiler::get_profile_from_history(SCP_string& name,
 void FrameProfiler::store_profile_in_history(SCP_string& name,
 											 uint64_t time) {
 	float old_ratio;
-	float new_ratio = 0.8f * f2fl(Frametime);
+	float new_ratio = 0.8f * static_cast<float>(Frametime);
 
 	if (new_ratio > 1.0f) {
 		new_ratio = 1.0f;

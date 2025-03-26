@@ -76,6 +76,20 @@ bool get_single_arg(lua_State* L, const get_args_state& state, char fmt, const c
 	}
 	return true;
 }
+
+bool get_single_arg(lua_State* L, const get_args_state& state, char fmt, fix* i) {
+	Assertion(fmt == 'x', "Invalid character '%c' for fix type!", fmt);
+
+	if (lua_isnumber(L, state.nargs)) {
+		*i = static_cast<fix>((float)lua_tonumber(L, state.nargs));
+	} else {
+		LuaError(L, "%s: Argument %d is an invalid type '%s'; number expected", state.funcname, state.nargs,
+			ade_get_type_string(L, state.nargs));
+		return false;
+	}
+	return true;
+}
+
 bool get_single_arg(lua_State* L, const get_args_state& state, char fmt, luacpp::LuaTable* t)
 {
 	Assertion(fmt == 't', "Invalid character '%c' for table type!", fmt);

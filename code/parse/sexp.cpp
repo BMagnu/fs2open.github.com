@@ -7298,9 +7298,9 @@ int sexp_check_objective_delay(int delay_node, int objective_node, int(*objectiv
 	int val;
 	bool is_nan, is_nan_forever;
 
-	time = 0;
+	time = fix();
 
-	delay = i2f(eval_num(delay_node, is_nan, is_nan_forever));
+	delay = static_cast<fix>(eval_num(delay_node, is_nan, is_nan_forever));
 	if (is_nan)
 		return SEXP_FALSE;
 	if (is_nan_forever)
@@ -7328,7 +7328,7 @@ int sexp_is_destroyed(int n, fix *latest_time)
 {
 	int	count, num_destroyed, wing_index;
 	bool has_been_destroyed;
-	fix	time = 0;
+	fix	time = fix();
 
 	count = 0;
 	num_destroyed = 0;
@@ -7478,7 +7478,7 @@ int sexp_has_arrived(int n, fix *latest_time)
 {
 	int	count, num_arrived;
 	bool has_arrived;
-	fix	time = 0;
+	fix	time = fix();
 
 	count = 0;
 	num_arrived = 0;
@@ -7543,7 +7543,7 @@ int sexp_has_departed(int n, fix *latest_time)
 {
 	int count, num_departed;
 	bool has_departed;
-	fix time = 0;
+	fix time = fix();
 
 	count = 0;
 	num_departed = 0;
@@ -7724,9 +7724,9 @@ int sexp_are_waypoints_done_delay(int n)
 	int count, val;
 	bool is_nan, is_nan_forever;
 
-	time = 0;
+	time = fix();
 
-	delay = i2f(eval_num(delay_node, is_nan, is_nan_forever));
+	delay = static_cast<fix>(eval_num(delay_node, is_nan, is_nan_forever));
 	if (is_nan)
 		return SEXP_FALSE;
 	if (is_nan_forever)
@@ -7734,7 +7734,8 @@ int sexp_are_waypoints_done_delay(int n)
 
 	if (count_node >= 0)
 	{
-		count = i2f(eval_num(count_node, is_nan, is_nan_forever));
+		//This used to be converted to a fix here (i.e. << 16), but I am almost certain that that was incorrect. -Lafiel
+		count = eval_num(count_node, is_nan, is_nan_forever);
 		if (is_nan)
 			return SEXP_FALSE;
 		if (is_nan_forever)
@@ -7845,7 +7846,7 @@ int sexp_has_docked_or_undocked(int n, int op_num)
 
 	if (op_num == OP_HAS_DOCKED_DELAY || op_num == OP_HAS_UNDOCKED_DELAY)
 	{
-		fix delay = i2f(eval_num(n, is_nan, is_nan_forever));
+		fix delay = static_cast<fix>(eval_num(n, is_nan, is_nan_forever));
 		fix time;
 
 		if (is_nan)
@@ -7931,7 +7932,7 @@ int sexp_ship_type_destroyed(int n)
  */
 int sexp_mission_time()
 {
-	return f2i(Missiontime);
+	return static_cast<int>(Missiontime);
 }
 
 /**
@@ -7940,7 +7941,7 @@ int sexp_mission_time()
 int sexp_mission_time_msecs()
 {
 	// multiplying by 1000 can go over the limit for LONG_MAX so cast to long long int first
-	auto mission_time = (std::int64_t) Missiontime;
+	auto mission_time = (std::int64_t) Missiontime.get_raw();
 	// This hack is necessary since fix is a 32-bit integer which would overflow if f2i would be used
 	return (int)((mission_time * 1000) / 65536);
 }
@@ -8072,7 +8073,7 @@ int sexp_time_exited(int n, int op_num)
 	}
 
 	// if we're here we know that the ship/wing did its thing
-	return f2i(time);
+	return static_cast<int>(time);
 }
 
 int sexp_time_arrived(int n, bool ship)
@@ -8101,7 +8102,7 @@ int sexp_time_arrived(int n, bool ship)
 	}
 
 	// if we're here we know that the ship/wing has arrived
-	return f2i(time);
+	return static_cast<int>(time);
 }
 
 int sexp_time_docked_or_undocked(int n, bool docked)
@@ -8132,7 +8133,7 @@ int sexp_time_docked_or_undocked(int n, bool docked)
 
 	if (mission_log_get_time_indexed(docked ? LOG_SHIP_DOCKED : LOG_SHIP_UNDOCKED, docker->name, dockee->name, count, &time))
 	{
-		return f2i(time);
+		return static_cast<int>(time);
 	}
 	// if either ship has exited, no way to dock
 	else if (docker->status == ShipStatus::EXITED || dockee->status == ShipStatus::EXITED)
@@ -9914,12 +9915,12 @@ int sexp_last_order_time(int n)
 	ai_goal *aigp;
 	bool is_nan, is_nan_forever;
 
-	time = i2f(eval_num(n, is_nan, is_nan_forever));
+	time = static_cast<fix>(eval_num(n, is_nan, is_nan_forever));
 	if (is_nan)
 		return SEXP_FALSE;
 	if (is_nan_forever)
 		return SEXP_KNOWN_FALSE;
-	Assert ( time >= 0 );
+	Assert ( time >= fix() );
 
 	n = CDR(n);
 	while ( n != -1 ) {
@@ -10218,7 +10219,7 @@ int sexp_depart_node_delay(int n)
 	bool is_nan, is_nan_forever;
 
 	// get the delay
-	delay = i2f(eval_num(n, is_nan, is_nan_forever));
+	delay = static_cast<fix>(eval_num(n, is_nan, is_nan_forever));
 	n = CDR(n);
 
 	if (is_nan)
@@ -10230,7 +10231,7 @@ int sexp_depart_node_delay(int n)
 	n = CDR(n);
 
 	// iterate through the list of ships
-	latest_time = 0;
+	latest_time = fix();
 	count = 0;
 	num_departed = 0;
 	while ( n != -1 ) {
@@ -10274,7 +10275,7 @@ int sexp_destroyed_departed_delay(int n)
 	Assert( n >= 0 );
 
 	// get the delay
-	delay = i2f(eval_num(n, is_nan, is_nan_forever));
+	delay = static_cast<fix>(eval_num(n, is_nan, is_nan_forever));
 	n = CDR(n);
 
 	if (is_nan)
@@ -10284,9 +10285,9 @@ int sexp_destroyed_departed_delay(int n)
 
 	count = 0;					// number destroyed or departed
 	total = 0;					// total number of ships/wings to check
-	latest_time = 0;
+	latest_time = fix();
 	while ( n != -1 ) {
-		fix time_gone = 0;
+		fix time_gone = fix();
 		total++;
 
 		auto wingp = eval_wing(n);
@@ -10406,7 +10407,7 @@ int sexp_is_cargo_known( int n, bool check_delay )
 
 			// check the delay of when we found out
 			time_known = Missiontime - Ships_exited[ship_entry->exited_index].time_cargo_revealed;
-			if ( f2i(time_known) >= delay )
+			if ( static_cast<int>(time_known) >= delay )
 				is_known = true;
 		}
 		// ship is in mission
@@ -10415,7 +10416,7 @@ int sexp_is_cargo_known( int n, bool check_delay )
 			if ( ship_entry->shipp()->flags[Ship::Ship_Flags::Cargo_revealed] )
 			{
 				time_known = Missiontime - ship_entry->shipp()->time_cargo_revealed;
-				if ( f2i(time_known) >= delay )
+				if ( static_cast<int>(time_known) >= delay )
 					is_known = true;
 			}
 		}
@@ -10451,7 +10452,7 @@ void get_cap_subsys_cargo_flags(const ship *shipp, const char *subsys_name, int 
 	else
 	{
 		*known = -1;
-		*time_revealed = 0;
+		*time_revealed = fix();
 	}
 }
 
@@ -10514,7 +10515,7 @@ int sexp_cap_subsys_cargo_known_delay(int n)
 				return SEXP_KNOWN_FALSE;
 			}
 
-			if (f2i(Missiontime - time_known) >= delay)
+			if (static_cast<int>(Missiontime - time_known) >= delay)
 				is_known = true;
 		}
 		// ship is in mission
@@ -10529,7 +10530,7 @@ int sexp_cap_subsys_cargo_known_delay(int n)
 			if (cargo_revealed)
 			{
 				time_known = Missiontime - time_revealed;
-				if ( f2i(time_known) >= delay )
+				if ( static_cast<int>(time_known) >= delay )
 					is_known = true;
 			}
 		}
@@ -10637,16 +10638,16 @@ int sexp_has_been_tagged_delay(int n)
 			// check the delay of when we found out.  We use the ship died time which isn't entirely accurate
 			// but won't cause huge delays.
 			time_known = Missiontime - Ships_exited[ship_entry->exited_index].time;
-			if ( f2i(time_known) >= delay )
+			if ( static_cast<int>(time_known) >= delay )
 				is_known = true;
 		}
 		// ship is in mission
 		else if (ship_entry->has_shipp())
 		{
-			if ( ship_entry->shipp()->time_first_tagged != 0 )
+			if ( ship_entry->shipp()->time_first_tagged != fix() )
 			{
 				time_known = Missiontime - ship_entry->shipp()->time_first_tagged;
-				if ( f2i(time_known) >= delay )
+				if ( static_cast<int>(time_known) >= delay )
 					is_known = true;
 			}
 		}
@@ -12531,7 +12532,7 @@ int sexp_is_true_for_duration(int op_node, int node)
 	}
 
 	// figure out the elapsed delta in milliseconds
-	int elapsed_delta = fl2i(f2fl(Missiontime - start_time) * MILLISECONDS_PER_SECOND);
+	int elapsed_delta = fl2i(static_cast<float>(Missiontime - start_time) * MILLISECONDS_PER_SECOND);
 
 	// compare to the duration
 	if (elapsed_delta >= duration)
@@ -18840,7 +18841,7 @@ int sexp_goal_delay_status( int n, int want_true )
 	bool is_nan, is_nan_forever;
 
 	auto name = CTEXT(n);
-	delay = i2f(eval_num(CDR(n), is_nan, is_nan_forever));
+	delay = static_cast<fix>(eval_num(CDR(n), is_nan, is_nan_forever));
 	if (is_nan) {
 		return SEXP_FALSE;
 	}
@@ -27521,7 +27522,7 @@ void maybe_write_to_event_log(int result)
 	char buffer [256]; 
 
 	int mask = generate_event_log_flags_mask(result); 
-	sprintf(buffer, "Event: %s at mission time %d seconds (%d milliseconds)", Mission_events[Event_index].name.c_str(), f2i(Missiontime), f2i((longlong)Missiontime * MILLISECONDS_PER_SECOND));
+	sprintf(buffer, "Event: %s at mission time %d seconds (%d milliseconds)", Mission_events[Event_index].name.c_str(), static_cast<int>(Missiontime), static_cast<int>(((longlong)Missiontime.get_raw() * MILLISECONDS_PER_SECOND) << 16));
 	Current_event_log_buffer->push_back(buffer);
 		
 	if (!Snapshot_all_events && (!(mask &=  Mission_events[Event_index].mission_log_flags))) {

@@ -450,7 +450,7 @@ static int joy_get_unscaled_reading(int raw)
 	if (raw > rng)
 		raw = rng;
 
-	return (int) ((std::uint64_t) raw * (std::uint64_t) F1_0 / (std::uint64_t) rng);  // convert to 0 - F1_0 range, 64bit ints used to avoid uint overflow
+	return (int) ((std::uint64_t) raw * (std::uint64_t) F1_0.get_raw() / (std::uint64_t) rng);  // convert to 0 - F1_0 range, 64bit ints used to avoid uint overflow
 }
 
 int joy_get_scaled_reading(int raw)
@@ -2946,7 +2946,7 @@ void maybe_invert(bool inv, CC_type type, int &val)
 	switch (type) {
 	case CC_TYPE_AXIS_ABS:
 		// Abs uses full range, 0 to 1
-		val = F1_0 - val;
+		val = F1_0.get_raw() - val;
 		break;
 
 	case CC_TYPE_AXIS_REL:

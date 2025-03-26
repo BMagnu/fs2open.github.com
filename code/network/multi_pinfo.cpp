@@ -667,7 +667,7 @@ void multi_pinfo_build_stats()
 	sprintf(Multi_pinfo_stats_vals[MPI_MISSIONS_FLOWN],"%d",(int)sc->missions_flown);
 
 	// flight time		
-	game_format_time(fl2f((float)sc->flight_time),Multi_pinfo_stats_vals[MPI_FLIGHT_TIME]);		
+	game_format_time(static_cast<fix>((float)sc->flight_time), Multi_pinfo_stats_vals[MPI_FLIGHT_TIME]);
 
 	// last flown	
 	if(sc->last_flown == 0){

@@ -409,7 +409,7 @@ void pilotfile::plr_read_multiplayer()
 	p->m_server_options.voice_qos = handler->readUByte("voice_qos");
 	p->m_server_options.voice_token_wait = handler->readInt("voice_token_wait");
 	p->m_server_options.voice_record_time = handler->readInt("voice_record_time");
-	p->m_server_options.mission_time_limit = (fix)handler->readInt("mission_time_limit");
+	p->m_server_options.mission_time_limit = fix::set_raw(handler->readInt("mission_time_limit"));
 	p->m_server_options.kill_limit = handler->readInt("kill_limit");
 
 	// local options
@@ -448,7 +448,7 @@ void pilotfile::plr_write_multiplayer()
 	handler->writeUByte("voice_qos", p->m_server_options.voice_qos);
 	handler->writeInt("voice_token_wait", p->m_server_options.voice_token_wait);
 	handler->writeInt("voice_record_time", p->m_server_options.voice_record_time);
-	handler->writeInt("mission_time_limit", (int)p->m_server_options.mission_time_limit);
+	handler->writeInt("mission_time_limit", p->m_server_options.mission_time_limit.get_raw());
 	handler->writeInt("kill_limit", p->m_server_options.kill_limit);
 
 	// local options

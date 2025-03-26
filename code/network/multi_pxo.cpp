@@ -1811,14 +1811,14 @@ void multi_pxo_button_pressed(int n)
 
 	case MULTI_PXO_RANKINGS:		
 		// make sure he doesn't click it too many times
-		if((Multi_pxo_ranking_last < 0.0f) || ((f2fl(timer_get_fixed_seconds()) - Multi_pxo_ranking_last) > MULTI_PXO_RANK_TIME) ){
+		if((Multi_pxo_ranking_last < 0.0f) || ((static_cast<float>(timer_get_fixed_seconds()) - Multi_pxo_ranking_last) > MULTI_PXO_RANK_TIME) ){
 			gamesnd_play_iface(InterfaceSounds::USER_SELECT);
 			
 			// fire up the url
 			multi_pxo_url(Multi_options_g.pxo_rank_url);
 
 			// mark the time down
-			Multi_pxo_ranking_last = f2fl(timer_get_fixed_seconds());
+			Multi_pxo_ranking_last = static_cast<float>(timer_get_fixed_seconds());
 		} else {
 			gamesnd_play_iface(InterfaceSounds::GENERAL_FAIL);
 		}
@@ -2271,7 +2271,7 @@ void multi_pxo_make_channels(char *chan_str)
 	nprintf(("Network","Making some channels!\n"));
 
 	// set the last get time
-	Multi_pxo_channel_last_refresh = f2fl(timer_get_fixed_seconds());
+	Multi_pxo_channel_last_refresh = static_cast<float>(timer_get_fixed_seconds());
 
 	name_tok = strtok(chan_str," ");
 	if(name_tok == nullptr){
@@ -2417,7 +2417,7 @@ void multi_pxo_process_channels(bool api_access)
 	}
 
 	// last refresh time
-	if((Multi_pxo_channel_last_refresh > 0.0f) && ((f2fl(timer_get_fixed_seconds()) - Multi_pxo_channel_last_refresh) > CHANNEL_REFRESH_TIME) ){
+	if((Multi_pxo_channel_last_refresh > 0.0f) && ((static_cast<float>(timer_get_fixed_seconds()) - Multi_pxo_channel_last_refresh) > CHANNEL_REFRESH_TIME) ){
 		// refresh channels
 		multi_pxo_set_status_text(XSTR("Refreshing Public Channel List",952));				
 
@@ -2432,7 +2432,7 @@ void multi_pxo_process_channels(bool api_access)
 
 	// if we haven't updated our server channel counts in a while, do so again
 	// last refresh time
-	if((Multi_pxo_channel_server_refresh > 0.0f) && ((f2fl(timer_get_fixed_seconds()) - Multi_pxo_channel_server_refresh) > CHANNEL_SERVER_REFRESH_TIME) ){
+	if((Multi_pxo_channel_server_refresh > 0.0f) && ((static_cast<float>(timer_get_fixed_seconds()) - Multi_pxo_channel_server_refresh) > CHANNEL_SERVER_REFRESH_TIME) ){
 
 		// do it _NOW_ I"M RIGHT HERE KILL ME WHAT ARE YOU WAITING FOR DO IT KILL ME DO IT NOW!
 		multi_pxo_channel_refresh_servers();		
@@ -2463,7 +2463,7 @@ void multi_pxo_channel_refresh_servers()
 	}
 
 	// record the time
-	Multi_pxo_channel_server_refresh = f2fl(timer_get_fixed_seconds());
+	Multi_pxo_channel_server_refresh = static_cast<float>(timer_get_fixed_seconds());
 }
 
 /**
@@ -4268,7 +4268,7 @@ void multi_pxo_pinfo_build_vals()
 
 	// flight time	
 	memset(Multi_pxo_pinfo_vals[6], 0, 50);
-	game_format_time( fl2f((float)fs->stats.flight_time), Multi_pxo_pinfo_vals[6] );	
+	game_format_time( static_cast<fix>((float)fs->stats.flight_time), Multi_pxo_pinfo_vals[6] );
 
 	// last flown
 	memset(Multi_pxo_pinfo_vals[7], 0, 50);

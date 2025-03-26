@@ -38,7 +38,6 @@ inline bool fl_is_nan(float fl) {
 #define d2l(d) (static_cast<long>(d))                                       // double to long
 #define fl2ir(fl) (static_cast<int>(fl + (((fl) < 0.0f) ? -0.5f : 0.5f)))   // float to int, rounding
 #define d2lr(d) (static_cast<long>(d + (((d) < 0.0) ? -0.5 : 0.5)))         // double to long, rounding
-#define fl2f(fl) (static_cast<int>((fl)*65536.0f))                          // float to fix
 #define fl_tan(fl) tanf(fl)
 
 // convert a measurement in degrees to radians

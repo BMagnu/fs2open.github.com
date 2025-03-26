@@ -1125,11 +1125,11 @@ ADE_VIRTVAR(TimeLimit, l_NetGame, nullptr, "The current time limit in minutes. -
 
 	if (ADE_SETTING_VAR) {
 		if (time < 0) {
-			current.getNetgame()->options.mission_time_limit = fl2f(-1.0f);
+			current.getNetgame()->options.mission_time_limit = static_cast<fix>(-1.0f);
 		} else if (time >= MULTI_HO_MAX_TIME_LIMIT) {
-			current.getNetgame()->options.mission_time_limit = MULTI_HO_MAX_TIME_LIMIT;
+			current.getNetgame()->options.mission_time_limit = fix::set_raw(MULTI_HO_MAX_TIME_LIMIT);
 		} else {
-			current.getNetgame()->options.mission_time_limit = fl2f(60.0f * (float)time);
+			current.getNetgame()->options.mission_time_limit = static_cast<fix>(60.0f * (float)time);
 		}
 	}
 

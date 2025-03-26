@@ -434,7 +434,7 @@ typedef struct ai_info {
 	//	The bits in ai_flags determine which is occurring.  AIF_AVOID_SMALL_SHIP, AIF_AVOID_BIG_SHIP
 	int		avoid_ship_num;					//	object index of small ship to avoid
 	vec3d	avoid_goal_point;					//	point to aim at when avoiding a ship
-	fix		avoid_check_timestamp;			//	timestamp at which to next check for having to avoid ship
+	int		avoid_check_timestamp;			//	timestamp at which to next check for having to avoid ship
 
 	vec3d	big_collision_normal;			// Global normal of collision with big ship.  Helps find direction to fly away from big ship.  Set for each collision.
 	vec3d	big_recover_1_direction;		//	A relative direction to fly towards when recovering from collision with a big ship, stage 1.

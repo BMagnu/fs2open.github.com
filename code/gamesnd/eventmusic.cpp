@@ -726,7 +726,7 @@ void event_music_first_pattern()
 	}
 
 	// if we really are initializing the level
-	if (Missiontime == 0) {
+	if (Missiontime == fix()) {
 		Pattern_timer_id = TIMESTAMP::invalid();	// don't let this start quite yet; see event_music_set_start_delay()
 	}
 	// don't step on a timestamp in progress; only set it if it has elapsed at least once already

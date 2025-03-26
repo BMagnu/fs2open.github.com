@@ -3115,7 +3115,7 @@ bool render_tech_model(tech_render_type model_type, int x1, int y1, int x2, int 
 			closeup_zoom = sip->closeup_zoom;
 
 			if (sip->uses_team_colors) {
-				render_info.set_team_color(sip->default_team_name, "none", 0, 0);
+				render_info.set_team_color(sip->default_team_name, "none", fix(), 0);
 			}
 
 			if (sip->flags[Ship::Info_Flags::No_lighting]) {

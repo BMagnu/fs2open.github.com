@@ -1223,7 +1223,7 @@ ADE_FUNC(renderSelectModel,
 	model_render_params render_info;
 
 	if (sip->uses_team_colors) {
-		render_info.set_team_color(sip->default_team_name, "none", 0, 0);
+		render_info.set_team_color(sip->default_team_name, "none", fix(), 0);
 	}
 
 	if (sip->replacement_textures.size() > 0) {

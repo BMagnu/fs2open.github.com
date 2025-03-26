@@ -46,7 +46,7 @@ void multi_ping_reset(ping_struct *ps)
 	ps->ping_add = 0;
 
 	// set the ping start to be -1
-	ps->ping_start = -1L;
+	ps->ping_start = fix::set_raw(-1L);
 
 	ps->ping_avg = -1;
 
@@ -60,7 +60,7 @@ void multi_ping_eval_pong(ping_struct *ps, fix pong_time)
 	fix ping_sum;
 	
 	// if the ping technically hasn't started,
-	if(ps->ping_start < 0L){
+	if(ps->ping_start < fix()){
 		nprintf(("Network","Processing pong for ping which hasn't started yet!\n"));
 		return;
 	}
@@ -68,7 +68,7 @@ void multi_ping_eval_pong(ping_struct *ps, fix pong_time)
 	// if we still have room to add a ping
 	if(ps->num_pings < MAX_PINGS){
 		ps->ping_times[ps->ping_add++] = pong_time - ps->ping_start;
-		Assertion(ps->ping_times[ps->ping_add-1] > 0L, "Non-positive ping value!");
+		Assertion(ps->ping_times[ps->ping_add-1] > fix(), "Non-positive ping value!");
 		ps->num_pings++;
 	} 
 	// otherwise if we've wrapped around
@@ -81,15 +81,15 @@ void multi_ping_eval_pong(ping_struct *ps, fix pong_time)
 		}
 
 		ps->ping_times[ps->ping_add] = pong_time - ps->ping_start;
-		Assertion(ps->ping_times[ps->ping_add == 0 ? MAX_PINGS - 1 : ps->ping_add - 1] > 0L, "Non-positive ping value!");
+		Assertion(ps->ping_times[ps->ping_add == 0 ? MAX_PINGS - 1 : ps->ping_add - 1] > fix(), "Non-positive ping value!");
 	}
 
 	// calculate the average ping time
-	ping_sum = 0L;
+	ping_sum = fix();
 	for(idx=0;idx<ps->num_pings;idx++){
 		ping_sum += ps->ping_times[idx];
 	}
-	ps->ping_avg = (int)(f2d(1000L * ping_sum) / (double)ps->num_pings);
+	ps->ping_avg = (int)(static_cast<double>(1000 * ping_sum) / (double)ps->num_pings);
 }
 
 // start a ping - call this when sending a ping packet

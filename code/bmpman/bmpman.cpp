@@ -2105,19 +2105,19 @@ void bm_lock_ani(int /*handle*/, bitmap_slot *bs, bitmap* /*bmp*/, int bpp, usho
 				int w, h;
 				fix u, utmp, v, du, dv;
 
-				u = v = 0;
+				u = v = fix();
 
 				du = (the_anim->width*F1_0) / bm->w;
 				dv = (the_anim->height*F1_0) / bm->h;
 
 				for (h = 0; h < bm->h; h++) {
 					ubyte *drow = &dptr[bm->w * h];
-					ubyte *srow = &sptr[f2i(v)*the_anim->width];
+					ubyte *srow = &sptr[static_cast<int>(v)*the_anim->width];
 
 					utmp = u;
 
 					for (w = 0; w < bm->w; w++) {
-						*drow++ = srow[f2i(utmp)];
+						*drow++ = srow[static_cast<int>(utmp)];
 						utmp += du;
 					}
 					v += dv;
@@ -2128,19 +2128,19 @@ void bm_lock_ani(int /*handle*/, bitmap_slot *bs, bitmap* /*bmp*/, int bpp, usho
 				int w, h;
 				fix u, utmp, v, du, dv;
 
-				u = v = 0;
+				u = v = fix();
 
 				du = (the_anim->width*F1_0) / bm->w;
 				dv = (the_anim->height*F1_0) / bm->h;
 
 				for (h = 0; h < bm->h; h++) {
 					unsigned short *drow = &((unsigned short*)dptr)[bm->w * h];
-					unsigned short *srow = &((unsigned short*)sptr)[f2i(v)*the_anim->width];
+					unsigned short *srow = &((unsigned short*)sptr)[static_cast<int>(v)*the_anim->width];
 
 					utmp = u;
 
 					for (w = 0; w < bm->w; w++) {
-						*drow++ = srow[f2i(utmp)];
+						*drow++ = srow[static_cast<int>(utmp)];
 						utmp += du;
 					}
 					v += dv;

@@ -2716,7 +2716,7 @@ bool model_get_team_color( team_color *clr, const SCP_string &team, const SCP_st
 			team_color end = Team_Colors[secondaryteam];
 			float time_remaining = 0.0f;
 			if (fadetime != 0) // avoid potential div-by-zero
-				time_remaining = (f2fl(Missiontime - timestamp) * 1000)/fadetime;
+				time_remaining = (static_cast<float>(Missiontime - timestamp) * 1000)/fadetime;
 			CLAMP(time_remaining, 0.0f, 1.0f);
 			model_mix_two_team_colors(&temp_color, &start, &end, time_remaining);
 

@@ -90,13 +90,13 @@ fix timer_get_fixed_seconds()
 {
 	if (!Timer_inited) {
 		UNREACHABLE("Make sure you call timer_init before anything that uses timer functions!");
-		return 0;
+		return fix();
 	}
 
 	auto time = timer_get_microseconds();
-	time *= F1_0;
+	time *= F1_0.get_raw();
 
-	return static_cast<fix>(time / MICROSECONDS_PER_SECOND);
+	return fix::set_raw(time / MICROSECONDS_PER_SECOND);
 }
 
 fix timer_get_approx_seconds()
@@ -666,7 +666,7 @@ void timestamp_update_time_compression()
 
 	// now we can set the new info
 	Timestamp_current_time_compression = Game_time_compression;
-	Timestamp_time_compression_multiplier = static_cast<float>(Game_time_compression) / F1_0;
+	Timestamp_time_compression_multiplier = static_cast<float>(Game_time_compression);
 
 	// and now take a new snapshot so that the raw timestamp is correct for this frame
 	timestamp_get_raw(true);
@@ -685,9 +685,9 @@ fix timestamp_get_mission_time()
 	// c.f. timer_get_fixed_seconds
 
 	auto time = (timestamp_get_microseconds() - Timestamp_microseconds_at_mission_start);
-	time *= F1_0;
+	time *= F1_0.get_raw();
 
-	return static_cast<fix>(time / MICROSECONDS_PER_SECOND);
+	return fix::set_raw(time / MICROSECONDS_PER_SECOND);
 }
 
 uint64_t timestamp_get_mission_time_in_microseconds()

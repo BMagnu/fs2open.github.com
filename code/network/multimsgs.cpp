@@ -3480,7 +3480,7 @@ void send_mission_log_packet( log_entry* entry )
 	ADD_DATA(type);
 	ADD_INT(entry->flags);
 	ADD_INT(sindex);
-	ADD_INT(entry->timestamp); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
+	ADD_FIX(entry->timestamp); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
 	ADD_STRING(entry->pname);
 	ADD_STRING(entry->sname);
 
@@ -3503,7 +3503,7 @@ void process_mission_log_packet( ubyte *data, header *hinfo )
 	GET_DATA(type);
 	GET_INT(flags);
 	GET_INT(sindex);
-	GET_INT(timestamp); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
+	GET_FIX(timestamp); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
 	GET_STRING(pname);
 	GET_STRING(sname);
 
@@ -3877,7 +3877,7 @@ void send_game_info_packet()
 	paused = (ubyte)((Netgame.game_state == NETGAME_STATE_PAUSED)?1:0);
 
 	BUILD_HEADER(GAME_INFO);
-	ADD_INT( Missiontime ); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
+	ADD_FIX( Missiontime ); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
 	ADD_DATA( paused );
 	
 	multi_io_send_to_all(data, packet_size);
@@ -3894,7 +3894,7 @@ void process_game_info_packet( ubyte *data, header *hinfo )
 
 	// get the mission time -- we should examine our time and the time from the server.  If off by some delta
 	// time, set our time to server time (should take ping time into account!!!)
-	GET_INT( mission_time ); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
+	GET_FIX( mission_time ); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
 	GET_DATA( paused );
 	PACKET_SET_SIZE();	
 }
@@ -7533,7 +7533,7 @@ void send_homing_weapon_info( int weapon_num )
 
 	if (flags & HWIF_BIG_UPDATE) {
 		fix current_lifetime = Missiontime - wp->creation_time;
-		ADD_INT(current_lifetime);
+		ADD_FIX(current_lifetime);
 		ADD_VECTOR(Objects[wp->objnum].pos);
 		ADD_FLOAT(wp->launch_speed);
 		ADD_ORIENT(Objects[wp->objnum].orient);
@@ -7548,7 +7548,7 @@ void process_homing_weapon_info( ubyte *data, header *hinfo )
 {
 	ubyte flags;
 	int offset;
-	fix missile_lifetime = 0;
+	fix missile_lifetime = fix();
 	ushort weapon_signature, homing_signature;
 	short h_subsys;
 	float launch_speed = 0.0f;
@@ -7567,7 +7567,7 @@ void process_homing_weapon_info( ubyte *data, header *hinfo )
 	GET_VECTOR( homing_goal );
 
 	if (flags & HWIF_BIG_UPDATE) {
-		GET_INT(missile_lifetime);
+		GET_FIX(missile_lifetime);
 		GET_VECTOR(missile_pos);
 		GET_FLOAT(launch_speed);
 		GET_ORIENT(orient_in);

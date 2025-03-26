@@ -368,7 +368,7 @@ int debris_find_oldest()
 	fix		oldest_time;
 
 	oldest_index = -1;
-	oldest_time = 0x7fffffff;
+	oldest_time = fix::set_raw(0x7fffffff);
 
 	for (auto &db: Debris) {
 		if (db.flags[Debris_Flags::OnHullDebrisList]) {

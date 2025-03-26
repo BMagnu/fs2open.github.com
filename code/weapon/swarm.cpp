@@ -177,7 +177,7 @@ void swarm_update_direction(object *objp, swarm_info* swarmp)
 		int zig_zag_time = fl2i(SWARM_CHANGE_DIR_TIME + SWARM_TIME_VARIANCE * (frand() - 0.5f) * 2);
 		swarmp->change_timestamp = timestamp(zig_zag_time);
 
-		float missile_age = f2fl(Missiontime - wp->creation_time);
+		float missile_age = static_cast<float>(Missiontime - wp->creation_time);
 
 		if (hobjp != &obj_used_list && missile_age > 0.5f && missile_age > wip->free_flight_time)
 		{

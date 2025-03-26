@@ -1496,7 +1496,7 @@ void send_ingame_ship_request_packet(int code,int rdata,net_player *pl)
 		// add the most recent position and orientation for the requested ship
 		ADD_VECTOR(Objects[rdata].pos);
 		ADD_ORIENT(Objects[rdata].orient);
-		ADD_INT( Missiontime ); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
+		ADD_FIX( Missiontime ); // NOTE: this is a long so careful with swapping in 64-bit platforms - taylor
 
 		// add the # of respawns this ship has left
 		pobj = mission_parse_get_arrival_ship( Objects[rdata].net_signature );
@@ -1723,7 +1723,7 @@ void process_ingame_ship_request_packet(ubyte *data, header *hinfo)
 		// get its most recent position and orientation
 		GET_VECTOR(objp->pos);
 		GET_ORIENT(objp->orient);
-		GET_INT(mission_time);
+		GET_FIX(mission_time);
 		GET_UINT( respawn_count );
 
 		// tell the server I'm in the mission
@@ -1810,7 +1810,7 @@ void process_ingame_ship_request_packet(ubyte *data, header *hinfo)
 		// obj_add_pairs( OBJ_INDEX(Player_obj) );
 
 		// use server time to sync up mission time and multi timer, taking average ping into account
-		float fl_mission_time = f2fl(mission_time);
+		float fl_mission_time = static_cast<float>(mission_time);
 
 		auto ping_offset = static_cast<float>(Netgame.server->s_info.ping.ping_avg / 2000.0f);	// half avg ping in seconds
 		fl_mission_time += ping_offset;

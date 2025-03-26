@@ -641,7 +641,7 @@ void HUD_add_to_scrollback(const char *text, int source)
 	hud_add_msg_to_scrollback(text, source, Missiontime);
 }
 
-void hud_add_msg_to_scrollback(const char *text, int source, int t)
+void hud_add_msg_to_scrollback(const char *text, int source, fix t)
 {
 	size_t msg_len = strlen(text);
 	if (msg_len == 0)
@@ -880,7 +880,7 @@ void hud_initialize_scrollback_lines()
 					if (split == nullptr)
 						offset = height / 3;
 
-					Msg_scrollback_lines.push_back({0, 0, node_msg.source, node_msg.x, offset, 0, text});
+					Msg_scrollback_lines.push_back({fix(), 0, node_msg.source, node_msg.x, offset, 0, text});
 				}
 			} else {
 				node_msg.y = height / 3;
@@ -1102,7 +1102,7 @@ void hud_scrollback_do_frame(float  /*frametime*/)
 						}
 					}
 
-					if (node_msg.time)
+					if (node_msg.time.get_raw() != 0)
 						gr_print_timestamp(Hud_mission_log_list_coords[gr_screen.res][0], Hud_mission_log_list_coords[gr_screen.res][1] + y, node_msg.time, GR_RESIZE_MENU);
 
 					int x = Hud_mission_log_list2_coords[gr_screen.res][0] + node_msg.x;

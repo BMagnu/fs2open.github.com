@@ -1375,7 +1375,7 @@ int parse_weapon(int subtype, bool replace, const char *filename)
 	if(optional_string("$Arm time:")) {
 		float flit;
 		stuff_float(&flit);
-		wip->arm_time = fl2f(flit);
+		wip->arm_time = static_cast<fix>(flit);
 	}
 
 	if(optional_string("$Arm distance:")) {
@@ -5407,8 +5407,8 @@ void weapon_home(object *obj, int num, float frame_time)
 	//	If not [free-flight-time] gone by, don't home yet.
 	// Goober5000 - this has been fixed back to more closely follow the original logic.  Remember, the retail code
 	// had 0.5 second of free flight time, the first half of which was spent ramping up to full speed.
-	if ((hobjp == &obj_used_list) || ( f2fl(Missiontime - wp->creation_time) < (wip->free_flight_time / 2) )) {
-		if (f2fl(Missiontime - wp->creation_time) > wip->free_flight_time) {
+	if ((hobjp == &obj_used_list) || ( static_cast<float>(Missiontime - wp->creation_time) < (wip->free_flight_time / 2) )) {
+		if (static_cast<float>(Missiontime - wp->creation_time) > wip->free_flight_time) {
 			// If this is a heat seeking homing missile and [free-flight-time] has elapsed since firing
 			// and we don't have a target (else we wouldn't be inside the IF), find a new target.
 			if (wip->wi_flags[Weapon::Info_Flags::Homing_heat]) {
@@ -5425,10 +5425,10 @@ void weapon_home(object *obj, int num, float frame_time)
 		}
 
 		if (wip->acceleration_time > 0.0f) {
-			if (Missiontime - wp->creation_time < fl2f(wip->acceleration_time)) {
+			if (Missiontime - wp->creation_time < static_cast<fix>(wip->acceleration_time)) {
 				float t;
 
-				t = f2fl(Missiontime - wp->creation_time) / wip->acceleration_time;
+				t = static_cast<float>(Missiontime - wp->creation_time) / wip->acceleration_time;
 				obj->phys_info.speed = wp->launch_speed + MAX(0.0f, wp->weapon_max_vel - wp->launch_speed) * t;
 			}
 		}
@@ -5452,10 +5452,10 @@ void weapon_home(object *obj, int num, float frame_time)
 	}
 
 	if (wip->acceleration_time > 0.0f) {
-		if (Missiontime - wp->creation_time < fl2f(wip->acceleration_time)) {
+		if (Missiontime - wp->creation_time < static_cast<fix>(wip->acceleration_time)) {
 			float t;
 
-			t = f2fl(Missiontime - wp->creation_time) / wip->acceleration_time;
+			t = static_cast<float>(Missiontime - wp->creation_time) / wip->acceleration_time;
 			obj->phys_info.speed = wp->launch_speed + (wp->weapon_max_vel - wp->launch_speed) * t;
 			vm_vec_copy_scale( &obj->phys_info.desired_vel, &obj->orient.vec.fvec, obj->phys_info.speed);
 		}
@@ -5786,7 +5786,7 @@ void weapon_home(object *obj, int num, float frame_time)
 		} else
 			obj->phys_info.speed = max_speed;
 
-		float time_alive = f2fl(Missiontime - wp->creation_time);
+		float time_alive = static_cast<float>(Missiontime - wp->creation_time);
 		if (wip->acceleration_time > 0.0f) {
 			// Ramp up speed linearly for the given duration
 			if (time_alive < wip->acceleration_time) {
@@ -5862,10 +5862,10 @@ void weapon_do_homing_behavior(object* obj, float  frame_time) {
 		}
 
 		if (wip->acceleration_time > 0.0f) {
-			if (Missiontime - wp->creation_time < fl2f(wip->acceleration_time)) {
+			if (Missiontime - wp->creation_time < static_cast<fix>(wip->acceleration_time)) {
 				float t;
 
-				t = f2fl(Missiontime - wp->creation_time) / wip->acceleration_time;
+				t = static_cast<float>(Missiontime - wp->creation_time) / wip->acceleration_time;
 				obj->phys_info.speed = wp->launch_speed + MAX(0.0f, wp->weapon_max_vel - wp->launch_speed) * t;
 			}
 			else {
@@ -6029,13 +6029,13 @@ static void weapon_update_state(weapon* wp)
 	if (wip->free_flight_time)
 	{
 		fix lifetime = Missiontime - wp->creation_time;
-		if (lifetime < fl2f(wip->free_flight_time))
+		if (lifetime < static_cast<fix>(wip->free_flight_time))
 		{
 			weapon_set_state(wip, wp, WeaponState::FREEFLIGHT);
 			infree_flight = true;
 		}
-		else if (lifetime >= fl2f(wip->free_flight_time) && 
-			(lifetime - Frametime) <= fl2f(wip->free_flight_time) && weapon_has_homing_object(wp))
+		else if (lifetime >= static_cast<fix>(wip->free_flight_time) &&
+			(lifetime - Frametime) <= static_cast<fix>(wip->free_flight_time) && weapon_has_homing_object(wp))
 		{
 			weapon_set_state(wip, wp, WeaponState::IGNITION);
 			infree_flight = true;
@@ -6208,7 +6208,7 @@ void weapon_process_post(object * obj, float frame_time)
 	if (wip->wi_flags[Weapon::Info_Flags::Local_ssm])
 	{
 		//go into subspace if the missile is locked and its time to warpout
-		if ((wp->lssm_stage==1) && (timestamp_elapsed(wp->lssm_warpout_time)))
+		if ((wp->lssm_stage==1) && (timestamp_elapsed(wp->lssm_warpout_time.get_raw())))
 		{
 			//if we don't have a lock at this point, just stay in normal space
 			if (!weapon_has_homing_object(wp))
@@ -6285,7 +6285,7 @@ void weapon_process_post(object * obj, float frame_time)
 		}
 	
 		//time to warp in.
-		if ((wp->lssm_stage==3) && (timestamp_elapsed(wp->lssm_warpin_time)))
+		if ((wp->lssm_stage==3) && (timestamp_elapsed(wp->lssm_warpin_time.get_raw())))
 		{
 
 			vec3d warpin;
@@ -6912,8 +6912,8 @@ int weapon_create( const vec3d *pos, const matrix *porient, int weapon_type, int
 
 		Assert(parent_objp);		//local ssms must have a parent
 
-		wp->lssm_warpout_time=timestamp(wip->lssm_warpout_delay);
-		wp->lssm_warpin_time=timestamp(wip->lssm_warpout_delay + wip->lssm_warpin_delay);
+		wp->lssm_warpout_time = fix::set_raw(timestamp(wip->lssm_warpout_delay));
+		wp->lssm_warpin_time = fix::set_raw(timestamp(wip->lssm_warpout_delay + wip->lssm_warpin_delay));
 		wp->lssm_stage=1;
 	}
 	else{
@@ -7670,7 +7670,7 @@ bool weapon_armed(weapon *wp, bool hit_target)
 	weapon_info *wip = &Weapon_info[wp->weapon_info_index];
 
 	if((wp->weapon_flags[Weapon::Weapon_Flags::Destroyed_by_weapon])
-		&& !wip->arm_time
+		&& !wip->arm_time.get_raw()
 		&& wip->arm_dist == 0.0f
 		&& wip->arm_radius == 0.0f)
 	{
@@ -7687,7 +7687,7 @@ bool weapon_armed(weapon *wp, bool hit_target)
 			pobj = NULL;
 		}
 
-		if(		((wip->arm_time) && ((Missiontime - wp->creation_time) < wip->arm_time))
+		if(		((wip->arm_time.get_raw()) && ((Missiontime - wp->creation_time) < wip->arm_time))
 			|| ((wip->arm_dist) && (pobj != NULL && pobj->type != OBJ_NONE && (vm_vec_dist(&wobj->pos, &pobj->pos) < wip->arm_dist))))
 		{
 			return false;
@@ -7990,7 +7990,7 @@ void weapon_hit( object* weapon_obj, object* impacted_obj, const vec3d* hitpos, 
 		if (aip->target_objnum == objnum) {
 			set_target_objnum(aip, -1);
 			//	If this ship had a dynamic goal of chasing this weapon, clear the dynamic goal.
-			if (aip->resume_goal_time != -1)
+			if (aip->resume_goal_time.get_raw() != -1)
 				aip->active_goal = AI_ACTIVE_GOAL_NONE;
 		}
         
@@ -9625,7 +9625,7 @@ void weapon_info::reset()
 	shockwave_create_info_init(&this->shockwave);
 	shockwave_create_info_init(&this->dinky_shockwave);
 
-	this->arm_time = 0;
+	this->arm_time = fix();
 	this->arm_dist = 0.0f;
 	this->arm_radius = 0.0f;
 	this->det_range = 0.0f;
@@ -10431,9 +10431,9 @@ bool weapon_has_homing_object(weapon* wp) {
 }
 
 float weapon_get_lifetime_pct(const weapon& wp) {
-	return f2fl(Missiontime - wp.creation_time) / Weapon_info[wp.weapon_info_index].lifetime;
+	return static_cast<float>(Missiontime - wp.creation_time) / Weapon_info[wp.weapon_info_index].lifetime;
 }
 
 float weapon_get_age(const weapon& wp) {
-	return f2fl(Missiontime - wp.creation_time);
+	return static_cast<float>(Missiontime - wp.creation_time);
 }

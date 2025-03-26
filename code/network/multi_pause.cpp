@@ -291,7 +291,7 @@ int multi_pause_eat_keys()
 	} 
 
 	// if less than 1 second has passed, continue eating keys
-	if((f2fl(timer_get_fixed_seconds()) - Multi_pause_eat) < 1.0f){
+	if((static_cast<float>(timer_get_fixed_seconds()) - Multi_pause_eat) < 1.0f){
 		nprintf(("Network","PAUSE EATING KEYS\n"));
 
 		control_config_clear_used_status();
@@ -503,7 +503,7 @@ void multi_pause_close(int end_mission, bool API_Access)
 	message_resume_all();
 
 	// eat keys timestamp
-	Multi_pause_eat = f2fl(timer_get_fixed_seconds());
+	Multi_pause_eat = static_cast<float>(timer_get_fixed_seconds());
 	
 	// reset timestamps
 	multi_reset_timestamps();

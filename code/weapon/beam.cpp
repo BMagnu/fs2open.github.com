@@ -3923,7 +3923,7 @@ void beam_handle_collisions(beam *b)
 		// if the physics timestamp has expired or is not set yet, apply physics
 		if((r_coll[r_coll_count].c_stamp == -1) || timestamp_elapsed(r_coll[r_coll_count].c_stamp))
         {
-            float time_compression = f2fl(Game_time_compression);
+            float time_compression = static_cast<float>(Game_time_compression);
             float delay_time = i2fl(BEAM_DAMAGE_TIME) / time_compression;
             apply_beam_physics = 1;
             r_coll[r_coll_count].c_stamp = timestamp(fl2i(delay_time));

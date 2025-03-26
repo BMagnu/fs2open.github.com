@@ -198,7 +198,7 @@ void dc_draw_cursor( SCP_string &cmd_string, int x, int y )
 	int t;
 	int w, h;	// gr_string width and height
 
-	t = timer_get_fixed_seconds() / (F1_0/3);
+	t = timer_get_fixed_seconds().get_raw() / (F1_0 / 3).get_raw();
 	if ( t & 1 ) {
 		gr_get_string_size( &w, &h, cmd_string.c_str() );
 

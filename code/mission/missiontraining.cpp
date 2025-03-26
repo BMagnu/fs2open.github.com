@@ -331,7 +331,7 @@ void HudGaugeDirectives::render(float  /*frametime*/, bool config)
 				TIMESTAMP t = Mission_events[z].satisfied_time;
 				Assertion(t.isValid(), "Since event %s was satisfied, satisfied_time must be valid here", Mission_events[z].name.c_str());
 				if (timestamp_since(t) < 2 * MILLISECONDS_PER_SECOND) {
-					if (Missiontime % fl2f(.4f) < fl2f(.2f)) {
+					if (Missiontime % static_cast<fix>(.4f) < static_cast<fix>(.2f)) {
 						c = &Color_bright_blue;
 					} else {
 						c = &Color_bright_white;
@@ -751,7 +751,7 @@ SCP_string message_translate_tokens(const char *text)
 				temp[toke2 - text] = 0;  // null terminate string
 				ptr = translate_key(temp);  // try and translate key
 				if (ptr != nullptr) {  // was key translated properly?
-					if (!stricmp(ptr, NOX("none")) && (Training_bind_warning != Missiontime)) {
+					if (!stricmp(ptr, NOX("none")) && (fix::set_raw(Training_bind_warning) != Missiontime)) {
 						// check if a warning message should be displayed if the key is unbound
 						if ( (The_mission.game_type & MISSION_TYPE_TRAINING) || (Always_warn_player_about_unbound_keys && (The_mission.game_type & MISSION_TYPE_SINGLE)) ) {
 							r = popup(PF_TITLE_BIG | PF_TITLE_RED, 2, XSTR( "&Bind Control", 424), XSTR( "&Abort mission", 425),

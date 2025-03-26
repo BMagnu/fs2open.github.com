@@ -111,7 +111,7 @@ int Num_goal_type_names = MAX_GOAL_TYPE_NAMES;
 int Num_parse_goals;
 int Player_starts = 1;
 int Num_teams;
-fix Entry_delay_time = 0;
+fix Entry_delay_time = fix();
 
 int Num_unknown_ship_classes;
 int Num_unknown_weapon_classes;
@@ -717,7 +717,7 @@ void parse_mission_info(mission *pm, bool basic = false)
 		
 		stuff_float(&temp);
 		Assert(temp >= 0.0f);
-		Entry_delay_time = fl2f(temp);
+		Entry_delay_time = static_cast<fix>(temp);
 	}
 
 	if (optional_string("+Viewer pos:")){
@@ -6618,7 +6618,7 @@ bool post_process_mission(mission *pm)
 	stars_load_first_valid_background();
 
 	// put the timestamp stuff here for now
-	Mission_end_time = -1;
+	Mission_end_time = fix::set_raw(-1);
 
 	Allow_arrival_music_timestamp=timestamp(0);
 	Allow_arrival_message_timestamp=timestamp(0);
@@ -6805,7 +6805,7 @@ void mission_init(mission *pm)
 	Player_starts = 0;
 	Player_start_shipnum = -1;
 	*Player_start_shipname = 0;		// make the string 0 length for checking later
-	Entry_delay_time = 0;
+	Entry_delay_time = fix();
 
 	Mission_all_attack = 0;
 	Num_teams = 1;				// assume 1

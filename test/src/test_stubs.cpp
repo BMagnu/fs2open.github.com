@@ -243,7 +243,7 @@ UI_TIMESTAMP Last_frame_ui_timestamp = UI_TIMESTAMP::invalid();
 void lock_time_compression(bool  /*is_locked*/){}
 void change_time_compression(float  /*multiplier*/){}
 void set_time_compression(float  /*multiplier*/, float  /*change_time*/){}
-fix game_get_overall_frametime() { return 0; }
+fix game_get_overall_frametime() { return fix(); }
 
 //WMC
 void game_level_init(){}

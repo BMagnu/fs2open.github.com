@@ -1339,7 +1339,7 @@ bool control_run_lua(IoActionId id, int value) {
 
 	//Load hv.Value if it is an Axis
 	if(isAxis)
-		Script_system.SetHookVar("Value", 'f', f2fl(value));
+		Script_system.SetHookVar("Value", 'f', static_cast<float>(value));
 
 	//Check Override if it exists
 	bool override = false;

@@ -305,7 +305,7 @@ ADE_FUNC(getFrametimeOverall, l_Base, nullptr, "The overall frame time in fix un
 
 ADE_FUNC(getSecondsOverall, l_Base, nullptr, "The overall time in seconds since the engine has started", "number", "Overall time (seconds)")
 {
-	return ade_set_args(L, "f", f2fl(game_get_overall_frametime()));
+	return ade_set_args(L, "f", static_cast<float>(game_get_overall_frametime()));
 }
 
 ADE_FUNC(getMissionFrametime, l_Base, nullptr, "Gets how long this frame is calculated to take. Use it to for animations, physics, etc to make incremental changes. Increased or decreased based on current time compression", "number", "Frame time (seconds)")

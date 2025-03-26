@@ -1903,7 +1903,7 @@ void stars_draw_motion_debris()
 		g3_rotate_vertex(&pnt, &mdebris.pos);
 
 		if (pnt.codes == 0) {
-			int frame = Missiontime / (DEBRIS_ROT_MIN + (1 % DEBRIS_ROT_RANGE) * DEBRIS_ROT_RANGE_SCALER);
+			int frame = Missiontime.get_raw() / (DEBRIS_ROT_MIN + (1 % DEBRIS_ROT_RANGE) * DEBRIS_ROT_RANGE_SCALER);
 			frame %= Motion_debris_ptr[mdebris.vclip].nframes;
 
 			float alpha;

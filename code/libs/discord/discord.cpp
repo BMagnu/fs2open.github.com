@@ -113,7 +113,7 @@ void set_game_play_presence()
 	sprintf(state, "In mission (%d %s)", Player->stats.m_kill_count_ok,
 	        Player->stats.m_kill_count_ok == 1 ? "kill" : "kills");
 
-	set_presence(state, (int64_t)time(nullptr) - f2i(Missiontime));
+	set_presence(state, (int64_t)time(nullptr) - static_cast<int>(Missiontime));
 
 	// Update this every 20 seconds since Discord already has a 15 second rate-limit
 	next_mission_update = ui_timestamp(20 * MILLISECONDS_PER_SECOND);

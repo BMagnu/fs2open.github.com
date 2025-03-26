@@ -1879,7 +1879,7 @@ void HudGaugeMissionTime::render(float /*frametime*/, bool config)
 	float mission_time = 0.0f;
 	
 	if (!config) {
-		mission_time = f2fl(Missiontime) + static_cast<float>(The_mission.HUD_timer_padding); // convert to seconds
+		mission_time = static_cast<float>(Missiontime) + static_cast<float>(The_mission.HUD_timer_padding); // convert to seconds
 	}
 	
 	int minutes = fl2i(mission_time / 60);
@@ -1907,7 +1907,7 @@ void HudGaugeMissionTime::render(float /*frametime*/, bool config)
 	renderPrintf(x + fl2i(time_text_offsets[0] * scale), y + fl2i(time_text_offsets[1] * scale), scale, config, NOX("%02d:%02d"), minutes, seconds);
 
 	// display time compression as xN
-	float time_comp = f2fl(Game_time_compression);
+	float time_comp = static_cast<float>(Game_time_compression);
 	if ( time_comp < 1 ) {
 		renderPrintf(x + fl2i(time_val_offsets[0] * scale), y + fl2i(time_val_offsets[1] * scale), scale, config, /*XSTR( "x%.1f", 215), time_comp)*/ NOX("%.2f"), time_comp);
 	} else {

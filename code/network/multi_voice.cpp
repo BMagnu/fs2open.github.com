@@ -519,7 +519,7 @@ int multi_voice_status()
 	
 	// find the stream which started playing the farthest back (if any)
 	earliest = -1;
-	earliest_time = -1;
+	earliest_time = fix::set_raw(-1);
 	for(idx=0;idx<MULTI_VOICE_MAX_STREAMS;idx++){
 		// if we found a playing stream
 		if (Multi_voice_stream[idx].stream_snd_handle.isValid()) {
@@ -567,7 +567,7 @@ void multi_voice_server_process()
 		// if the token has been released - check to see if the stream is "done" (ie, can be marked as FREE once again)
 		case MULTI_VOICE_TOKEN_INDEX_RELEASED:
 			// if the stream_last_heard var is -1, it means we never got sound from this guy so free the token up immediately
-			if(Multi_voice_stream[idx].stream_last_heard == -1){
+			if(Multi_voice_stream[idx].stream_last_heard == fix::set_raw(-1)){
 				Multi_voice_stream[idx].token_status = MULTI_VOICE_TOKEN_INDEX_FREE;				
 
 #ifdef MULTI_VOICE_VERBOSE
@@ -577,8 +577,8 @@ void multi_voice_server_process()
 			// if a sufficiently long amount of time has elapsed since he released the token, free it up
 			else {
 				float t1,t2;
-				t1 = f2fl(Multi_voice_stream[idx].stream_last_heard);
-				t2 = f2fl(timer_get_fixed_seconds());
+				t1 = static_cast<float>(Multi_voice_stream[idx].stream_last_heard);
+				t2 = static_cast<float>(timer_get_fixed_seconds());
 				if((t2 - t1) >= MULTI_VOICE_TOKEN_RELEASE_WAIT){
 					Multi_voice_stream[idx].token_status = MULTI_VOICE_TOKEN_INDEX_FREE;
 
@@ -790,7 +790,7 @@ void multi_voice_give_token(int stream_index,int player_index)
 	multi_voice_inc_stream_id();
 
 	// set the last heard from time to -1 to indicate we've heard no sound from this guy
-	Multi_voice_stream[stream_index].stream_last_heard = -1;
+	Multi_voice_stream[stream_index].stream_last_heard = fix::set_raw(-1);
 
 #ifdef MULTI_VOICE_VERBOSE
 	nprintf(("Network","MULTI VOICE : GIVE TOKEN %d\n",(int)Multi_voice_next_stream_id));	
@@ -1364,7 +1364,7 @@ int multi_voice_get_stream(int stream_id)
 	// if we got to this point, we should free up the oldest stream we have
 	cur_time = timer_get_fixed_seconds();
 	max_diff_index = -1;
-	max_diff = -1;
+	max_diff = fix::set_raw(-1);
 	for(idx=0;idx<MULTI_VOICE_MAX_STREAMS;idx++){
 		if(((max_diff_index == -1) || ((cur_time - Multi_voice_stream[idx].stream_last_heard) > max_diff)) && Multi_voice_stream[idx].token_stamp.isValid()){
 			max_diff_index = idx;

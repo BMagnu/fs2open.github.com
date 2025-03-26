@@ -59,8 +59,8 @@ int collide_weapon_weapon( obj_pair * pair )
 	A_radius = A->radius;
 	B_radius = B->radius;
 
-	float A_time_alive = f2fl(Missiontime - wpA->creation_time);
-	float B_time_alive = f2fl(Missiontime - wpB->creation_time);
+	float A_time_alive = static_cast<float>(Missiontime - wpA->creation_time);
+	float B_time_alive = static_cast<float>(Missiontime - wpB->creation_time);
 
 	if (wipA->weapon_hitpoints > 0) {
 		if (!(wipA->wi_flags[Weapon::Info_Flags::No_radius_doubling])) {

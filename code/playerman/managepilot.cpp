@@ -464,8 +464,8 @@ void player::reset()
 
 	friendly_hits = 0;
 	friendly_damage = 0.0f;
-	friendly_last_hit_time = 0;
-	last_warning_message_time = 0;
+	friendly_last_hit_time = fix();
+	last_warning_message_time = fix();
 
 	control_mode = 0;
 	saved_viewer_mode = 0;

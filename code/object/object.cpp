@@ -1359,9 +1359,9 @@ void obj_move_all_post(object *objp, float frametime)
 			//Check for changing team colors
 			ship* shipp = &Ships[objp->instance];
 			if (Ship_info[shipp->ship_info_index].uses_team_colors && stricmp(shipp->secondary_team_name.c_str(), "none") != 0) {
-				if (f2fl(Missiontime) * 1000 > f2fl(shipp->team_change_timestamp) * 1000 + shipp->team_change_time) {
+				if (static_cast<float>(Missiontime) * 1000 > static_cast<float>(shipp->team_change_timestamp) * 1000 + shipp->team_change_time) {
 					shipp->team_name = shipp->secondary_team_name;
-					shipp->team_change_timestamp = 0;
+					shipp->team_change_timestamp = fix();
 					shipp->team_change_time = 0;
 					shipp->secondary_team_name = "none";
 				}

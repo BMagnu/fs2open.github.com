@@ -133,7 +133,7 @@ std::ostream& operator<<(std::ostream& out, const multi_server_options& data) {
 	out << "voice_qos:" << (int) data.voice_qos << "\n";
 	out << "voice_token_wait:" << data.voice_token_wait << "\n";
 	out << "voice_record_time:" << data.voice_record_time << "\n";
-	out << "mission_time_limit:" << data.mission_time_limit << "\n";
+	out << "mission_time_limit:" << data.mission_time_limit.get_raw() << "\n";
 	out << "kill_limit:" << data.kill_limit << "\n";
 
 	return out;
@@ -185,8 +185,8 @@ std::ostream& operator<<(std::ostream& out, const player& plr) {
 	out << "stats:" << plr.stats << "\n";
 	out << "friendly_hits:" << plr.friendly_hits << "\n";
 	out << "friendly_damage:" << plr.friendly_damage << "\n";
-	out << "friendly_last_hit_time:" << plr.friendly_last_hit_time << "\n";
-	out << "last_warning_message_time:" << plr.last_warning_message_time << "\n";
+	out << "friendly_last_hit_time:" << plr.friendly_last_hit_time.get_raw() << "\n";
+	out << "last_warning_message_time:" << plr.last_warning_message_time.get_raw() << "\n";
 	out << "control_mode:" << plr.control_mode << "\n";
 	out << "saved_viewer_mode:" << plr.saved_viewer_mode << "\n";
 	out << "check_warn_timestamp:" << plr.check_warn_timestamp << "\n";

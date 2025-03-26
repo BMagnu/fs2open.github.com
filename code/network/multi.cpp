@@ -1296,7 +1296,7 @@ void multi_do_frame()
 
 			// evaluate whether the time limit has been reached or max kills has been reached
 			// Commented out by Sandeep 4/12/98, was causing problems with testing.
-			if( ((f2fl(Netgame.options.mission_time_limit) > 0.0f) && (Missiontime > Netgame.options.mission_time_limit)) ||
+			if( ((static_cast<float>(Netgame.options.mission_time_limit) > 0.0f) && (Missiontime > Netgame.options.mission_time_limit)) ||
 				 multi_kill_limit_reached() ) {
 
 				// make sure we don't do this more than once

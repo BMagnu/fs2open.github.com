@@ -105,7 +105,7 @@ void update_ets(object* objp, float fl_frametime)
 		shield_delta = Energy_levels[ship_p->shield_recharge_index] * max_new_shield_energy;
 	}
 
-	if (Missiontime - Ai_info[ship_p->ai_index].last_hit_time < fl2f(sinfo_p->shield_regen_hit_delay))
+	if (Missiontime - Ai_info[ship_p->ai_index].last_hit_time < static_cast<fix>(sinfo_p->shield_regen_hit_delay))
 		shield_delta = 0.0f;
 
 	shield_add_strength(objp, shield_delta);

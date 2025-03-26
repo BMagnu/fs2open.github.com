@@ -653,7 +653,7 @@ static int opengl_texture_set_level(int bitmap_handle, int bitmap_type, int bmap
 
 			fix u, utmp, v, du, dv;
 
-			u = v = 0;
+			u = v = fix();
 
 			du = ((bmap_w - 1) * F1_0) / tex_w;
 			dv = ((bmap_h - 1) * F1_0) / tex_h;
@@ -662,7 +662,7 @@ static int opengl_texture_set_level(int bitmap_handle, int bitmap_type, int bmap
 				utmp = u;
 				for (auto i = 0; i < tex_w; i++) {
 					for (auto k = 0; k < byte_mult; k++) {
-						*texmemp++ = bmp_data[(f2i(v) * bmap_w + f2i(utmp)) * byte_mult + k];
+						*texmemp++ = bmp_data[(static_cast<int>(v) * bmap_w + static_cast<int>(utmp)) * byte_mult + k];
 					}
 					utmp += du;
 				}

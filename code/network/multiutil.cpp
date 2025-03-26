@@ -1186,10 +1186,10 @@ void add_net_button_info(net_player *p,button_info *bi,int unique_id)
 		p->s_info.last_buttons_time[p->s_info.num_last_buttons] = timer_get_fixed_seconds();
 		p->s_info.num_last_buttons++;
 	} else {
-		earliest = 0;
+		earliest = fix();
       lookup = -1;
 		for(idx=0;idx<BUTTON_INFO_SAVE_COUNT;idx++){
-			if((p->s_info.last_buttons_time[idx] < earliest) || (earliest == 0)){
+			if((p->s_info.last_buttons_time[idx] < earliest) || (earliest == fix())){
 				earliest = p->s_info.last_buttons_time[idx];
 				lookup = idx;
 			}

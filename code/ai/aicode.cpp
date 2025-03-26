@@ -639,7 +639,7 @@ void init_ai_class(ai_class *aicp)
 		aicp->ai_primary_ammo_burst_mult[i] = FLT_MIN;
 		aicp->ai_link_energy_levels_maybe[i] = FLT_MIN;
 		aicp->ai_link_energy_levels_always[i] = FLT_MIN;
-		aicp->ai_predict_position_delay[i] = INT_MIN;
+		aicp->ai_predict_position_delay[i] = fix::set_raw(INT_MIN);
 		aicp->ai_shield_manage_delay[i] = FLT_MIN;
 		aicp->ai_ship_fire_delay_scale_friendly[i] = FLT_MIN;
 		aicp->ai_ship_fire_delay_scale_hostile[i] = FLT_MIN;
@@ -808,7 +808,7 @@ void parse_ai_class()
 		float temp_list[NUM_SKILL_LEVELS];
 		parse_float_list(temp_list, NUM_SKILL_LEVELS);
 		for (iLoop = 0; iLoop < NUM_SKILL_LEVELS; iLoop++)
-			aicp->ai_predict_position_delay[iLoop] = fl2f(temp_list[iLoop]);
+			aicp->ai_predict_position_delay[iLoop] = static_cast<fix>(temp_list[iLoop]);
 	}
 
 	if (optional_string("$AI Shield Manage Delay:") || optional_string("$AI Shield Manage Delays:"))
@@ -3091,11 +3091,11 @@ void create_model_path(object *pl_objp, object *mobjp, int path_num, int subsys_
 	aip->path_objnum = OBJ_INDEX(mobjp);
 	aip->mp_index = path_num;
 	aip->path_length = (int)(Ppfp - ppfp_start);
-	aip->path_next_check_time = timestamp(1);
+	aip->path_next_check_time = fix::set_raw(timestamp(1));
 
 	aip->path_goal_obj_hash = create_object_hash(&Objects[aip->path_objnum]);
 
-	aip->path_next_create_time = timestamp(1000);	//	OK to try to create one second later
+	aip->path_next_create_time = fix::set_raw(timestamp(1000));	//	OK to try to create one second later
 	aip->path_create_pos = pl_objp->pos;
 	aip->path_create_orient = pl_objp->orient;
 	
@@ -3150,7 +3150,7 @@ void create_model_exit_path(object *pl_objp, object *mobjp, int path_num, int co
 	aip->path_objnum = OBJ_INDEX(mobjp);
 	aip->mp_index = path_num;
 	aip->path_length = (int)(Ppfp - ppfp_start);
-	aip->path_next_check_time = timestamp(1);
+	aip->path_next_check_time = fix::set_raw(timestamp(1));
 
 	aip->ai_flags.set(AI::AI_Flags::Use_exit_path); // mark as exit path, referenced in maybe
 }
@@ -3793,7 +3793,7 @@ void ai_update_aim(ai_info *aip)
 	{
 		aip->last_aim_enemy_pos = En_objp->pos;
 		aip->last_aim_enemy_vel = En_objp->phys_info.vel;
-		aip->next_aim_pos_time = Missiontime + fl2f(frand_range(0.0f, aip->ai_max_aim_update_delay));
+		aip->next_aim_pos_time = Missiontime + static_cast<fix>(frand_range(0.0f, aip->ai_max_aim_update_delay));
 	}
 	else
 	{
@@ -3923,7 +3923,7 @@ float maybe_recreate_path(object *objp, ai_info *aip, int force_recreate_flag, i
 	if ( aip->ai_flags[AI::AI_Flags::Use_static_path] ) 
 		return 0.0f;
 
-	if (force_recreate_flag || timestamp_elapsed(aip->path_next_create_time)) {
+	if (force_recreate_flag || timestamp_elapsed(aip->path_next_create_time.get_raw())) {
 		object	*path_objp;
 
 		path_objp = &Objects[aip->path_objnum];
@@ -3936,7 +3936,7 @@ float maybe_recreate_path(object *objp, ai_info *aip, int force_recreate_flag, i
 			dist += ai_matrix_dist(&path_objp->orient, &aip->path_create_orient) * 25.0f;
 
 			if (force_recreate_flag || (dist > 2.0f)) {
-				aip->path_next_create_time = timestamp(1000);	//	Update again in as little as 1000 milliseconds, ie 1 second.
+				aip->path_next_create_time = fix::set_raw(timestamp(1000));	//	Update again in as little as 1000 milliseconds, ie 1 second.
 				aip->path_goal_obj_hash = hashval;
 				modify_model_path_points(objp);
 
@@ -4168,8 +4168,8 @@ float ai_path_0()
 	//	path code.  In docking, this is a special hack.
 	if ((aip->mode != AIM_DOCK) || ((aip->path_cur-aip->path_start) < num_points - 2)) {
 		if ((aip->path_cur + aip->path_dir > aip->path_start) && (aip->path_cur + aip->path_dir < aip->path_start + num_points-2)) {
-			if ( timestamp_elapsed(aip->path_next_check_time)) {
-				aip->path_next_check_time = timestamp( 3000 );
+			if ( timestamp_elapsed(aip->path_next_check_time.get_raw())) {
+				aip->path_next_check_time = fix::set_raw(timestamp( 3000 ));
 				if (!pp_collide(&Pl_objp->pos, nvp, gobjp, 1.1f * Pl_objp->radius)) {
 					cvp = nvp;
 					aip->path_cur += aip->path_dir;
@@ -5103,7 +5103,7 @@ int static_rand_timed(int num, int modulus)
 	else {
 		int	t;
 
-		t = Missiontime >> 18;		//	Get time in quarters of a second (SUSHI: this comment is wrong! It's actually every 4 seconds!)
+		t = Missiontime.get_raw() >> 18;		//	Get time in quarters of a second (SUSHI: this comment is wrong! It's actually every 4 seconds!)
 		t += num;
 
 		return !(t % modulus);
@@ -5275,7 +5275,7 @@ void evade_weapon()
 		return;
 	} else if (dot_from_enemy > 0.7f) {
 		bool should_afterburn = dist < 200.0f;
-		int aburn_time = F1_0 / 2;
+		fix aburn_time = F1_0 / 2;
 
 		// within 200m bad, within 1.5 seconds good
 		if (The_mission.ai_profile->flags[AI::Profile_Flags::Improved_missile_avoidance]) {
@@ -5428,7 +5428,7 @@ void evade_ship()
 		float	accel_val;
 
 		rand_int = static_rand(OBJ_INDEX(Pl_objp));
-		accel_val = (float) (((Missiontime^rand_int) >> 14) & 0x0f)/32.0f + 0.5f;
+		accel_val = (float) (((Missiontime.get_raw() ^ rand_int) >> 14) & 0x0f)/32.0f + 0.5f;
 		accelerate_ship(aip, accel_val);
 	} else
 		accelerate_ship(aip, (float) (Game_skill_level+2) / (NUM_SKILL_LEVELS+1));
@@ -5439,9 +5439,9 @@ void evade_ship()
 			afterburners_start(Pl_objp);
 		
 			if (aip->ai_profile_flags[AI::Profile_Flags::Smart_afterburner_management]) {
-				aip->afterburner_stop_time = (fix) (Missiontime + F1_0 + static_randf(OBJ_INDEX(Pl_objp)) * F1_0 / 4);
+				aip->afterburner_stop_time = Missiontime + F1_0 + static_cast<fix>(static_randf(OBJ_INDEX(Pl_objp)) / 4.f);
 			} else {				
-				aip->afterburner_stop_time = Missiontime + F1_0 + static_rand(OBJ_INDEX(Pl_objp))/4;
+				aip->afterburner_stop_time = Missiontime + F1_0 + fix::set_raw(static_rand(OBJ_INDEX(Pl_objp)) / 4);
 			}
 		}
 	}
@@ -5489,7 +5489,7 @@ evade_ship_l1: ;
 			float	scale;
 			float	psrandval;	//	some value close to zero to choose whether to turn right or left.
 
-			psrandval = (float) (((Missiontime >> 14) & 0x0f) - 8);	//	Value between -8 and 7
+			psrandval = (float) (((Missiontime.get_raw() >> 14) & 0x0f) - 8);	//	Value between -8 and 7
 			psrandval = psrandval/16.0f;							//	Value between -1/2 and 1/2 (approx)
 
 			//	If not close to behind, turn towards his right or left vector, whichever won't cross his path.
@@ -5501,7 +5501,7 @@ evade_ship_l1: ;
 
 			vm_vec_scale_add(&goal_point, &enemy_pos, &En_objp->orient.vec.rvec, scale);
 
-			temp = ((Missiontime >> 16) & 0x07);
+			temp = ((Missiontime.get_raw() >> 16) & 0x07);
 			temp = ((temp * (temp+1)) % 16)/2 - 4;
 			if ((psrandval == 0) && (temp == 0))
 				temp = 3;
@@ -5982,11 +5982,11 @@ void set_primary_weapon_linkage(object *objp)
 	//	Don't want all ships always linking weapons at start, so asynchronize.
 	if (!(The_mission.ai_profile->flags[AI::Profile_Flags::Allow_primary_link_at_start]))
 	{
-		if (Missiontime < i2f(30))
+		if (Missiontime < static_cast<fix>(30))
 			return;
-		else if (Missiontime < i2f(120))
+		else if (Missiontime < static_cast<fix>(120))
 		{
-			int r = static_rand((Missiontime >> 17) ^ OBJ_INDEX(objp));
+			int r = static_rand((Missiontime.get_raw() >> 17) ^ OBJ_INDEX(objp));
 			if ( (r&3) != 0)
 				return;
 		}
@@ -6296,7 +6296,7 @@ int ai_fire_primary_weapon(object *objp)
 		float burstFireProb = ((0.6f * percentAmmoLeft) + (0.4f * distanceFactor)) * dotToTarget * aip->ai_primary_ammo_burst_mult * fof_spread_cooldown_factor;
 
 		//Possibly change values every half-second
-		if (static_randf((Missiontime + static_rand(aip->shipnum)) >> 15) > burstFireProb)
+		if (static_randf((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 15) > burstFireProb)
 			return 0;
 	}
 
@@ -6633,7 +6633,7 @@ bool check_ok_to_fire(int objnum, int target_objnum, const weapon_info *wip, int
 					//	Don't allow AI ships to fire at player for fixed periods of time based on skill level.
 					//	With 5 skill levels, at Very Easy, they fire in 1/7 of every 10 second interval.
 					//	At Easy, 2/7...at Expert, 5/7
-					int t = ((Missiontime /(65536*10)) ^ target_objnum ^ 0x01) % (NUM_SKILL_LEVELS+2);
+					int t = (static_cast<int>(Missiontime / 10) ^ target_objnum ^ 0x01) % (NUM_SKILL_LEVELS+2);
 					if (t > Ai_info[Ships[tobjp->instance].ai_index].ai_chance_to_use_missiles_on_plr) {
 						return false;
 					}
@@ -7067,7 +7067,7 @@ void set_predicted_enemy_pos_turret(vec3d *predicted_enemy_pos, const vec3d *gun
 			scale = (1.0f - aip->ai_accuracy) * 4.0f * (1.0f + 4.0f * (1.0f - time_enemy_in_range/(2*range_time)));
 		}		
 
-		static_randvec(((OBJ_INDEX(pobjp)) ^ (Missiontime >> 16)) & 7, &rand_vec);
+		static_randvec(((OBJ_INDEX(pobjp)) ^ (Missiontime.get_raw() >> 16)) & 7, &rand_vec);
 
 		vm_vec_scale_add2(predicted_enemy_pos, &rand_vec, scale);
 		G_collision_time = collision_time;
@@ -7180,7 +7180,7 @@ void set_predicted_enemy_pos(vec3d *predicted_enemy_pos, object *pobjp, vec3d *e
 	}
 
 	// get a random vector that changes slowly over time (1x / sec)
-	static_randvec(((OBJ_INDEX(pobjp)) ^ (Missiontime >> 16)) & 7, &rand_vec);
+	static_randvec(((OBJ_INDEX(pobjp)) ^ (Missiontime.get_raw() >> 16)) & 7, &rand_vec);
 
 	vm_vec_scale_add2(predicted_enemy_pos, &rand_vec, scale);
 
@@ -7299,14 +7299,14 @@ void do_random_sidethrust(ai_info *aip, ship_info *sip)
 	//Sidethrust vector is initially based on the velocity vector representing the ship's current sideways motion.
 	vec2d side_vec;
 	//Length to hold circle strafe is random (1-3) + slide accel time, changes every 4 seconds
-	int strafeHoldDirAmount = (int)(sip->slide_accel) + static_rand_range((Missiontime + static_rand(aip->shipnum)) >> 18, 1, 3);
+	int strafeHoldDirAmount = (int)(sip->slide_accel) + static_rand_range((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 18, 1, 3);
 	//Get a random float using some of the more significant chunks of the missiontime as a seed (>>16 means it changes every second)
 	//This means that we get the same random values for a little bit.
 	//Using static_rand(shipnum) as a crude hash function to make sure that the seed is different for each ship and direction
 	//The *2 ensures that y and x stay separate.
 	if (strafeHoldDirAmount > 0) { //This may look unnecessary, but we're apparently still getting div by zero errors on Macs here.
-		side_vec.x = static_randf_range((((Missiontime + static_rand(aip->shipnum)) >> 16) / strafeHoldDirAmount) , -1.0f, 1.0f);
-		side_vec.y = static_randf_range((((Missiontime + static_rand(aip->shipnum)) >> 16) / strafeHoldDirAmount) * 2, -1.0f, 1.0f);
+		side_vec.x = static_randf_range((((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 16) / strafeHoldDirAmount) , -1.0f, 1.0f);
+		side_vec.y = static_randf_range((((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 16) / strafeHoldDirAmount) * 2, -1.0f, 1.0f);
 	} else {
 		Warning(LOCATION, "Division by zero in do_random_sidethrust averted. Please tell a coder.\n");
 		side_vec.x = 1.0f;
@@ -7422,9 +7422,9 @@ void attack_set_accel(ai_info *aip, ship_info *sip, float dist_to_enemy, float d
 								// Get minimum
 								ab_time = MIN(time_to_exhaust_25pct_fuel, time_to_fly_75pct_of_distance);								
 								
-								aip->afterburner_stop_time = (fix) (Missiontime + F1_0 * ab_time);
+								aip->afterburner_stop_time = Missiontime + static_cast<fix>(ab_time);
 							} else {				
-								aip->afterburner_stop_time = Missiontime + F1_0 + static_rand(OBJ_INDEX(Pl_objp))/4;
+								aip->afterburner_stop_time = Missiontime + F1_0 + fix::set_raw(static_rand(OBJ_INDEX(Pl_objp)) / 4);
 							}
 						}
 					}
@@ -7668,7 +7668,7 @@ int maybe_avoid_big_ship(object *objp, object *ignore_objp, ai_info *aip, vec3d 
 			mabs_pick_goal_point(objp, &Objects[ship_num], &collision_point, &aip->avoid_goal_point);
 			float dist = vm_vec_dist_quick(&aip->avoid_goal_point, &objp->pos);
 			next_check_time = fl2i(2000.0f + MIN(1000.0f, (dist * 2.0f)) * time_scale); // Delay until check again is based on distance to avoid point.
-			aip->avoid_check_timestamp = timestamp(next_check_time);	
+			aip->avoid_check_timestamp = timestamp(next_check_time);
 			aip->avoid_ship_num = ship_num;
 		} else {
 			aip->ai_flags.remove(AI::AI_Flags::Avoiding_big_ship);
@@ -7993,22 +7993,21 @@ void ai_chase_attack(ai_info *aip, ship_info *sip, vec3d *predicted_enemy_pos, f
 void ai_chase_es(ai_info *aip)
 {
 	vec3d	tvec;
-	fix		timeslice;
-	fix		scale;
 
 	tvec = Pl_objp->pos;
 
-	timeslice = (Missiontime >> 16) & 0x0f;
-	scale = ((Missiontime >> 16) & 0x0f) << 14;
+	int timeslice = static_cast<int>(Missiontime) & 0x0f;
+	fix scale = fix::set_raw((static_cast<int>(Missiontime) & 0x0f) << 14);
+	fix scale_xor = fix::set_raw(((static_cast<int>(Missiontime) & 0x0f) << 14) ^ 0x10000);
 
 	if (timeslice & 0x01)
-		vm_vec_scale_add2(&tvec, &Pl_objp->orient.vec.rvec, f2fl(scale ^ 0x10000));
+		vm_vec_scale_add2(&tvec, &Pl_objp->orient.vec.rvec, static_cast<float>(scale_xor));
 	if (timeslice & 0x02)
-		vm_vec_scale_sub2(&tvec, &Pl_objp->orient.vec.rvec, f2fl(scale));
+		vm_vec_scale_sub2(&tvec, &Pl_objp->orient.vec.rvec, static_cast<float>(scale));
 	if (timeslice & 0x04)
-		vm_vec_scale_add2(&tvec, &Pl_objp->orient.vec.uvec, f2fl(scale ^ 0x10000));
+		vm_vec_scale_add2(&tvec, &Pl_objp->orient.vec.uvec, static_cast<float>(scale_xor));
 	if (timeslice & 0x08)
-		vm_vec_scale_sub2(&tvec, &Pl_objp->orient.vec.uvec, f2fl(scale));
+		vm_vec_scale_sub2(&tvec, &Pl_objp->orient.vec.uvec, static_cast<float>(scale));
 
 	while (vm_vec_dist_quick(&tvec, &Pl_objp->pos) < 0.1f) {
 		tvec.xyz.x += frand();
@@ -8033,7 +8032,7 @@ void ai_chase_ga(ai_info *aip, ship_info *sip)
 	} else
 		vec_from_enemy = Pl_objp->orient.vec.fvec;
 
-	static_randvec(Missiontime >> 15, &tvec);
+	static_randvec(Missiontime.get_raw() >> 15, &tvec);
 	vm_vec_scale(&tvec, 100.0f);
 	vm_vec_scale_add2(&tvec, &vec_from_enemy, 300.0f);
 	vm_vec_add2(&tvec, &Pl_objp->pos);
@@ -9111,8 +9110,8 @@ void ai_chase()
 
 		//Re-roll for random sidethrust every 2 seconds
 		//Also, only do this if we've recently been hit or are in current primary weapon range of target
-		if (static_randf((Missiontime + static_rand(aip->shipnum)) >> 17) < aip->ai_random_sidethrust_percent &&
-			((Missiontime - aip->last_hit_time < i2f(5) && aip->hitter_objnum >= 0) || dist_to_enemy < current_weapon_range)) 
+		if (static_randf((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 17) < aip->ai_random_sidethrust_percent &&
+			((Missiontime - aip->last_hit_time < static_cast<fix>(5) && aip->hitter_objnum >= 0) || dist_to_enemy < current_weapon_range))
 		{
 			do_random_sidethrust(aip, sip);
 		}
@@ -9121,7 +9120,7 @@ void ai_chase()
 	//	Maybe choose a new submode.
 	if ( (aip->submode != SM_AVOID) && (aip->submode != SM_ATTACK_FOREVER) ) {
 		//	If a very long time since attacked, attack no matter what!
-		if (Missiontime - aip->last_attack_time > i2f(6)) {
+		if (Missiontime - aip->last_attack_time > static_cast<fix>(6)) {
 			if ( (aip->submode != SM_SUPER_ATTACK) && (aip->submode != SM_GET_AWAY) && !(aip->ai_flags[AI::AI_Flags::Stealth_pursuit]) ) {
 				aip->submode = SM_SUPER_ATTACK;
 				aip->submode_start_time = Missiontime;
@@ -9133,13 +9132,13 @@ void ai_chase()
 		//(and we've been near that whole time), shake things up somehow
 		//Only do this if stalemate time threshold > 0
 		if (aip->ai_stalemate_time_thresh > 0.0f &&
-				Missiontime - aip->last_hit_target_time > fl2f(aip->ai_stalemate_time_thresh) && 
-				Missiontime - aip->last_hit_time > fl2f(aip->ai_stalemate_time_thresh) &&
+				Missiontime - aip->last_hit_target_time > static_cast<fix>(aip->ai_stalemate_time_thresh) &&
+				Missiontime - aip->last_hit_time > static_cast<fix>(aip->ai_stalemate_time_thresh) &&
 				aip->time_enemy_near > aip->ai_stalemate_time_thresh &&
 				(dot_to_enemy < 0.95f - 0.5f * En_objp->radius/MAX(1.0f, En_objp->radius + dist_to_enemy)))
 		{
 			//Every second, evaluate whether or not to break stalemate. The more patient the ship, the less likely this is.
-			if (static_randf((Missiontime + static_rand(aip->shipnum)) >> 16) > (aip->ai_patience * .01))
+			if (static_randf(static_cast<int>(Missiontime + fix::set_raw(static_rand(aip->shipnum)))) > (aip->ai_patience * .01))
 			{
 				if ((sip->can_glide == true) && (frand() < aip->ai_glide_attack_percent)) {
 					//Maybe use glide attack
@@ -9174,7 +9173,7 @@ void ai_chase()
 
 	switch (aip->submode) {
 	case SM_CONTINUOUS_TURN:
-		if (Missiontime - aip->submode_start_time > i2f(3)) {
+		if (Missiontime - aip->submode_start_time > static_cast<fix>(3)) {
 			aip->last_attack_time = Missiontime;
 			aip->submode = SM_ATTACK;
 			aip->submode_start_time = Missiontime;
@@ -9189,15 +9188,15 @@ void ai_chase()
 			aip->submode_parm0 = SM_SF_AHEAD;
 		} else if (dist_to_enemy < CIRCLE_STRAFE_MAX_DIST + En_objp->radius &&
 			(En_objp->phys_info.speed < MAX(sip->max_vel.xyz.x, sip->max_vel.xyz.y) * 1.5f) &&
-			(static_randf((Missiontime + static_rand(aip->shipnum)) >> 19) < aip->ai_circle_strafe_percent)) {
+			(static_randf((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 19) < aip->ai_circle_strafe_percent)) {
 			aip->submode = AIS_CHASE_CIRCLESTRAFE;
 			aip->submode_start_time = Missiontime;
 			aip->last_attack_time = Missiontime;		
-		} else if (ai_near_full_strength(Pl_objp) && (Missiontime - aip->last_hit_target_time > i2f(3)) && (dist_to_enemy < 500.0f) && (dot_to_enemy < 0.5f)) {
+		} else if (ai_near_full_strength(Pl_objp) && (Missiontime - aip->last_hit_target_time > static_cast<fix>(3)) && (dist_to_enemy < 500.0f) && (dot_to_enemy < 0.5f)) {
 			aip->submode = SM_SUPER_ATTACK;
 			aip->submode_start_time = Missiontime;
 			aip->last_attack_time = Missiontime;
-		} else if ((Missiontime - aip->last_hit_target_time > i2f(6)) &&
+		} else if ((Missiontime - aip->last_hit_target_time > static_cast<fix>(6)) &&
 			(dist_to_enemy < 500.0f) && (dot_to_enemy < 0.2f) &&
 			(frand() < (float) Game_skill_level/NUM_SKILL_LEVELS)) {
 			aip->submode = SM_GET_AWAY;
@@ -9209,7 +9208,7 @@ void ai_chase()
 			&& (dist_to_enemy < 200.0f) 
 			&& (dist_to_enemy > 50.0f)
 			&& (dot_to_enemy < 0.1f)
-			&& (Missiontime - aip->submode_start_time > i2f(2))) {
+			&& (Missiontime - aip->submode_start_time > static_cast<fix>(2))) {
 			aip->submode = SM_EVADE_BRAKE;
 			aip->submode_start_time = Missiontime;
 		} else if ((dot_to_enemy > 0.2f) && (dot_from_enemy > -0.2f) && (dot_from_enemy < 0.1f)) {
@@ -9219,7 +9218,7 @@ void ai_chase()
 			float get_away_chance = (aip->ai_get_away_chance == FLT_MIN)
 				? (float)(ai_maybe_autoscale(aip->ai_class) + Game_skill_level)/(ai_maybe_autoscale(Num_ai_classes) + NUM_SKILL_LEVELS)
 				: aip->ai_get_away_chance;
-			if ((Missiontime - aip->last_hit_target_time > i2f(5)) && (frand() < get_away_chance)) {
+			if ((Missiontime - aip->last_hit_target_time > static_cast<fix>(5)) && (frand() < get_away_chance)) {
 				aip->submode = SM_GET_AWAY;
 				aip->submode_start_time = Missiontime;
 				aip->last_hit_target_time = Missiontime;
@@ -9247,7 +9246,7 @@ void ai_chase()
 		break;
 		
 	case SM_EVADE_SQUIGGLE:
-		if ((Missiontime - aip->submode_start_time > i2f(5)) || (dist_to_enemy > 300.0f)) {
+		if ((Missiontime - aip->submode_start_time > static_cast<fix>(5)) || (dist_to_enemy > 300.0f)) {
 			if ((dist_to_enemy < 100.0f) && (dot_to_enemy < 0.0f) && (dot_from_enemy > 0.5f)) {
 				aip->submode = SM_EVADE_BRAKE;
 			} else if ((Pl_objp->phys_info.speed >= Pl_objp->phys_info.max_vel.xyz.z / 2.0f) && (sip->can_glide == true) && (frand() < aip->ai_glide_attack_percent)) {
@@ -9265,11 +9264,11 @@ void ai_chase()
 		if ((dist_to_enemy < 15.0f) || (En_objp->phys_info.speed < 10.0f)) {
 			aip->submode = SM_AVOID;
 			aip->submode_start_time = Missiontime;
-		} else if ((dot_to_enemy > 0.9f) || ((dot_from_enemy > 0.9f) && (Missiontime - aip->submode_start_time > i2f(1)))) {
+		} else if ((dot_to_enemy > 0.9f) || ((dot_from_enemy > 0.9f) && (Missiontime - aip->submode_start_time > static_cast<fix>(1)))) {
 			aip->last_attack_time = Missiontime;
 			aip->submode = SM_ATTACK;
 			aip->submode_start_time = Missiontime;
-		} else if (Missiontime - aip->submode_start_time > i2f(4)) {
+		} else if (Missiontime - aip->submode_start_time > static_cast<fix>(4)) {
 			aip->last_attack_time = Missiontime;
 			aip->submode = SM_ATTACK;
 			aip->submode_start_time = Missiontime;
@@ -9283,12 +9282,12 @@ void ai_chase()
 			aip->submode = SM_EVADE_BRAKE;
 			aip->submode_start_time = Missiontime;
 		} else if (((dot_to_enemy > dot_from_enemy - 0.1f)
-			&& (Missiontime > aip->submode_start_time + i2f(1)))
+			&& (Missiontime > aip->submode_start_time + static_cast<fix>(1)))
 			|| (dist_to_enemy > 150.0f + 2*(Pl_objp->radius + En_objp->radius))) {
 			aip->last_attack_time = Missiontime;
 			aip->submode = SM_ATTACK;
 			aip->submode_start_time = Missiontime;
-		} else if (Missiontime - aip->submode_start_time > i2f(2))
+		} else if (Missiontime - aip->submode_start_time > static_cast<fix>(2))
 			if (dot_from_enemy > 0.8f) {
 				aip->submode = SM_EVADE_SQUIGGLE;
 				aip->submode_start_time = Missiontime;
@@ -9304,11 +9303,11 @@ void ai_chase()
 			aip->submode_parm0 = SM_SF_AHEAD;
 		} else if (dist_to_enemy < CIRCLE_STRAFE_MAX_DIST + En_objp->radius &&
 			(En_objp->phys_info.speed < MAX(sip->max_vel.xyz.x, sip->max_vel.xyz.y) * 1.5f) &&
-			(static_randf((Missiontime + static_rand(aip->shipnum)) >> 19) < aip->ai_circle_strafe_percent)) {
+			(static_randf((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 19) < aip->ai_circle_strafe_percent)) {
 			aip->submode = AIS_CHASE_CIRCLESTRAFE;
 			aip->submode_start_time = Missiontime;
 			aip->last_attack_time = Missiontime;		
-		} else if ((dist_to_enemy < 100.0f) && (dot_to_enemy < 0.8f) && (enemy_sip != NULL) && (enemy_sip->is_small_ship()) && (Missiontime - aip->submode_start_time > i2f(5) )) {
+		} else if ((dist_to_enemy < 100.0f) && (dot_to_enemy < 0.8f) && (enemy_sip != NULL) && (enemy_sip->is_small_ship()) && (Missiontime - aip->submode_start_time > static_cast<fix>(5) )) {
 			aip->ai_flags.remove(AI::AI_Flags::Attack_slowly);	//	Just in case, clear here.
 
 			float get_away_chance = (aip->ai_get_away_chance == FLT_MIN)
@@ -9354,7 +9353,7 @@ void ai_chase()
 	case SM_AVOID:
 		if ((dot_to_enemy > -0.2f) && (dist_to_enemy / (dot_to_enemy + 0.3f) < 100.0f)) {
 			aip->submode_start_time = Missiontime;
-		} else if (Missiontime - aip->submode_start_time > i2f(1)/2) {
+		} else if (Missiontime - aip->submode_start_time > static_cast<fix>(1)/2) {
 			if (might_collide_with_ship(Pl_objp, En_objp, dot_to_enemy, dist_to_enemy, 3.0f)) {
 				aip->submode_start_time = Missiontime;
 			} else {
@@ -9366,7 +9365,7 @@ void ai_chase()
 		break;
 
 	case SM_GET_BEHIND:
-		if ((dot_from_enemy < -0.7f) || (Missiontime - aip->submode_start_time > i2f(2))) {
+		if ((dot_from_enemy < -0.7f) || (Missiontime - aip->submode_start_time > static_cast<fix>(2))) {
 			aip->submode = SM_ATTACK;
 			aip->submode_start_time = Missiontime;
 			aip->last_attack_time = Missiontime;
@@ -9374,11 +9373,11 @@ void ai_chase()
 		break;
 
 	case SM_GET_AWAY:
-		if (Missiontime - aip->submode_start_time > i2f(2)) {
+		if (Missiontime - aip->submode_start_time > static_cast<fix>(2)) {
 			float	rand_dist;
 
-			rand_dist = ((Missiontime >> 17) & 0x03) * 100.0f + 200.0f;	//	Some value in 200..500
-			if ((Missiontime - aip->submode_start_time > i2f(5)) || (dist_to_enemy > rand_dist) || (dot_from_enemy < 0.4f)) {
+			rand_dist = ((Missiontime.get_raw() >> 17) & 0x03) * 100.0f + 200.0f;	//	Some value in 200..500
+			if ((Missiontime - aip->submode_start_time > static_cast<fix>(5)) || (dist_to_enemy > rand_dist) || (dot_from_enemy < 0.4f)) {
 				//Sometimes use a glide attack instead (if we can)
 				if ((sip->can_glide == true) && (frand() < aip->ai_glide_attack_percent)) {
 					aip->submode = AIS_CHASE_GLIDEATTACK;
@@ -9411,7 +9410,7 @@ void ai_chase()
 			aip->submode_start_time = Missiontime;
 			aip->last_attack_time = Missiontime;
 			// sweep if I can't find in 5 sec or bail from find
-		} else if ( ((Missiontime - aip->submode_start_time) > i2f(5)) || (aip->submode_parm0 == SM_SF_BAIL) ) {
+		} else if ( ((Missiontime - aip->submode_start_time) > static_cast<fix>(5)) || (aip->submode_parm0 == SM_SF_BAIL) ) {
 			// begin sweep mode
 			aip->submode = SM_STEALTH_SWEEP;
 			aip->submode_start_time = Missiontime;
@@ -9446,7 +9445,7 @@ void ai_chase()
 
 	case AIS_CHASE_GLIDEATTACK:
 		//Glide attack lasts at least as long as it takes to turn around and fire for a couple seconds. 
-		if (Missiontime - aip->submode_start_time > i2f((int)(sip->rotation_time.xyz.x) + 4 + static_rand_range(Missiontime >> 19, 0, 3))) {
+		if (Missiontime - aip->submode_start_time > static_cast<fix>((int)(sip->rotation_time.xyz.x) + 4 + static_rand_range(Missiontime.get_raw() >> 19, 0, 3))) {
 			aip->submode = SM_ATTACK;
 			aip->submode_start_time = Missiontime;
 			aip->last_attack_time = Missiontime;
@@ -9457,7 +9456,7 @@ void ai_chase()
 	case AIS_CHASE_CIRCLESTRAFE:
 		//Break out of circle strafe if the target is too far, moving too fast, or we've been doing this for a while
 		if ((dist_to_enemy > CIRCLE_STRAFE_MAX_DIST + En_objp->radius) || 
-			(Missiontime - aip->submode_start_time > i2f(8)) || 
+			(Missiontime - aip->submode_start_time > static_cast<fix>(8)) ||
 			(En_objp->phys_info.speed > MAX(sip->max_vel.xyz.x, sip->max_vel.xyz.y) * 1.5)) {
 			aip->submode = SM_ATTACK;
 			aip->submode_start_time = Missiontime;
@@ -10661,7 +10660,7 @@ void ai_big_guard()
 		// how often to choose new desired_z
 		// 1*(64) sec < 2000, 2*(64) < 2-4000 3*(64) > 4-8000, etc (Missiontime >> 22 is 64 sec intervals)
 		int time_choose = int(floor(log(length * 0.001f) / log(2.0f)));
-		float desired_z = min_z + length * static_randf( (OBJ_INDEX(Pl_objp)) ^ (Missiontime >> (22 + time_choose)) );
+		float desired_z = min_z + length * static_randf( (OBJ_INDEX(Pl_objp)) ^ (Missiontime.get_raw() >> (22 + time_choose)) );
 
 		// get r from guard_ship
 		float cur_guard_rad = vm_vec_dist(&Pl_objp->pos, &axis_pt);
@@ -13373,7 +13372,7 @@ void ai_maybe_evade_locked_missile(object *objp, ai_info *aip)
 					//	Don't always go into evade weapon mode.  Usually, a countermeasure gets launched.
 					// If low on countermeasures, more likely to try to evade.  If 8+, never evade due to low cmeasures.
 					// Asteroth - If Improved_missile_avoidance, always evade!! Don't assume anything else will save you
-					if (((((Missiontime >> 18) ^ OBJ_INDEX(objp)) & 3) == 0) || 
+					if (((((Missiontime.get_raw() >> 18) ^ OBJ_INDEX(objp)) & 3) == 0) ||
 						(objp->phys_info.speed < 40.0f) ||
 						(frand() < 1.0f - (float) shipp->cmeasure_count/8.0f ||
 						The_mission.ai_profile->flags[AI::Profile_Flags::Improved_missile_avoidance])) {
@@ -14476,7 +14475,7 @@ void ai_warp_out(object *objp)
 		break;
 	case AIS_WARP_4: {
 		// Only lets the ship warp after waiting for the warpout engage time
-		if ( (Missiontime / 100) >= (aip->submode_start_time / 100 + Warp_params[shipp->warpout_params_index].warpout_engage_time) ) {
+		if ( (Missiontime / 100) >= (aip->submode_start_time / 100 + fix::set_raw(Warp_params[shipp->warpout_params_index].warpout_engage_time)) ) {
 			shipfx_warpout_start(objp);
 			aip->submode = AIS_WARP_5;
 			aip->submode_start_time = Missiontime;
@@ -15191,9 +15190,9 @@ void ai_frame(int objnum)
 	En_objp = NULL;
 	if ( ai_need_new_target(Pl_objp, target_objnum) ) {
 		if ((aip->mode != AIM_EVADE_WEAPON) && (aip->active_goal == AI_ACTIVE_GOAL_DYNAMIC)) {
-			aip->resume_goal_time = -1;
+			aip->resume_goal_time = fix::set_raw(-1);
 			aip->active_goal = AI_ACTIVE_GOAL_NONE;
-		} else if (aip->resume_goal_time == -1) {
+		} else if (aip->resume_goal_time == fix::set_raw(-1)) {
 			// AL 12-9-97: Don't allow cargo and navbuoys to set their aip->target_objnum
 			if ( Ship_info[shipp->ship_info_index].class_type > -1 && (Ship_types[Ship_info[shipp->ship_info_index].class_type].flags[Ship::Type_Info_Flags::AI_auto_attacks]) ) {
 				target_objnum = find_enemy(objnum, MAX_ENEMY_DISTANCE, The_mission.ai_profile->max_attackers[Game_skill_level]);		//	Attack up to 2.5K units away.
@@ -15256,9 +15255,9 @@ void ai_frame(int objnum)
 	}
 
 	//	If there is a goal to resume and enough time has elapsed, resume the goal.
-	if ((aip->resume_goal_time > 0) && (aip->resume_goal_time < Missiontime)) {
+	if ((aip->resume_goal_time > fix()) && (aip->resume_goal_time < Missiontime)) {
 		aip->active_goal = AI_ACTIVE_GOAL_NONE;
-		aip->resume_goal_time = -1;
+		aip->resume_goal_time = fix::set_raw(-1);
 		target_objnum = find_enemy(objnum, 2000.0f, The_mission.ai_profile->max_attackers[Game_skill_level]);
 		if (target_objnum != -1) {
 			if (aip->target_objnum != target_objnum) {
@@ -15528,9 +15527,9 @@ void init_ai_object(int objnum)
 	aip->previous_submode = 0;
 	aip->best_dot_to_enemy = -1.0f;
 	aip->best_dot_from_enemy = -1.0f;
-	aip->best_dot_to_time = 0;
-	aip->best_dot_from_time = 0;
-	aip->submode_start_time = 0;
+	aip->best_dot_to_time = fix();
+	aip->best_dot_from_time = fix();
+	aip->submode_start_time = fix();
 	aip->submode_parm0 = 0;
 	aip->submode_parm1 = 0;
 	aip->submode_float0 = 0.0f;
@@ -15541,12 +15540,12 @@ void init_ai_object(int objnum)
 	aip->goal_point = near_vec;
 	aip->time_enemy_in_range = 0.0f;
 	aip->time_enemy_near = 0.0f;
-	aip->last_attack_time = 0;
-	aip->last_hit_time = 0;
+	aip->last_attack_time = fix();
+	aip->last_hit_time = fix();
 	aip->last_hit_quadrant = 0;
 	aip->hitter_objnum = -1;
 	aip->hitter_signature = -1;
-	aip->resume_goal_time = -1;
+	aip->resume_goal_time = fix::set_raw(-1);
 	aip->prev_accel = 0.0f;
 	aip->prev_dot_to_goal = 0.0f;
 
@@ -15573,7 +15572,7 @@ void init_ai_object(int objnum)
 	aip->time_enemy_in_range = 0.0f;
 	aip->time_enemy_near = 0.0f;
 
-	aip->resume_goal_time = -1;					//	Say there is no goal to resume.
+	aip->resume_goal_time = fix::set_raw(-1);					//	Say there is no goal to resume.
 
 	aip->active_goal = -1;
 	aip->path_start = -1;
@@ -15602,16 +15601,16 @@ void init_ai_object(int objnum)
 	aip->rearm_first_ballistic_primary = TRUE;	// flag to indicate that next ballistic to load is the first ballistic
 	aip->rearm_release_delay = 0;			//	timestamp to delay the separation of docked ships after rearm
 
-	aip->next_predict_pos_time = 0;
-	aip->next_aim_pos_time = 0;
+	aip->next_predict_pos_time = fix();
+	aip->next_aim_pos_time = fix();
 
 	aip->next_dynamic_path_check_time = timestamp(0);
 	vm_vec_zero(&aip->last_dynamic_path_goal);
 
-	aip->afterburner_stop_time = 0;
+	aip->afterburner_stop_time = fix();
 	aip->last_objsig_hit = -1;				// object signature of the ship most recently hit by aip
 
-	aip->path_next_create_time = timestamp(1);
+	aip->path_next_create_time = fix::set_raw(timestamp(1));
 	aip->path_create_pos = Objects[objnum].pos;
 	aip->path_create_orient = Objects[objnum].orient;
 	vm_vec_zero(&aip->path_depart_rvec);
@@ -15700,7 +15699,7 @@ void init_aip_from_class_and_profile(ai_info *aip, ai_class *aicp, ai_profile_t 
 		profile->link_energy_levels_maybe[Game_skill_level] : aicp->ai_link_energy_levels_maybe[Game_skill_level];
 	aip->ai_link_energy_levels_always = (aicp->ai_link_energy_levels_always[Game_skill_level] == FLT_MIN) ? 
 		profile->link_energy_levels_always[Game_skill_level] : aicp->ai_link_energy_levels_always[Game_skill_level];
-	aip->ai_predict_position_delay = (aicp->ai_predict_position_delay[Game_skill_level] == INT_MIN) ? 
+	aip->ai_predict_position_delay = (aicp->ai_predict_position_delay[Game_skill_level] == fix::set_raw(INT_MIN)) ?
 		profile->predict_position_delay[Game_skill_level] : aicp->ai_predict_position_delay[Game_skill_level];
 	aip->ai_shield_manage_delay = (aicp->ai_shield_manage_delay[Game_skill_level] == FLT_MIN) ? 
 		profile->shield_manage_delay[Game_skill_level] : aicp->ai_shield_manage_delay[Game_skill_level];
@@ -15868,7 +15867,7 @@ void maybe_process_friendly_hit(object *objp_hitter, object *objp_hit, object *o
 
 			// wacky stuff here
 			if (pp->friendly_hits != 0) {
-				float	time_since_last_hit = f2fl(Missiontime - pp->friendly_last_hit_time);
+				float	time_since_last_hit = static_cast<float>(Missiontime - pp->friendly_last_hit_time);
 				if ((time_since_last_hit >= 0.0f) && (time_since_last_hit < 10000.0f)) {
 					if (time_since_last_hit > 60.0f) {
 						pp->friendly_hits = 0;
@@ -15982,7 +15981,7 @@ void maybe_set_dynamic_chase(ai_info *aip, int hitter_objnum)
 	if (aip->target_objnum != hitter_objnum)
 		aip->aspect_locked_time = 0.0f;
 	set_target_objnum(aip, hitter_objnum);
-	aip->resume_goal_time = Missiontime + i2f(20);	//	Only chase up to 20 seconds.
+	aip->resume_goal_time = Missiontime + static_cast<fix>(20);	//	Only chase up to 20 seconds.
 	aip->active_goal = AI_ACTIVE_GOAL_DYNAMIC;
 
 	set_targeted_subsys(aip, NULL, -1);		//	Say not attacking any particular subsystem.
@@ -16349,7 +16348,7 @@ void ai_ship_hit(object *objp_ship, object *hit_objp, const vec3d *hit_normal)
 			break;
 		return;
 	case AIM_SAFETY:
-		if ((aip->submode != AISS_1) || (Missiontime - aip->submode_start_time > i2f(1))) {
+		if ((aip->submode != AISS_1) || (Missiontime - aip->submode_start_time > static_cast<fix>(1))) {
 			aip->submode = AISS_1;
 			aip->submode_start_time = Missiontime;
 		}
@@ -16397,7 +16396,7 @@ void ai_ship_hit(object *objp_ship, object *hit_objp, const vec3d *hit_normal)
 					aip->submode_start_time = Missiontime;
 					break;
 				case SM_SUPER_ATTACK:
-					if (Missiontime - aip->submode_start_time > i2f(1)) {
+					if (Missiontime - aip->submode_start_time > static_cast<fix>(1)) {
 						aip->submode = SM_EVADE;
 						aip->submode_start_time = Missiontime;
 					}
@@ -16458,7 +16457,7 @@ void ai_ship_destroy(int shipnum)
 		if (other_aip->target_objnum == dead_shipp->objnum) {
 			set_target_objnum(other_aip, -1);
 			//	If this ship had a dynamic goal of chasing the dead ship, clear the dynamic goal.
-			if (other_aip->resume_goal_time != -1)
+			if (other_aip->resume_goal_time != fix::set_raw(-1))
 				other_aip->active_goal = AI_ACTIVE_GOAL_NONE;
 		}
 
@@ -16791,7 +16790,7 @@ void maybe_cheat_fire_synaptic(object *objp)
 
 			if ((wing_index >= 0) && (wing_index < MAX_SHIPS_PER_WING))
 			{
-				time = Missiontime >> 16;	//	Convert to seconds.
+				time = static_cast<int>(Missiontime);	//	Convert to seconds.
 				time -= 2*60;				//	Subtract off two minutes.
 
 				if (time > 0)

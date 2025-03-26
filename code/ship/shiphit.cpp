@@ -2755,7 +2755,7 @@ static void ship_do_healing(object* ship_objp, const object* other_obj, const ve
 void ship_apply_tag(ship *shipp, int tag_level, float tag_time, object *target, const vec3d *start, int ssm_index, int ssm_team)
 {
 	// set time first tagged
-	if (shipp->time_first_tagged == 0)
+	if (shipp->time_first_tagged == fix())
 		shipp->time_first_tagged = Missiontime;
 
 	// do tag effect

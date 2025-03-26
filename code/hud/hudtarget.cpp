@@ -449,7 +449,7 @@ typedef struct homing_beep_info
 	float	precalced_interp;		// a precalculated value used in a linear interpretation
 } homing_beep_info;
 
-homing_beep_info Homing_beep = {sound_handle::invalid(), 0, 150, 1000, 30.0f, 1500.0f, 1.729412f};
+homing_beep_info Homing_beep = {sound_handle::invalid(), fix(), 150, 1000, 30.0f, 1500.0f, 1.729412f};
 
 // Set at the start of a mission, used to decide how to draw the separation for the warning missile indicators
 float Min_warning_missile_dist;
@@ -1020,7 +1020,7 @@ void hud_weapons_init()
 void hud_init_homing_beep()
 {
 	Homing_beep.snd_handle        = sound_handle::invalid();
-	Homing_beep.last_time_played  = 0;
+	Homing_beep.last_time_played  = fix();
 	Homing_beep.precalced_interp = (Homing_beep.max_cycle_dist-Homing_beep.min_cycle_dist) / (Homing_beep.max_cycle_time - Homing_beep.min_cycle_time );
 }
 
@@ -3219,7 +3219,7 @@ void hud_process_homing_missiles()
 		float	delta_time;
 		float cycle_time;
 
-		delta_time = f2fl(Missiontime - Homing_beep.last_time_played);
+		delta_time = static_cast<float>(Missiontime - Homing_beep.last_time_played);
 
 		// figure out the cycle time by doing a linear interpretation
 		cycle_time = Homing_beep.min_cycle_time + (nearest_dist-Homing_beep.min_cycle_dist) * Homing_beep.precalced_interp;

@@ -538,7 +538,7 @@ void techroom_ships_render(float frametime)
 		ship_info* sip = &Ship_info[Cur_entry_index];
 
 		if (sip->uses_team_colors) {
-			render_info.set_team_color(sip->default_team_name, "none", 0, 0);
+			render_info.set_team_color(sip->default_team_name, "none", fix(), 0);
 		}
 
 		// get correct revolution rate

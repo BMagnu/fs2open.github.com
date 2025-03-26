@@ -60,15 +60,10 @@ template <typename T>
 typename std::enable_if<std::is_integral<T>::value, bool>::type
 get_single_arg(lua_State* L, const get_args_state& state, char fmt, T* i)
 {
-	// fix is also an int for C++ so we need to check the format character to determine what should be done
-	Assertion(fmt == 'i' || fmt == 'x', "Invalid character '%c' for number type!", fmt);
+	Assertion(fmt == 'i', "Invalid character '%c' for number type!", fmt);
 
 	if (lua_isnumber(L, state.nargs)) {
-		if (fmt == 'x') {
-			*i = (T)fl2f((float)lua_tonumber(L, state.nargs));
-		} else {
-			*i = (T)lua_tonumber(L, state.nargs);
-		}
+		*i = (T)lua_tonumber(L, state.nargs);
 	} else {
 		LuaError(L, "%s: Argument %d is an invalid type '%s'; number expected", state.funcname, state.nargs,
 		         ade_get_type_string(L, state.nargs));
@@ -77,6 +72,7 @@ get_single_arg(lua_State* L, const get_args_state& state, char fmt, T* i)
 	return true;
 }
 bool get_single_arg(lua_State* L, const get_args_state& state, char fmt, const char** s);
+bool get_single_arg(lua_State* L, const get_args_state& state, char fmt, fix* s);
 
 template <typename T>
 bool ade_odata_getter_helper(lua_State* L, const get_args_state& state, char fmt, T&& od) {

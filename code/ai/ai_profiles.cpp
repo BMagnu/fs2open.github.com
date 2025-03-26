@@ -243,7 +243,7 @@ void parse_ai_profiles_tbl(const char *filename)
 					parse_float_list(temp_list, NUM_SKILL_LEVELS);
 
 					for (iLoop = 0; iLoop < NUM_SKILL_LEVELS; iLoop++)
-						profile->predict_position_delay[iLoop] = fl2f(temp_list[iLoop]);
+						profile->predict_position_delay[iLoop] = static_cast<fix>(temp_list[iLoop]);
 				}
 
 				if (optional_string("$AI Shield Manage Delay:") || optional_string("$AI Shield Manage Delays:"))
@@ -807,7 +807,7 @@ void ai_profile_t::reset()
         max_incoming_asteroids[i] = 0;
         max_allowed_player_homers[i] = 0;
         max_attackers[i] = 0;
-        predict_position_delay[i] = 0;
+        predict_position_delay[i] = fix();
         in_range_time[i] = 0;
         shield_manage_delay[i] = 0;
 

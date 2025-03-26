@@ -230,7 +230,7 @@ void mission_log_add_entry(LogType type, const char *pname, const char *sname, i
 	}
 
 #ifndef NDEBUG
-	float mission_time = f2fl(Missiontime);
+	float mission_time = static_cast<float>(Missiontime);
 	int minutes = (int)(mission_time / 60);
 	int seconds = (int)mission_time % 60;
 

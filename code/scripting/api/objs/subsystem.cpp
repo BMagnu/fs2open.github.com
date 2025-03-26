@@ -665,7 +665,7 @@ ADE_VIRTVAR(NextFireTimestamp, l_Subsystem, "number", "The next time the turret 
 	if (!sso->isValid())
 		return ade_set_error(L, "f", -1.0f);
 
-	float currentTime = f2fl(Missiontime);
+	float currentTime = static_cast<float>(Missiontime);
 
 	if (ADE_SETTING_VAR)
 	{

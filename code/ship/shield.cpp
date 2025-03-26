@@ -460,7 +460,7 @@ void render_shield(int shield_num)
 
 	//	If this ship is in its deathroll, make the shield hit effects go away faster.
 	if (shipp->flags[Ship::Ship_Flags::Dying])	{
-		sh->start_time -= fl2f(2*flFrametime);
+		sh->start_time -= static_cast<fix>(2*flFrametime);
 	}
 
 	//	Detail level stuff.  When lots of shield hits, maybe make them go away faster.
@@ -490,7 +490,7 @@ void render_shield(int shield_num)
 	// don't try to draw if we don't have an ani
 	if ( sa->first_frame >= 0 )
 	{
-		frame_num = bm_get_anim_frame(sa->first_frame, f2fl(Missiontime - sh->start_time), f2fl(SHIELD_HIT_DURATION));
+		frame_num = bm_get_anim_frame(sa->first_frame, static_cast<float>(Missiontime - sh->start_time), static_cast<float>(SHIELD_HIT_DURATION));
 		bitmap_id = sa->first_frame + frame_num;
 
 		float alpha = 0.9999f;

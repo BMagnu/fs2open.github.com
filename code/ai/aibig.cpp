@@ -293,14 +293,14 @@ void ai_big_evade_ship()
 
 	dist = vm_vec_dist_quick(&player_pos, &enemy_pos);
 	vm_vec_rand_vec_quick(&randvec);
-	if ((Missiontime>>14) & 1) {
+	if ((Missiontime.get_raw() >> 14) & 1) {
 		vm_vec_scale_add(&semi_enemy_pos, &enemy_pos, &randvec, dist/2.0f);
 		aip->prev_goal_point = semi_enemy_pos;
 	} else {
 		semi_enemy_pos = aip->prev_goal_point;
 	}
 	
-	accelerate_ship(aip, 1.0f - ((Missiontime>>8) & 0x3f)/128.0f );
+	accelerate_ship(aip, 1.0f - ((Missiontime.get_raw() >> 8) & 0x3f)/128.0f );
 	turn_away_from_point(Pl_objp, &semi_enemy_pos, 0.0f);
 
 	float box_dist;
@@ -310,7 +310,7 @@ void ai_big_evade_ship()
 	if (box_dist > EVADE_BOX_BASE_DISTANCE) {
 		aip->submode = SM_ATTACK;
 		aip->submode_start_time = Missiontime;
-	} else if ((box_dist > EVADE_BOX_MIN_DISTANCE) && (Missiontime - aip->submode_start_time > i2f(5)) ) {
+	} else if ((box_dist > EVADE_BOX_MIN_DISTANCE) && (Missiontime - aip->submode_start_time > static_cast<fix>(5)) ) {
 		aip->submode = SM_ATTACK;
 		aip->submode_start_time = Missiontime;
 	}
@@ -728,16 +728,16 @@ void ai_big_chase_attack(ai_info *aip, ship_info *sip, vec3d *enemy_pos, float d
 			(The_mission.ai_profile->flags[AI::Profile_Flags::Standard_strafe_used_more] || ai_big_maybe_start_strafe(aip, sip))) {
 			aip->previous_mode = aip->mode;
 			aip->mode = AIM_STRAFE;
-			aip->submode_parm0 = Missiontime;	// use parm0 as time strafe mode entered (i.e. MODE start time)
+			aip->submode_parm0 = Missiontime.get_raw();	// use parm0 as time strafe mode entered (i.e. MODE start time)
 			ai_big_strafe_position();
 			return;
 		}
 
 		//Maybe enter glide strafe (check every 8 seconds, on a different schedule for each ship)
-		if ((sip->can_glide == true) && !(aip->ai_flags[AI::AI_Flags::Kamikaze]) && static_randf((Missiontime + static_rand(aip->shipnum)) >> 19) < aip->ai_glide_strafe_percent) {
+		if ((sip->can_glide == true) && !(aip->ai_flags[AI::AI_Flags::Kamikaze]) && static_randf((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 19) < aip->ai_glide_strafe_percent) {
 			aip->previous_mode = aip->mode;
 			aip->mode = AIM_STRAFE;
-			aip->submode_parm0 = Missiontime;	// use parm0 as time strafe mode entered (i.e. MODE start time)
+			aip->submode_parm0 = Missiontime.get_raw();	// use parm0 as time strafe mode entered (i.e. MODE start time)
 			aip->submode = AIS_STRAFE_GLIDE_ATTACK;
 			aip->submode_parm1 = 0;
 			aip->submode_start_time = Missiontime;
@@ -1074,7 +1074,7 @@ void ai_big_chase()
 	if (aip->ai_flags[AI::AI_Flags::Target_collision]) {
 		if ( ai_big_strafe_maybe_retreat(&enemy_pos) ) {
 			aip->mode = AIM_STRAFE;
-			aip->submode_parm0 = Missiontime;	// use parm0 as time strafe mode entered (i.e. MODE start time)
+			aip->submode_parm0 = Missiontime.get_raw();	// use parm0 as time strafe mode entered (i.e. MODE start time)
 			aip->submode = AIS_STRAFE_AVOID;
 			aip->submode_start_time = Missiontime;
 			if (Pl_objp->phys_info.flags & PF_AFTERBURNER_ON) {
@@ -1131,7 +1131,7 @@ void ai_big_chase()
 		if (!aip->ai_profile_flags[AI::Profile_Flags::No_continuous_turn_on_attack] && aip->target_time < 2.0f)
 			if ((dot_to_enemy < 0.9f) || (dist_to_enemy > 300.0f)) {
 				aip->submode = SM_CONTINUOUS_TURN;
-				aip->submode_start_time = Missiontime - fl2f(2.75f);	//	This backdated start time allows immediate switchout.
+				aip->submode_start_time = Missiontime - static_cast<fix>(2.75f);	//	This backdated start time allows immediate switchout.
 				if (dot_to_enemy > 0.0f)
 					aip->target_time += flFrametime * dot_to_enemy;
 			}
@@ -1186,7 +1186,7 @@ void ai_big_chase()
 	if (aip->submode != SM_AVOID && aip->submode != SM_EVADE ) {
 		//	If a very long time since attacked, attack no matter what!
 		if (aip->submode != SM_SUPER_ATTACK) {
-			if (Missiontime - aip->last_attack_time > i2f(6)) {
+			if (Missiontime - aip->last_attack_time > static_cast<fix>(6)) {
 				aip->submode = SM_SUPER_ATTACK;
 				aip->submode_start_time = Missiontime;
 				aip->last_attack_time = Missiontime;
@@ -1262,7 +1262,7 @@ void ai_big_chase()
 
 	switch (aip->submode) {
 	case SM_CONTINUOUS_TURN:
-		if (Missiontime - aip->submode_start_time > i2f(3)) {
+		if (Missiontime - aip->submode_start_time > static_cast<fix>(3)) {
 			aip->last_attack_time = Missiontime;
 			aip->submode = SM_ATTACK;
 			aip->submode_start_time = Missiontime;
@@ -1533,7 +1533,7 @@ void ai_big_strafe_attack()
 
 			if (ai_maybe_fire_afterburner(Pl_objp, aip)) {
 				afterburners_start(Pl_objp);
-				aip->afterburner_stop_time = Missiontime + fl2f(0.5f);
+				aip->afterburner_stop_time = Missiontime + static_cast<fix>(0.5f);
 			}
 		}
 	}
@@ -1549,7 +1549,7 @@ void ai_big_strafe_attack()
 			accel = 1.0f;
 		} else {
 			float attack_time;
-			attack_time = f2fl(Missiontime - aip->submode_start_time);
+			attack_time = static_cast<float>(Missiontime - aip->submode_start_time);
 			if ( attack_time > 15 ) {
 				accel = 0.2f;
 			} else if ( attack_time > 10 ) {
@@ -1569,8 +1569,8 @@ void ai_big_strafe_attack()
 	accelerate_ship(aip, accel);
 
 	// if haven't been hit in quite a while, leave strafe mode
-	fix long_enough = fl2f(The_mission.ai_profile->strafe_max_unhit_time);
-	if ( (last_hit > long_enough) && ( (Missiontime - aip->submode_parm0) > long_enough) ) {
+	fix long_enough = static_cast<fix>(The_mission.ai_profile->strafe_max_unhit_time);
+	if ( (last_hit > long_enough) && ( (Missiontime - fix::set_raw(aip->submode_parm0)) > long_enough) ) {
 		ai_big_switch_to_chase_mode(aip);
 	}
 }
@@ -1642,7 +1642,7 @@ void ai_big_strafe_glide_attack()
 		//If we are still on approach but too far away, this will still trigger. This will allow us to reposition the target
 		//point and allow for a "jinking" effect.
 		if (target_ship_dist > (The_mission.ai_profile->strafe_retreat_box_dist + target_objp->radius) &&
-			Missiontime - aip->submode_start_time > i2f(GLIDE_STRAFE_MIN_TIME)) {
+			Missiontime - aip->submode_start_time > static_cast<fix>(GLIDE_STRAFE_MIN_TIME)) {
 			//This checks whether we are moving toward the target or away from it.  If moving towards, we reset the stage so that we
 			//pick a new attack vector (jinking). If moving away, we're at the end of a run so do a full reset (possibly allowing a 
 			//switch back to conventional strafe).
@@ -1657,7 +1657,7 @@ void ai_big_strafe_glide_attack()
 		}
 	}
 	//Time limit: if we've taken too long, reset
-	if (Missiontime - aip->submode_start_time > i2f(GLIDE_STRAFE_MAX_TIME)) {
+	if (Missiontime - aip->submode_start_time > static_cast<fix>(GLIDE_STRAFE_MAX_TIME)) {
 			aip->submode_parm1 = 3;
 			aip->submode = AIS_STRAFE_POSITION;
 			aip->submode_start_time = Missiontime;
@@ -1691,8 +1691,8 @@ void ai_big_strafe_glide_attack()
 
 	// if haven't been hit in quite a while, leave strafe mode
 	// (same as ai_big_strafe_attack)
-	fix long_enough = fl2f(The_mission.ai_profile->strafe_max_unhit_time);
-	if ( (Missiontime - aip->last_hit_time > long_enough) && ( (Missiontime - aip->submode_parm0) > long_enough) ) {
+	fix long_enough = static_cast<fix>(The_mission.ai_profile->strafe_max_unhit_time);
+	if ( (Missiontime - aip->last_hit_time > long_enough) && ( (Missiontime - fix::set_raw(aip->submode_parm0)) > long_enough) ) {
 		ai_big_switch_to_chase_mode(aip);
 	}
 }
@@ -1713,7 +1713,7 @@ void ai_big_strafe_avoid()
 	if ( ai_big_strafe_maybe_retreat(&target_pos) )
 		return;
 
-	if ( mode_time > fl2f(0.5)) {
+	if ( mode_time > static_cast<fix>(0.5f)) {
 		ai_big_strafe_position();
 	}
 
@@ -1738,7 +1738,7 @@ void ai_big_strafe_retreat1()
 		return;
 	}
 
-	if (Missiontime - aip->submode_start_time > fl2f(1.50f)) {
+	if (Missiontime - aip->submode_start_time > static_cast<fix>(1.50f)) {
 		// set up goal_point for avoid path to turn towards
 		aip->prev_goal_point = Pl_objp->pos;
 		switch(Random::next(4)) {
@@ -1790,7 +1790,7 @@ void ai_big_strafe_retreat2()
 		return;
 	}
 
-	if (Missiontime - aip->submode_start_time > fl2f(0.70f)) {
+	if (Missiontime - aip->submode_start_time > static_cast<fix>(0.70f)) {
 		aip->submode = AIS_STRAFE_RETREAT1;
 		aip->submode_start_time = Missiontime;
 
@@ -1886,7 +1886,7 @@ void ai_big_strafe()
 		aip->submode == AIS_STRAFE_POSITION)
 	{
 		//Re-roll for random sidethrust every 2 seconds
-		if (static_randf((Missiontime + static_rand(aip->shipnum)) >> 17) < aip->ai_random_sidethrust_percent) {
+		if (static_randf((Missiontime.get_raw() + static_rand(aip->shipnum)) >> 17) < aip->ai_random_sidethrust_percent) {
 			do_random_sidethrust(aip, &Ship_info[Ships[aip->shipnum].ship_info_index]);
 		}
 	}
@@ -1963,7 +1963,7 @@ int ai_big_maybe_enter_strafe_mode(const object *pl_objp, int weapon_objnum)
 	// big/capital ship... so enter strafe mode
 	aip->previous_mode = aip->mode;
 	aip->mode = AIM_STRAFE;
-	aip->submode_parm0 = Missiontime;	// use parm0 as time strafe mode entered (i.e. MODE start time)
+	aip->submode_parm0 = Missiontime.get_raw();	// use parm0 as time strafe mode entered (i.e. MODE start time)
 	aip->submode = AIS_STRAFE_AVOID;
 	aip->submode_start_time = Missiontime;
 //	nprintf(("Alan","%s Accepted strafe mode\n", Ships[pl_objp->instance].ship_name));

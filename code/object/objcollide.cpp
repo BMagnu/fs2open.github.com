@@ -1080,7 +1080,7 @@ void collide_apply_gravity_flags_weapons() {
 
 		if (!wip->is_homing() || (wp->weapon_flags[Weapon::Weapon_Flags::No_homing])) {
 			// homing weapons dont get any gravity stuff
-			if (wip->acceleration_time <= 0.0f || Missiontime - wp->creation_time >= fl2f(wip->acceleration_time)) {
+			if (wip->acceleration_time <= 0.0f || Missiontime - wp->creation_time >= static_cast<fix>(wip->acceleration_time)) {
 				// if the weapon doesn't accelerate, or has finished accelerating...
 				if (The_mission.gravity == vmd_zero_vector || obj->phys_info.gravity_const == 0.0f) {
 					obj->phys_info.flags |= PF_CONST_VEL;

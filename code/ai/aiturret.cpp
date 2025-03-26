@@ -1238,7 +1238,7 @@ void turret_ai_update_aim(const ai_info *aip, const object *En_Objp, ship_subsys
 	{
 		ss->last_aim_enemy_pos = En_Objp->pos;
 		ss->last_aim_enemy_vel = En_Objp->phys_info.vel;
-		ss->next_aim_pos_time = Missiontime + fl2f(frand_range(0.0f, aip->ai_turret_max_aim_update_delay));
+		ss->next_aim_pos_time = Missiontime + static_cast<fix>(frand_range(0.0f, aip->ai_turret_max_aim_update_delay));
 	}
 	else
 	{
@@ -1311,7 +1311,7 @@ void aifft_update_predicted_enemy_pos(const object *objp, const ship *shipp, shi
 		if (weapon_system_strength < Weapon_SS_Threshold_Turret_Inaccuracy) {
 			vec3d	rand_vec;
 
-			static_randvec(Missiontime >> 18, &rand_vec);	//	Return same random number for two seconds.
+			static_randvec(Missiontime.get_raw() >> 18, &rand_vec);	//	Return same random number for two seconds.
 			//	Add to predicted_enemy_pos value in .45 to 1.5x radius of enemy ship, so will often miss, but not by a huge amount.
 			vm_vec_scale_add2(predicted_enemy_pos, &rand_vec, (1.0f - weapon_system_strength)*1.5f * lep->radius);
 		}

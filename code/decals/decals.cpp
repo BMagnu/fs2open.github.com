@@ -235,7 +235,7 @@ struct Decal {
 		}
 
 		if (lifetime > 0.0f) {
-			if (f2fl(Missiontime) >= creation_time + lifetime) {
+			if (static_cast<float>(Missiontime) >= creation_time + lifetime) {
 				// Decal has expired
 				return false;
 			}
@@ -458,7 +458,7 @@ void renderAll() {
 		return;
 	}
 
-	auto mission_time = f2fl(Missiontime);
+	auto mission_time = static_cast<float>(Missiontime);
 
 	graphics::decal_draw_list draw_list(active_decals.size());
 	for (auto& decal : active_decals) {
@@ -524,7 +524,7 @@ void addDecal(creation_info& info, const object* host, int submodel, const vec3d
 	newDecal.object = object_h(host);
 	newDecal.orig_obj_type     = host->type;
 	newDecal.submodel = submodel;
-	newDecal.creation_time = f2fl(Missiontime);
+	newDecal.creation_time = static_cast<float>(Missiontime);
 	newDecal.lifetime = info.lifetime.next();
 
 	newDecal.position = local_pos;

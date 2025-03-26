@@ -427,7 +427,7 @@ void multi_options_set_netgame_defaults(multi_server_options *options)
 	options->flags = (MSO_FLAG_INGAME_XFER | MSO_FLAG_ACCEPT_PIX);
 
 	// set the default time limit to be -1 (no limit)
-	options->mission_time_limit = fl2f(-1.0f);
+	options->mission_time_limit = static_cast<fix>(-1.0f);
 
 	// set the default max kills for a mission
 	options->kill_limit = 9999;
@@ -516,7 +516,7 @@ void add_server_options(ubyte *data, int *size, const multi_server_options *mso)
 	ADD_INT(mso->voice_record_time);
 
 	// time limit
-	ADD_INT(mso->mission_time_limit);
+	ADD_FIX(mso->mission_time_limit);
 
 	// kill limit
 	ADD_INT(mso->kill_limit);
@@ -560,7 +560,7 @@ void get_server_options(ubyte *data, int *size, multi_server_options *mso)
 	GET_INT(mso->voice_record_time);
 
 	// time limit
-	GET_INT(mso->mission_time_limit);
+	GET_FIX(mso->mission_time_limit);
 
 	// kill limit
 	GET_INT(mso->kill_limit);

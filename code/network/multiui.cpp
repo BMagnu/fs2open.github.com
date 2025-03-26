@@ -5040,7 +5040,7 @@ void multi_create_accept_hit(int mode, int select_index)
 	// coop game option validation checks
 	if ( (Netgame.type_flags & NG_TYPE_COOP) && (Net_player->flags & NETINFO_FLAG_AM_MASTER) ) {
 		// check for time limit
-		if (Netgame.options.mission_time_limit != i2f(-1)) {
+		if (Netgame.options.mission_time_limit != static_cast<fix>(-1)) {
 			popup_choice = popup(0, 3, POPUP_CANCEL, POPUP_YES, POPUP_NO,
 								XSTR("A time limit is being used in a co-op game.\r\n"
 									"  Select \'Cancel\' to go back to the mission select screen.\r\n"
@@ -5050,7 +5050,7 @@ void multi_create_accept_hit(int mode, int select_index)
 			if (popup_choice == 0) {
 				return;
 			} else if (popup_choice == 2) {
-				Netgame.options.mission_time_limit = i2f(-1);
+				Netgame.options.mission_time_limit = static_cast<fix>(-1);
 			}
 		}
 
@@ -6203,11 +6203,11 @@ void multi_ho_accept_hit()
 	Multi_ho_time_limit.get_text(resp_str);
 	int temp_time = atoi(resp_str);
 	if(temp_time <= 0){
-		Netgame.options.mission_time_limit = fl2f(-1.0f);
+		Netgame.options.mission_time_limit = static_cast<fix>(-1.0f);
 	} else if(temp_time > MULTI_HO_MAX_TIME_LIMIT){
 		Int3();
 	} else {
-		Netgame.options.mission_time_limit = fl2f(60.0f * (float)temp_time);	
+		Netgame.options.mission_time_limit = static_cast<fix>(60.0f * (float)temp_time);
 	}
 
 	// get observer count options
@@ -6328,7 +6328,7 @@ void multi_ho_get_options()
 
 	// set the mission time limit
 	memset(resp_str,0,10);
-	float tl = f2fl(Netgame.options.mission_time_limit);
+	float tl = static_cast<float>(Netgame.options.mission_time_limit);
 	sprintf(resp_str,"%d",(int)(tl / 60.0f));
 	Multi_ho_time_limit.set_text(resp_str);
 

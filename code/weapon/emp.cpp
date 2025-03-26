@@ -365,7 +365,7 @@ void emp_process_ship(ship *shipp)
 	}
 	
 	// pick targets randomly and wackily so that the ship flies crazily :)	
-	if(((int)f2fl(Missiontime) + (int)(EMP_INTENSITY_MAX * shipp->emp_intensity)) % mod_val == 0){
+	if((static_cast<int>(Missiontime) + (int)(EMP_INTENSITY_MAX * shipp->emp_intensity)) % mod_val == 0){
 		int ship_lookup = ship_get_random_team_ship(iff_get_attackee_mask(shipp->team));
 
 		// if we got a valid ship object to target

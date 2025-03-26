@@ -69,7 +69,7 @@ ADE_VIRTVAR(Timestamp, l_Log_Entry, nullptr, "The timestamp of the log entry", "
 		LuaError(L, "This property is read only.");
 	}
 
-	int seconds = f2i(current.getSection()->timestamp);
+	int seconds = static_cast<int>(current.getSection()->timestamp);
 
 	// format the time information into strings
 	SCP_string time;
@@ -92,7 +92,7 @@ ADE_VIRTVAR(paddedTimestamp, l_Log_Entry, nullptr, "The timestamp of the log ent
 		LuaError(L, "This property is read only.");
 	}
 
-	int seconds = f2i(current.getSection()->timestamp) + current.getSection()->timer_padding;
+	int seconds = static_cast<int>(current.getSection()->timestamp) + current.getSection()->timer_padding;
 
 	// format the time information into strings
 	SCP_string time;
@@ -238,7 +238,7 @@ ADE_VIRTVAR(Timestamp, l_Message_Entry, nullptr, "The timestamp of the message e
 		LuaError(L, "This property is read only.");
 	}
 
-	int seconds = f2i(current.getSection()->time);
+	int seconds = static_cast<int>(current.getSection()->time);
 
 	// format the time information into strings
 	SCP_string time;
@@ -261,7 +261,7 @@ ADE_VIRTVAR(paddedTimestamp, l_Message_Entry, nullptr, "The timestamp of the mes
 		LuaError(L, "This property is read only.");
 	}
 
-	int seconds = f2i(current.getSection()->time) + current.getSection()->timer_padding;
+	int seconds = static_cast<int>(current.getSection()->time) + current.getSection()->timer_padding;
 
 	// format the time information into strings
 	SCP_string time;

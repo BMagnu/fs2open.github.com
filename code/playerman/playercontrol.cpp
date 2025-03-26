@@ -317,8 +317,8 @@ void view_modify(angles *ma, angles *da, float max_p, float max_h)
 		control_get_axes_readings(axis, flRealframetime);
 
 		// Does the same thing as t and u but for the joystick input 
-		h = f2fl(axis[Action::HEADING]);
-		p = -f2fl(axis[Action::PITCH]);
+		h = static_cast<float>(axis[Action::HEADING]);
+		p = -static_cast<float>(axis[Action::PITCH]);
 	}
 
 	// Combine Analog and Digital slew commands
@@ -839,15 +839,15 @@ void read_keyboard_controls( control_info * ci, float frame_time, physics_info *
 			// Player has control of the ship
 			// Set heading
 			if ( check_control(BANK_WHEN_PRESSED) ) {
-				delta = f2fl( axis[Action::HEADING] );
+				delta = static_cast<float>( axis[Action::HEADING] );
 				if ( (delta > 0.05f) || (delta < -0.05f) ) {
 					ci->bank -= delta;
 				}
 			} else {
-				ci->heading += f2fl( axis[Action::HEADING] );
+				ci->heading += static_cast<float>( axis[Action::HEADING] );
 			}
 			// Set pitch
-			ci->pitch -= f2fl( axis[Action::PITCH] );
+			ci->pitch -= static_cast<float>( axis[Action::PITCH] );
 
 		} else {
 			// Player has control of the camera
@@ -856,7 +856,7 @@ void read_keyboard_controls( control_info * ci, float frame_time, physics_info *
 		}
 
 		// Set bank
-		ci->bank -= f2fl( axis[Action::BANK] ) * 1.5f;
+		ci->bank -= static_cast<float>( axis[Action::BANK] ) * 1.5f;
 
 		if (!Control_config[JOY_ABS_THROTTLE_AXIS].empty()) {
 			scaled = (float) axis[Action::ABS_THROTTLE] * 1.2f / (float) F1_0 - 0.1f;  // convert to -0.1 - 1.1 range
@@ -873,7 +873,7 @@ void read_keyboard_controls( control_info * ci, float frame_time, physics_info *
 		}
 
 		if (!Control_config[JOY_REL_THROTTLE_AXIS].empty())
-			ci->forward_cruise_percent += f2fl(axis[Action::REL_THROTTLE]) * 100.0f * frame_time;
+			ci->forward_cruise_percent += static_cast<float>(axis[Action::REL_THROTTLE]) * 100.0f * frame_time;
 
 		CLAMP(ci->forward_cruise_percent, 0.0f, 100.0f);
 
@@ -1470,10 +1470,10 @@ void player_level_init()
 	Player->flags |= Player->save_flags;
 	
 	//	Init variables for friendly fire monitoring.
-	Player->friendly_last_hit_time = 0;
+	Player->friendly_last_hit_time = fix();
 	Player->friendly_hits = 0;
 	Player->friendly_damage = 0.0f;
-	Player->last_warning_message_time = 0;
+	Player->last_warning_message_time = fix();
 
 	Player->control_mode = PCM_NORMAL;
 

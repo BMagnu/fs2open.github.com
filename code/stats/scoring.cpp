@@ -695,7 +695,7 @@ void scoring_do_accept(scoring_struct *score)
 	}
 
 	// add in mission time
-	score->flight_time += (unsigned int)f2fl(Missiontime);
+	score->flight_time += static_cast<int>(Missiontime);
 	score->last_backup = score->last_flown;
 	score->last_flown = (_fs_time_t)time(NULL);
 	score->missions_flown++;
@@ -751,7 +751,7 @@ void scoring_backout_accept( scoring_struct *score )
 		Assert( score->rank >= 0 );
 	}	
 
-	score->flight_time -= (unsigned int)f2fl(Missiontime);
+	score->flight_time -= static_cast<int>(Missiontime);
 	score->last_flown = score->last_backup;	
 	score->missions_flown--;
 }

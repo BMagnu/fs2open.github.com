@@ -43,7 +43,7 @@ namespace {
 
 static const int NextDrawStringPosInitial[] = {0, 0};
 static int NextDrawStringPos[] = {NextDrawStringPosInitial[0], NextDrawStringPosInitial[1]};
-static fix PreviousFrametimeOverall = 0;
+static fix PreviousFrametimeOverall = fix();
 
 static bool WarnedBadThicknessLine = false;
 

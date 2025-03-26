@@ -79,7 +79,7 @@ void warpin_queue_render(model_draw_list *scene, object *obj, matrix *orient, ve
 		float r = flare_rad;
 
 		// Add in noise 
-		int noise_frame = fl2i(Missiontime/15.0f) % NOISE_NUM_FRAMES;
+		int noise_frame = fl2i(Missiontime.get_raw() / 15.0f) % NOISE_NUM_FRAMES;
 
 		r *= (0.40f + Noise[noise_frame] * flicker_magnitude);
 

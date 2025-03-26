@@ -295,10 +295,10 @@ void HudGaugeRadarDradis::drawBlips(int blip_type, int bright, int distort)
 		if (b->flags & BLIP_CURRENT_TARGET)
 		{
 			if (radar_target_id_flags & RTIF_PULSATE) {
-				scale_factor *= 1.3f + (sinf(10 * f2fl(Missiontime)) * 0.3f);
+				scale_factor *= 1.3f + (sinf(10 * static_cast<float>(Missiontime)) * 0.3f);
 			}
 			if (radar_target_id_flags & RTIF_BLINK) {
-				if (Missiontime & 8192)
+				if (Missiontime.get_raw() & 8192)
 					continue;
 			}
 			if (radar_target_id_flags & RTIF_ENLARGE) {
@@ -383,7 +383,7 @@ void HudGaugeRadarDradis::drawSweeps()
 	if (sweep_plane == -1)
 		return;
 	
-	float modulo = fmod(f2fl(game_get_overall_frametime()) * MILLISECONDS_PER_SECOND, static_cast<float>(sweep_duration));
+	float modulo = fmod(static_cast<float>(game_get_overall_frametime()) * MILLISECONDS_PER_SECOND, static_cast<float>(sweep_duration));
 	float fraction = modulo / sweep_duration;
 	sweep_angle = fraction * PI2; // convert to radians from 0 <-> 1
 	float sweep_angle_z = sweep_angle * -0.5f;
@@ -585,7 +585,7 @@ void HudGaugeRadarDradis::doBeeps()
 		return;
 	}
 
-	if (Missiontime == 0 || Missiontime == Frametime)
+	if (Missiontime == fix() || Missiontime == Frametime)
 	{
 		// don't play sounds in first frame
 		return;
@@ -611,7 +611,7 @@ void HudGaugeRadarDradis::doBeeps()
 
 		if (shipp->objnum >= 0)
 		{
-			if (shipp->radar_visible_since >= 0 || shipp->radar_last_contact >= 0)
+			if (shipp->radar_visible_since >= fix() || shipp->radar_last_contact >= fix())
 			{
 				if (shipp->radar_visible_since == Missiontime)
 				{
@@ -624,7 +624,7 @@ void HudGaugeRadarDradis::doBeeps()
 						arrival_happened = true;
 					}
 				}
-				else if (shipp->radar_visible_since < 0 && shipp->radar_last_contact == Missiontime)
+				else if (shipp->radar_visible_since < fix() && shipp->radar_last_contact == Missiontime)
 				{
 					if (shipp->radar_last_status == DISTORTED)
 					{

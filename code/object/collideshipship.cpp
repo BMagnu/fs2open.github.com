@@ -860,7 +860,7 @@ static void get_I_inv (matrix* I_inv, matrix* I_inv_body, matrix* orient)
 #define	PLANET_DAMAGE_SCALE	4.0f
 #define	PLANET_DAMAGE_RANGE	3		//	If within this factor of radius, apply damage.
 
-fix	Last_planet_damage_time = 0;
+fix	Last_planet_damage_time = fix();
 extern void hud_start_text_flash(char *txt, int t, int interval);
 
 /**

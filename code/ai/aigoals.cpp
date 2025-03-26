@@ -166,7 +166,7 @@ void ai_goal_reset(ai_goal *aigp, bool adding_goal, ai_goal_mode ai_mode, int ai
 	aigp->ai_submode = ai_submode;
 	aigp->type = type;
 	aigp->flags.reset();		// must reset the flags since not doing so will screw up goal sorting.
-	aigp->time = adding_goal ? Missiontime : 0;
+	aigp->time = adding_goal ? Missiontime : fix();
 	aigp->priority = -1;
 
 	aigp->target_name = nullptr;

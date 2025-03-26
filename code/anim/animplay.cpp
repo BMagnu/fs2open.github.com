@@ -448,7 +448,7 @@ int anim_show_next_frame(anim_instance *instance, float frametime)
 		t2 = timer_get_fixed_seconds();
 	}
 	else {
-		t2=t1=0;
+		t2=t1=fix();
 	}
 
 	// this only happens when the anim is being looped, we need to reset the last_frame_num

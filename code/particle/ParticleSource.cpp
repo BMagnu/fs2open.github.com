@@ -60,7 +60,7 @@ bool ParticleSource::process() {
 
 			while(timestamp_elapsed(timing.m_nextCreation) && needs_to_continue_running) {
 				//Find "time" in last frame where particle spawned
-				float interp = static_cast<float>(timestamp_since(timing.m_nextCreation)) / (f2fl(Frametime) * 1000.0f);
+				float interp = static_cast<float>(timestamp_since(timing.m_nextCreation)) / (static_cast<float>(Frametime) * 1000.0f);
 
 				// we need to clamp this to 1 because a spawn delay lower than it takes to spawn the particle in ms means we try to spawn infinite particles
 				float freqMult = effect.m_modular_curves.get_output(ParticleEffect::ParticleCurvesOutput::PARTICLE_FREQ_MULT, std::pair<const ParticleSource&, size_t>(*this, i));

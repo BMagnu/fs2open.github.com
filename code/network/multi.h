@@ -542,7 +542,7 @@ typedef struct net_player {
 		client_cinfo_seq = 0;
 		client_server_seq = 0;
 
-		last_heard_time = 0;
+		last_heard_time = fix();
 
 		memset(&p_info, 0, sizeof(net_player_info));
 

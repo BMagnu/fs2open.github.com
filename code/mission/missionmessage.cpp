@@ -1163,7 +1163,7 @@ void message_remove_from_queue(message_q *q)
 	}	
 
 	q->priority = -1;
-	q->time_added = -1;
+	q->time_added = fix::set_raw(-1);
 	q->message_num = -1;
 	q->builtin_type = -1;
 	q->min_delay_stamp = TIMESTAMP::invalid();
@@ -1672,7 +1672,7 @@ void message_queue_process()
 	q = &MessageQ[0];
 	Assert ( q->message_num != -1 );
 	Assert ( q->priority != -1 );
-	Assert ( q->time_added != -1 );
+	Assert ( q->time_added != fix::set_raw(-1) );
 
 	int provisional_message_shipnum = -1;
 

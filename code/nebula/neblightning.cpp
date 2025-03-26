@@ -659,7 +659,7 @@ void nebl_process()
 	}
 
 	// don't process lightning bolts unless we're a few seconds in
-	if(f2fl(Missiontime) < 3.0f){
+	if(static_cast<float>(Missiontime) < 3.0f){
 		return;
 	}
 		

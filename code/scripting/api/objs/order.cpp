@@ -232,7 +232,7 @@ ADE_VIRTVAR(Target, l_Order, "object", "Target of the order. Value may also be a
 				case AI_GOAL_STAY_STILL:
 					if ((newh->objp()->type == OBJ_SHIP) && stricmp(Ships[newh->objp()->instance].ship_name, ohp->aigp->target_name)) {
 						ohp->aigp->target_name = ai_get_goal_target_name(Ships[newh->objp()->instance].ship_name, &ohp->aigp->target_name_index);
-						ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+						ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 
 						if(ohp->odx == 0) {
 							aip->ok_to_target_timestamp = timestamp(0);
@@ -245,7 +245,7 @@ ADE_VIRTVAR(Target, l_Order, "object", "Target of the order. Value may also be a
 					if ((newh->objp()->type == OBJ_WEAPON) && (ohp->aigp->target_signature != newh->sig)){
 						ohp->aigp->target_instance = newh->objp()->instance;
 						ohp->aigp->target_signature = Weapons[newh->objp()->instance].objnum;
-						ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+						ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 
 						if(ohp->odx == 0) {
 							aip->ok_to_target_timestamp = timestamp(0);
@@ -267,7 +267,7 @@ ADE_VIRTVAR(Target, l_Order, "object", "Target of the order. Value may also be a
 							ohp->aigp->target_name = ai_get_goal_target_name(Waypoint_lists[wpl].get_name(), &ohp->aigp->target_name_index);
 							ohp->aigp->wp_list_index = wpl;
 							ohp->aigp->int_data = idx;
-							ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+							ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 							maybe_start_waypoints(ohp, true);
 						}
 					}
@@ -278,7 +278,7 @@ ADE_VIRTVAR(Target, l_Order, "object", "Target of the order. Value may also be a
 						ship *shipp = &Ships[newh->objp()->instance];
 						if (shipp->wingnum != -1){
 							ohp->aigp->target_name = ai_get_goal_target_name(Wings[shipp->wingnum].name, &ohp->aigp->target_name_index);
-							ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+							ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 
 							if(ohp->odx == 0) {
 								aip->ok_to_target_timestamp = timestamp(0);
@@ -293,7 +293,7 @@ ADE_VIRTVAR(Target, l_Order, "object", "Target of the order. Value may also be a
 						ship *shipp = &Ships[newh->objp()->instance];
 						if (shipp->wingnum != -1){
 							ohp->aigp->target_name = ai_get_goal_target_name(Wings[shipp->wingnum].name, &ohp->aigp->target_name_index);
-							ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+							ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 
 							if(ohp->odx == 0) {
 								aip->ok_to_target_timestamp = timestamp(0);
@@ -393,7 +393,7 @@ ADE_VIRTVAR(TargetSubsystem, l_Order, "subsystem", "Target subsystem of the orde
 			objp = &Objects[newh->ss->parent_objnum];
 			if (stricmp(Ships[objp->instance].ship_name, ohp->aigp->target_name)) {
 				ohp->aigp->target_name = ai_get_goal_target_name(Ships[objp->instance].ship_name, &ohp->aigp->target_name_index);
-				ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+				ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 				if(ohp->odx == 0) {
 					aip->ok_to_target_timestamp = timestamp(0);
 					set_target_objnum(aip, OBJ_INDEX(objp));
@@ -430,7 +430,7 @@ ADE_VIRTVAR(WaypointList, l_Order, "waypointlist", "Waypoint list of the order."
 	{
 		ohp->aigp->target_name = ai_get_goal_target_name(wplh->getList()->get_name(), &ohp->aigp->target_name_index);
 		ohp->aigp->wp_list_index = wplh->wl_index;
-		ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+		ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 
 		if (!SCP_vector_inbounds(Waypoint_lists[ohp->aigp->wp_list_index].get_waypoints(), ohp->aigp->int_data))
 		{
@@ -462,7 +462,7 @@ ADE_VIRTVAR(WaypointIndex, l_Order, "number", "Waypoint index of the order.", "n
 		if (SCP_vector_inbounds(Waypoint_lists[ohp->aigp->wp_list_index].get_waypoints(), index))
 		{
 			ohp->aigp->int_data = index;
-			ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+			ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 			maybe_start_waypoints(ohp, true);
 		}
 	}
@@ -483,7 +483,7 @@ ADE_VIRTVAR(WaypointsInReverse, l_Order, "boolean", "Waypoint-reverse flag of th
 	if (ADE_SETTING_VAR)
 	{
 		ohp->aigp->flags.set(AI::Goal_Flags::Waypoints_in_reverse, reverse);
-		ohp->aigp->time = (ohp->odx == 0) ? Missiontime : 0;
+		ohp->aigp->time = (ohp->odx == 0) ? Missiontime : fix();
 		maybe_start_waypoints(ohp, true);
 	}
 

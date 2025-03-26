@@ -126,7 +126,7 @@ void pilotfile::update_stats(scoring_struct *stats, bool training)
 	p_stats->s_shots_hit += stats->ms_shots_hit;
 	p_stats->s_bonehead_hits += stats->ms_bonehead_hits;
 
-	p_stats->flight_time += (unsigned int)f2i(Missiontime);
+	p_stats->flight_time += (unsigned int)static_cast<int>(Missiontime);
 	p_stats->last_backup = p_stats->last_flown;
 	p_stats->last_flown = stats->last_flown;
 	p_stats->missions_flown++;
@@ -239,7 +239,7 @@ void pilotfile::update_stats_backout(scoring_struct *stats, bool training)
 	p_stats->s_shots_hit -= stats->ms_shots_hit;
 	p_stats->s_bonehead_hits -= stats->ms_bonehead_hits;
 
-	p_stats->flight_time -= (unsigned int)f2i(Missiontime);
+	p_stats->flight_time -= (unsigned int)static_cast<int>(Missiontime);
 	p_stats->last_flown = p_stats->last_backup;
 	p_stats->missions_flown--;
 

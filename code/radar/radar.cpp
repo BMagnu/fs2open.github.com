@@ -191,7 +191,7 @@ void HudGaugeRadarStd::drawContactCircle( int x, int y, int rad )
 {
 	if ( rad == Radar_blip_radius_target )	{
 		if (radar_target_id_flags & RTIF_BLINK) {
-			if (Missiontime & 8192)
+			if (Missiontime.get_raw() & 8192)
 				return;
 		}
 		renderCircle(x, y, 6);
@@ -238,10 +238,10 @@ void HudGaugeRadarStd::drawContactImage( int x, int y, int rad, int idx, int clr
 	// animate the targeted icon - option 1 of highlighting the targets
 	if ( rad == Radar_blip_radius_target ) {
 		if (radar_target_id_flags & RTIF_PULSATE) {
-			scalef *= 1.3f + (sinf(10 * f2fl(Missiontime)) * 0.3f);
+			scalef *= 1.3f + (sinf(10 * static_cast<float>(Missiontime)) * 0.3f);
 		}
 		if (radar_target_id_flags & RTIF_BLINK) {
-			if (Missiontime & 8192)
+			if (Missiontime.get_raw() & 8192)
 				return;
 		}
 		if (radar_target_id_flags & RTIF_ENLARGE) {

@@ -2495,7 +2495,7 @@ int hud_query_order_issued(const char *to, const char *order_name, const char *t
 		if (Squadmsg_history[i].order == order) {
 			if (ship_or_wing == Squadmsg_history[i].order_to) {
 				if (target == -1 || Squadmsg_history[i].target == target) {
-					if ((!timestamp) || (Squadmsg_history[i].order_time + i2f(timestamp) >= Missiontime) ) {	
+					if ((!timestamp) || (Squadmsg_history[i].order_time + static_cast<fix>(timestamp) >= Missiontime) ) {
 						// In multiplayer games we may wish to check who sent the order
 						if (MULTIPLAYER_MASTER) {
 							if ((source != -1) && (Squadmsg_history[i].order_from != source)) {

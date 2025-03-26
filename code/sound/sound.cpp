@@ -1582,7 +1582,7 @@ void snd_adjust_audio_volume(int aav_type, float percent, int delta_time)
 		aav_data[aav_type].delta = percent - *aav_volume[aav_type];
 
 	aav_data[aav_type].delta_time = delta_time;
-	aav_data[aav_type].start_time = f2fl(Missiontime) * MILLISECONDS_PER_SECOND;
+	aav_data[aav_type].start_time = static_cast<float>(Missiontime) * MILLISECONDS_PER_SECOND;
 
 
 	// if the delta_time is 0 [immediate], make the relevant updates without waiting for the next frame's snd_do_frame()
@@ -1592,14 +1592,14 @@ void snd_adjust_audio_volume(int aav_type, float percent, int delta_time)
 
 void adjust_volume_on_frame(float* volume_now, aav* data)
 {
-	if (Missiontime == 0){
+	if (Missiontime == fix()){
 		return;
 	}
 
 	if (*volume_now == (data->start_volume + data->delta))
 		return;
 	
-	float msMissiontime = f2fl(Missiontime) * MILLISECONDS_PER_SECOND;
+	float msMissiontime = static_cast<float>(Missiontime) * MILLISECONDS_PER_SECOND;
 	
 	//How much change do we need?
 	//if immediate, or if the time has elapsed, use the target volume

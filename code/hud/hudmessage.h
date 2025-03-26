@@ -72,8 +72,8 @@ void HUD_fixed_printf(float duration, color col, SCP_FORMAT_STRING const char *f
 void HUD_init_fixed_text();			//	Clear all pending fixed text.
 
 void HUD_add_to_scrollback(const char *text, int source);
-void hud_add_line_to_scrollback(const char *text, int source, int t, int x, int y, int w);
-void hud_add_msg_to_scrollback(const char *text, int source, int t);
+void hud_add_line_to_scrollback(const char *text, int source, fix t, int x, int y, int w);
+void hud_add_msg_to_scrollback(const char *text, int source, fix t);
 
 class HudGaugeMessages: public HudGauge // HUD_MESSAGE_LINES
 {

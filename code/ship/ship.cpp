@@ -6617,7 +6617,7 @@ void ship_add_exited_ship( ship *sp, Ship::Exit_Flags reason )
 		entry.time_cargo_revealed = sp->time_cargo_revealed;
 	}
 
-    if (sp->time_first_tagged > 0) {
+    if (sp->time_first_tagged > fix()) {
 		entry.flags.set(Ship::Exit_Flags::Been_tagged);
 	}
 	
@@ -6905,7 +6905,7 @@ void ship::clear()
 	display_name.clear();
 	team = 0;
 
-	time_cargo_revealed = 0;
+	time_cargo_revealed = fix();
 
 	arrival_location = ArrivalLocation::AT_LOCATION;
 	arrival_distance = 0;
@@ -7033,7 +7033,7 @@ void ship::clear()
 
 	tag_total = 0.0f;
 	tag_left = -1.0f;
-	time_first_tagged = 0;
+	time_first_tagged = fix();
 	level2_tag_total = 0.0f;
 	level2_tag_left = -1.0f;
 
@@ -7090,17 +7090,17 @@ void ship::clear()
 
 	model_instance_num = -1;
 
-	time_created = 0;
+	time_created = fix();
 
-	radar_visible_since = -1;
-	radar_last_contact = -1;
+	radar_visible_since = fix::set_raw(-1);
+	radar_last_contact = fix::set_raw(-1);
 
 	radar_last_status = VISIBLE;
 	radar_current_status = VISIBLE;
 
 	team_name = "";
 	secondary_team_name = "";
-	team_change_timestamp = timestamp(-1);
+	team_change_timestamp = fix::set_raw(timestamp(-1));
 	team_change_time = 0;
 
 	autoaim_fov = 0.0f;
@@ -7255,7 +7255,7 @@ void wing::clear()
 	current_wave = 0;
 	threshold = 0;
 
-	time_gone = 0;
+	time_gone = fix();
 
 	wave_count = 0;
 	total_arrived_count = 0;
@@ -7690,7 +7690,7 @@ void ship_subsys::clear()
 
 	subsys_cargo_name = 0;
 	subsys_cargo_title[0] = '\0';
-	time_subsys_cargo_revealed = 0;
+	time_subsys_cargo_revealed = fix();
 
 	triggered_rotation_index = -1;
 
@@ -7706,7 +7706,7 @@ void ship_subsys::clear()
 		target_priority[i] = -1;
 	num_target_priorities = 0;
 
-	next_aim_pos_time = 0;
+	next_aim_pos_time = fix();
 	last_aim_enemy_pos = vmd_zero_vector;
 	last_aim_enemy_vel = vmd_zero_vector;
 
@@ -7877,7 +7877,7 @@ static int subsys_set(int objnum, int ignore_subsys_info)
 		ship_system->favor_current_facing = model_system->favor_current_facing;
 		ship_system->subsys_cargo_name = 0;
 		ship_system->subsys_cargo_title[0] = '\0';
-		ship_system->time_subsys_cargo_revealed = 0;
+		ship_system->time_subsys_cargo_revealed = fix();
 		
 		j = 0;
 		int number_of_weapons = 0;
@@ -7911,7 +7911,7 @@ static int subsys_set(int objnum, int ignore_subsys_info)
 		ship_system->weapons.current_primary_bank = -1;
 		ship_system->weapons.current_secondary_bank = -1;
 		
-		ship_system->next_aim_pos_time = 0;
+		ship_system->next_aim_pos_time = fix();
 
 		ship_system->turret_max_bomb_ownage = model_system->turret_max_bomb_ownage;
 		ship_system->turret_max_target_ownage = model_system->turret_max_target_ownage;
@@ -8162,7 +8162,7 @@ void ship_render_player_ship(object* objp, const vec3d* cam_offset, const matrix
 		render_info.set_replacement_textures(pmi->texture_replace);
 
 		if (sip->uses_team_colors)
-			render_info.set_team_color(shipp->team_name, shipp->secondary_team_name, 0, 0);
+			render_info.set_team_color(shipp->team_name, shipp->secondary_team_name, fix(), 0);
 
 		render_info.set_detail_level_lock(0);
 		model_render_immediate(&render_info, sip->model_num, shipp->model_instance_num, &objp->orient, &eye_offset, MODEL_RENDER_OPAQUE);
@@ -8259,7 +8259,7 @@ void ship_render_player_ship(object* objp, const vec3d* cam_offset, const matrix
 		ship_render_info.set_replacement_textures(pmi->texture_replace);
 		ship_render_info.set_object_number(OBJ_INDEX(objp));
 		if (sip->uses_team_colors)
-			ship_render_info.set_team_color(shipp->team_name, shipp->secondary_team_name, 0, 0);
+			ship_render_info.set_team_color(shipp->team_name, shipp->secondary_team_name, fix(), 0);
 
 		model_render_immediate(&ship_render_info, sip->model_num, shipp->model_instance_num, &objp->orient, &eye_offset, MODEL_RENDER_OPAQUE);
 		gr_zbuffer_clear(true);
@@ -8920,7 +8920,7 @@ void ship_cleanup(int shipnum, int cleanup_mode)
 #ifndef NDEBUG
 	// this isn't posted to the mission log, so log it here
 	if (cleanup_mode == SHIP_VANISHED) {
-		float mission_time = f2fl(Missiontime);
+		float mission_time = static_cast<float>(Missiontime);
 		int minutes = (int)(mission_time / 60);
 		int seconds = (int)mission_time % 60;
 
@@ -10419,20 +10419,20 @@ static void ship_radar_process( object * obj, ship * shipp, ship_info * sip )
 
 	if (visibility == NOT_VISIBLE)
 	{
-		if (shipp->radar_last_contact < 0 && shipp->radar_visible_since < 0)
+		if (shipp->radar_last_contact < fix() && shipp->radar_visible_since < fix())
 		{
-			shipp->radar_visible_since = -1;
-			shipp->radar_last_contact = -1;
+			shipp->radar_visible_since = fix::set_raw(-1);
+			shipp->radar_last_contact = fix::set_raw(-1);
 		}
 		else
 		{
-			shipp->radar_visible_since = -1;
+			shipp->radar_visible_since = fix::set_raw(-1);
 			shipp->radar_last_contact = Missiontime;
 		}
 	}
 	else if (visibility == VISIBLE || visibility == DISTORTED)
 	{
-		if (shipp->radar_visible_since < 0)
+		if (shipp->radar_visible_since < fix())
 		{
 			shipp->radar_visible_since = Missiontime;
 		}
@@ -13655,7 +13655,7 @@ static bool ship_fire_secondary_detonate(object *obj, ship_weapon *swp)
 
 				if (mobjp->parent_sig == obj->parent_sig && Weapon_info[Weapons[mobjp->instance].weapon_info_index].wi_flags[Weapon::Info_Flags::Remote]) {
 					// dont detonate if this guy just spawned i.e. we just spawned him in a previous iteration of this loop
-					if (Missiontime - Weapons[mobjp->instance].creation_time > fl2f(0.01)) {
+					if (Missiontime - Weapons[mobjp->instance].creation_time > static_cast<fix>(0.01f)) {
 						weapon_detonate(mobjp);
 					}
 				}

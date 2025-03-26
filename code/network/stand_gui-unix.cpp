@@ -787,7 +787,7 @@ void std_do_gui_frame() {
     }
 
     // Update mission data
-    webui_missiontime = f2fl(Missiontime);
+    webui_missiontime = static_cast<float>(Missiontime);
 
     webuiMissionGoals.clear();
     for (int idx = 0; idx < (int)Mission_goals.size(); idx++) {
