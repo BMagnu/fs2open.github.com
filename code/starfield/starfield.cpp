@@ -1326,7 +1326,9 @@ void stars_draw_sun(int show_sun)
 			bitmap_id = bm->bitmap_id;
 		}
 
-		g3_rotate_faraway_vertex(&sun_vex, &sun_pos);
+		//g3_rotate_faraway_vertex(&sun_vex, &sun_pos);
+		vm_vec_rotate( &sun_vex.world, &sun_pos, &View_matrix );
+		sun_vex.flags = 0;	//not projected
 
 		if ( sun_vex.codes & (CC_BEHIND|CC_OFF_USER) ) {
 			continue;
