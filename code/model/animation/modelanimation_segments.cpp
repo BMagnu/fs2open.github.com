@@ -1520,7 +1520,7 @@ namespace animation {
 
 	ModelAnimationSegmentKeyframed::ModelAnimationSegmentKeyframed(std::shared_ptr<ModelAnimationSubmodel> submodel, SCP_vector<bezier_def_point> keyframes, bool returnToInitial) : m_submodel(submodel), m_keyframes(std::move(keyframes)), m_returnToInitial(returnToInitial) { }
 
-	void ModelAnimationSegmentKeyframed::recalculate(SCP_vector<bezier_point>(&bezier)[3], const float* const (&firstPoint)[3], float& duration) {
+	void ModelAnimationSegmentKeyframed::recalculateBezier(SCP_vector<bezier_point>(&bezier)[3], const float* const (&firstPoint)[3], float& duration) {
 		if (m_returnToInitial)
 			m_keyframes.back().pnt = { {*firstPoint[0], *firstPoint[1], *firstPoint[2]} };
 
@@ -1543,10 +1543,10 @@ namespace animation {
 				float lastHandleY = 0.0f, nextHandleY = 0.0f;
 
 				switch (keyframe.keyframeMode[component]) {
-				case bezier_def_point::DECELERATE:
+					case bezier_def_point::KeyframeMode::DECELERATE:
 					lastHandleY = nextHandleY = pointY;
 					break;
-				case bezier_def_point::SMOOTH: {
+					case bezier_def_point::KeyframeMode::SMOOTH: {
 					float prevY = curve.back().pointY;
 					//Badly guestimate where the bezier handles need to be by testing the gradient of a bezier curve with flat handles around the surrounding keyframes.
 
@@ -1574,7 +1574,7 @@ namespace animation {
 
 	}
 
-	void ModelAnimationSegmentKeyframed::calculateAnimation(float time, const SCP_vector<bezier_point>(&bezier)[3], float* const (&target)[3]) const {
+	void ModelAnimationSegmentKeyframed::calculateAnimationBezier(float time, const SCP_vector<bezier_point>(&bezier)[3], float* const (&target)[3]) const {
 		for (size_t component = 0; component < 3; component++) {
 			const bezier_point* last_point = nullptr;
 			const bezier_point* next_point = nullptr;
@@ -1762,21 +1762,21 @@ namespace animation {
 
 				switch (mode) {
 				case 0:
-					keyframe.keyframeMode[i] = bezier_def_point::DECELERATE;
+					keyframe.keyframeMode[i] = bezier_def_point::KeyframeMode::DECELERATE;
 					break;
 				case 1:
-					keyframe.keyframeMode[i] = bezier_def_point::SMOOTH;
+					keyframe.keyframeMode[i] = bezier_def_point::KeyframeMode::SMOOTH;
 					break;
 				default:
 					error_display(1, "Unknown frame interpolation type specified!");
-					keyframe.keyframeMode[i] = bezier_def_point::DECELERATE;
+					keyframe.keyframeMode[i] = bezier_def_point::KeyframeMode::DECELERATE;
 					break;
 				}
 			}
 		}
 		else {
 			for (auto& mode : keyframe.keyframeMode)
-				mode = bezier_def_point::DECELERATE;
+				mode = bezier_def_point::KeyframeMode::DECELERATE;
 		}
 	}
 
@@ -1796,16 +1796,16 @@ namespace animation {
 		vm_extract_angles_matrix_alternate(&firstNode, &base[m_submodel].data.orientation);
 
 		if (m_returnToInitial)
-			m_keyframes.back().pnt = {{ firstNode.p, firstNode.b, firstNode.h }};
+			m_keyframes.back().pnt = {{ {firstNode.p, firstNode.b, firstNode.h} }};
 
-		ModelAnimationSegmentKeyframed::recalculate(instance.bezierCurve, { &firstNode.p, &firstNode.b, &firstNode.h }, duration);
+		ModelAnimationSegmentKeyframed::recalculateBezier(instance.bezierCurve, { &firstNode.p, &firstNode.b, &firstNode.h }, duration);
 	}
 
 	void ModelAnimationSegmentKeyframedRotation::calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const {
 		const auto& instance = m_instances.at(pmi_id);
 		angles target;
 
-		ModelAnimationSegmentKeyframed::calculateAnimation(time, instance.bezierCurve, { &target.p, &target.b, &target.h });
+		ModelAnimationSegmentKeyframed::calculateAnimationBezier(time, instance.bezierCurve, { &target.p, &target.b, &target.h });
 
 		matrix orient;
 		vm_angles_2_matrix(&orient, &target);
@@ -1853,14 +1853,14 @@ namespace animation {
 		if (m_returnToInitial)
 			m_keyframes.back().pnt = firstNode;
 
-		ModelAnimationSegmentKeyframed::recalculate(instance.bezierCurve, { &firstNode.xyz.x, &firstNode.xyz.y, &firstNode.xyz.z }, duration);
+		ModelAnimationSegmentKeyframed::recalculateBezier(instance.bezierCurve, { &firstNode.xyz.x, &firstNode.xyz.y, &firstNode.xyz.z }, duration);
 	}
 
 	void ModelAnimationSegmentKeyframedTranslation::calculateAnimation(ModelAnimationSubmodelBuffer& base, float time, int pmi_id) const {
 		const auto& instance = m_instances.at(pmi_id);
 		vec3d target;
 
-		ModelAnimationSegmentKeyframed::calculateAnimation(time, instance.bezierCurve, { &target.xyz.x, &target.xyz.y, &target.xyz.z });
+		ModelAnimationSegmentKeyframed::calculateAnimationBezier(time, instance.bezierCurve, { &target.xyz.x, &target.xyz.y, &target.xyz.z });
 
 		target += instance.startOffset;
 

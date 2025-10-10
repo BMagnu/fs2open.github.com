@@ -331,15 +331,15 @@ namespace animation {
 		struct bezier_def_point {
 			float time;
 			vec3d pnt;
-			enum { DECELERATE, SMOOTH } keyframeMode[3];
+			enum class KeyframeMode : uint8_t { DECELERATE, SMOOTH } keyframeMode[3];
 		};
 
 		std::shared_ptr<ModelAnimationSubmodel> m_submodel;
 		std::vector<bezier_def_point> m_keyframes;
 		bool m_returnToInitial;
 
-		void recalculate(SCP_vector<bezier_point>(&bezier)[3], const float* const (&firstPoint)[3], float& duration);
-		void calculateAnimation(float time, const SCP_vector<bezier_point>(&bezier)[3], float* const (&target)[3]) const;
+		void recalculateBezier(SCP_vector<bezier_point>(&bezier)[3], const float* const (&firstPoint)[3], float& duration);
+		void calculateAnimationBezier(float time, const SCP_vector<bezier_point>(&bezier)[3], float* const (&target)[3]) const;
 		void executeAnimation(const ModelAnimationSubmodelBuffer& /*state*/, float /*timeboundLower*/, float /*timeboundUpper*/, ModelAnimationDirection /*direction*/, int /*pmi_id*/) override { };
 		void exchangeSubmodelPointers(ModelAnimationSet& replaceWith) override;
 
