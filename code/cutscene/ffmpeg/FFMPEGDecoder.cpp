@@ -69,7 +69,11 @@ CodecContextParameters getCodecParameters(AVStream* stream) {
 	paras.height       = stream->codecpar->height;
 	paras.pixel_format = (AVPixelFormat)stream->codecpar->format;
 
-	paras.channel_layout = stream->codecpar->channel_layout;
+	#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(59, 36, 255)
+		paras.channel_layout = stream->codecpar->ch_layout.u.mask;
+	#else
+		paras.channel_layout = stream->codecpar->channel_layout;
+	#endif
 	paras.sample_rate    = stream->codecpar->sample_rate;
 	paras.audio_format   = (AVSampleFormat)stream->codecpar->format;
 
@@ -503,6 +507,7 @@ MovieProperties FFMPEGDecoder::getProperties() const
 	props.size.height = static_cast<size_t>(m_status->videoCodecPars.height);
 
 	props.fps = static_cast<float>(getFrameRate(m_status->videoStream, m_status->videoCodecCtx));
+	props.duration = static_cast<float>(m_status->videoStream->duration * av_q2d(m_status->videoStream->time_base));
 
 	props.pixelFormat = getPixelFormat(getConversionFormat(m_status->videoCodecPars.pixel_format));
 

@@ -17,8 +17,11 @@
 #include "parse/sexp.h"
 #include "globalincs/linklist.h"
 #include "ai/aigoals.h"
+#include "ai/ailua.h"
+#include "asteroid/asteroid.h"
 #include "mission/missionmessage.h"
 #include "mission/missioncampaign.h"
+#include "mission/missionparse.h"
 #include "hud/hudsquadmsg.h"
 #include "stats/medals.h"
 #include "controlconfig/controlsconfig.h"
@@ -46,6 +49,18 @@
 
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QMenu>
+#include <QtWidgets/QInputDialog>
+#include <QtWidgets/QColorDialog>
+#include <QtWidgets/QStyledItemDelegate>
+#include <QtWidgets/QStyleOptionViewItem>
+#include <QKeyEvent>
+#include <QVBoxLayout>
+#include <QAbstractItemView>
+#include <QScrollBar>
+#include <QFontMetrics>
+#include <QRegularExpression>
+#include <QApplication>
+#include <QPainter>
 #include <QDebug>
 
 #define TREE_NODE_INCREMENT    100
@@ -130,6 +145,15 @@ QString node_image_to_resource_name(NodeImage image) {
 	}
 	return ":/images/bitmap1.png";
 }
+
+QPoint s_dragStartPos;
+QTreeWidgetItem* s_dragSourceRoot = nullptr;
+bool s_dragging = false;
+
+bool isRoot(QTreeWidgetItem* it)
+{
+	return it && !it->parent();
+}
 }
 
 SexpTreeEditorInterface::SexpTreeEditorInterface() :
@@ -150,37 +174,41 @@ SCP_vector<SCP_string> SexpTreeEditorInterface::getMessages() {
 
 	return list;
 }
-SCP_vector<SCP_string> SexpTreeEditorInterface::getMissionGoals(const SCP_string&  /*reference_name*/) {
-	SCP_vector<SCP_string> list;
+QStringList SexpTreeEditorInterface::getMissionGoals(const QString&  /*reference_name*/) {
+	QStringList list;
+	list.reserve((int)Mission_goals.size());
 
-	for (auto i = 0; i < Num_goals; i++) {
-		list.emplace_back(Mission_goals[i].name);
+	for (const auto &goal: Mission_goals) {
+		auto temp_name = SCP_string(goal.name, 0, NAME_LENGTH - 1);
+		list << temp_name.c_str();
 	}
 
 	return list;
 }
-SCP_vector<SCP_string> SexpTreeEditorInterface::getMissionEvents(const SCP_string&  /*reference_name*/) {
-	SCP_vector<SCP_string> list;
+QStringList SexpTreeEditorInterface::getMissionEvents(const QString&  /*reference_name*/) {
+	QStringList list;
+	list.reserve((int)Mission_events.size());
 
-	for (auto i = 0; i < Num_mission_events; i++) {
-		list.emplace_back(Mission_events[i].name);
+	for (const auto &event: Mission_events) {
+		auto temp_name = SCP_string(event.name, 0, NAME_LENGTH - 1);
+		list << temp_name.c_str();
 	}
 
 	return list;
 }
-SCP_vector<SCP_string> SexpTreeEditorInterface::getMissionNames() {
-	return { SCP_string(Mission_filename) };
+QStringList SexpTreeEditorInterface::getMissionNames() {
+	return { Mission_filename };
 }
 bool SexpTreeEditorInterface::hasDefaultMissionName() {
 	return *Mission_filename != '\0';
 }
 bool SexpTreeEditorInterface::hasDefaultGoal(int operator_value) {
 	return (operator_value == OP_PREVIOUS_GOAL_TRUE) || (operator_value == OP_PREVIOUS_GOAL_FALSE)
-		|| (operator_value == OP_PREVIOUS_GOAL_INCOMPLETE) || Num_goals;
+		|| (operator_value == OP_PREVIOUS_GOAL_INCOMPLETE) || !Mission_goals.empty();
 }
 bool SexpTreeEditorInterface::hasDefaultEvent(int operator_value) {
 	return (operator_value == OP_PREVIOUS_EVENT_TRUE) || (operator_value == OP_PREVIOUS_EVENT_FALSE)
-		|| (operator_value == OP_PREVIOUS_EVENT_INCOMPLETE) || Num_mission_events;
+		|| (operator_value == OP_PREVIOUS_EVENT_INCOMPLETE) || !Mission_events.empty();
 
 }
 const flagset<TreeFlags>& SexpTreeEditorInterface::getFlags() const {
@@ -192,11 +220,65 @@ int SexpTreeEditorInterface::getRootReturnType() const {
 bool SexpTreeEditorInterface::requireCampaignOperators() const {
 	return false;
 }
+QList<QAction *> SexpTreeEditorInterface::getContextMenuExtras(QObject */*parent*/) {
+	return {};
+}
 SexpTreeEditorInterface::~SexpTreeEditorInterface() = default;
 
 QIcon sexp_tree::convertNodeImageToIcon(NodeImage image) {
 	return QIcon(node_image_to_resource_name(image));
 }
+
+class NoteBadgeDelegate final : public QStyledItemDelegate {
+  public:
+	explicit NoteBadgeDelegate(sexp_tree* tree) : QStyledItemDelegate(tree) {}
+
+	void paint(QPainter* p, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+	{
+		QStyleOptionViewItem opt(option);
+		initStyleOption(&opt, index);
+
+		// draw the standard icon + text first
+		const QWidget* w = opt.widget;
+		const QStyle* s = w ? w->style() : QApplication::style();
+		s->drawControl(QStyle::CE_ItemViewItem, &opt, p, w);
+
+		// if there’s a note, paint the badge directly after the text
+		const QString note = index.data(sexp_tree::NoteRole).toString();
+		if (!note.isEmpty()) {
+			// where Qt drew the text
+			QRect textRect = s->subElementRect(QStyle::SE_ItemViewItemText, &opt, w);
+
+			// compute how much text actually fit (respect eliding)
+			QFontMetrics fm(opt.font);
+			const QString shown = fm.elidedText(opt.text, opt.textElideMode, textRect.width());
+			const int textWidth = fm.horizontalAdvance(shown);
+
+			// pick an icon; use your existing mapping
+			const QIcon icon = sexp_tree::convertNodeImageToIcon(NodeImage::COMMENT);
+			const int dpi = p->device() ? p->device()->logicalDpiX() : 96;
+			const int sz = opt.decorationSize.isValid() ? opt.decorationSize.height() : int(16 * dpi / 96);
+			const QPixmap pm = icon.pixmap(sz, sz);
+
+			// place badge just after the text, with a small pad
+			const int pad = 10;
+			int x = textRect.left() + textWidth + pad;
+			int y = textRect.center().y() - pm.height() / 2;
+
+			// keep inside cell if the row is very tight
+			const int rightBound = option.rect.right() - 2;
+			if (x + pm.width() > rightBound)
+				x = rightBound - pm.width();
+
+			p->save();
+			// ensure good contrast on selected rows
+			if (opt.state & QStyle::State_Selected)
+				p->setCompositionMode(QPainter::CompositionMode_SourceOver);
+			p->drawPixmap(x, y, pm);
+			p->restore();
+		}
+	}
+};
 
 // constructor
 sexp_tree::sexp_tree(QWidget* parent) : QTreeWidget(parent) {
@@ -214,6 +296,9 @@ sexp_tree::sexp_tree(QWidget* parent) : QTreeWidget(parent) {
 	connect(this, &QWidget::customContextMenuRequested, this, &sexp_tree::customMenuHandler);
 	connect(this, &QTreeWidget::itemChanged, this, &sexp_tree::handleItemChange);
 	connect(this, &QTreeWidget::itemSelectionChanged, this, &sexp_tree::handleNewItemSelected);
+	connect(this, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int /*column*/) {openNodeEditor(item);});
+
+	setItemDelegateForColumn(0, new NoteBadgeDelegate(this));
 }
 
 sexp_tree::~sexp_tree() = default;
@@ -279,9 +364,11 @@ void sexp_tree::load_tree(int index, const char* deflt) {
 
 void get_combined_variable_name(char* combined_name, const char* sexp_var_name) {
 	int sexp_var_index = get_index_sexp_variable_name(sexp_var_name);
-	Assert(sexp_var_index > -1);
 
-	sprintf(combined_name, "%s(%s)", Sexp_variables[sexp_var_index].variable_name, Sexp_variables[sexp_var_index].text);
+	if (sexp_var_index >= 0)
+		sprintf(combined_name, "%s(%s)", Sexp_variables[sexp_var_index].variable_name, Sexp_variables[sexp_var_index].text);
+	else
+		sprintf(combined_name, "%s(undefined)", sexp_var_name);
 }
 
 // creates a tree from a given Sexp_nodes[] point under a given parent.  Recursive.
@@ -763,68 +850,32 @@ int sexp_tree::identify_arg_type(int node) {
 }
 
 // given a tree node, returns the argument type it should be.
+// OPF_NULL means no value (or a "void" value) is returned.  OPF_NONE means there shouldn't be any argument at this position at all.
 int sexp_tree::query_node_argument_type(int node) const {
 	int parent_node = tree_nodes[node].parent;
-	Assert(parent_node >= 0);
+	if (parent_node < 0) {		// parent nodes are -1 for a top-level operator like 'when'
+		return OPF_NULL;
+	}
+
 	int argnum = find_argument_number(parent_node, node);
 	if (argnum < 0) {
 		return OPF_NONE;
 	}
+
 	int op_num = get_operator_index(tree_nodes[parent_node].text);
 	if (op_num < 0) {
 		return OPF_NONE;
 	}
+
 	return query_operator_argument_type(op_num, argnum);
-}
-
-//
-// See https://en.wikibooks.org/wiki/Algorithm_Implementation/Strings/Levenshtein_distance#C++
-//
-template<typename T>
-typename T::size_type GeneralizedLevensteinDistance(const T &source,
-	const T &target,
-	typename T::size_type insert_cost = 1,
-	typename T::size_type delete_cost = 1,
-	typename T::size_type replace_cost = 1) {
-	if (source.size() > target.size()) {
-		return GeneralizedLevensteinDistance(target, source, delete_cost, insert_cost, replace_cost);
-	}
-
-	using TSizeType = typename T::size_type;
-	const TSizeType min_size = source.size(), max_size = target.size();
-	std::vector<TSizeType> lev_dist(min_size + 1);
-
-	lev_dist[0] = 0;
-	for (TSizeType i = 1; i <= min_size; ++i) {
-		lev_dist[i] = lev_dist[i - 1] + delete_cost;
-	}
-
-	for (TSizeType j = 1; j <= max_size; ++j) {
-		TSizeType previous_diagonal = lev_dist[0], previous_diagonal_save;
-		lev_dist[0] += insert_cost;
-
-		for (TSizeType i = 1; i <= min_size; ++i) {
-			previous_diagonal_save = lev_dist[i];
-			if (source[i - 1] == target[j - 1]) {
-				lev_dist[i] = previous_diagonal;
-			}
-			else {
-				lev_dist[i] = std::min(std::min(lev_dist[i - 1] + delete_cost, lev_dist[i] + insert_cost), previous_diagonal + replace_cost);
-			}
-			previous_diagonal = previous_diagonal_save;
-		}
-	}
-
-	return lev_dist[min_size];
 }
 
 // Look for the valid operator that is the closest match for 'str' and return the operator
 // number of it.  What operators are valid is determined by 'node', and an operator is valid
 // if it is allowed to fit at position 'node'
 //
-SCP_string sexp_tree::match_closest_operator(const SCP_string &str, int node) {
-	int z, i, op, arg_num, opf, opr;
-	int min = -1, best = -1;
+const SCP_string &sexp_tree::match_closest_operator(const SCP_string &str, int node) {
+	int z, op, arg_num, opf;
 
 	z = tree_nodes[node].parent;
 	if (z < 0) {
@@ -840,19 +891,10 @@ SCP_string sexp_tree::match_closest_operator(const SCP_string &str, int node) {
 	arg_num = find_argument_number(z, node);
 	opf = query_operator_argument_type(op, arg_num);	// check argument type at this position
 
-	for (i = 0; i < (int) Operators.size(); i++) {
-		opr = query_operator_return_type(i);			// figure out which type this operator returns
-
-		if (sexp_query_type_match(opf, opr)) {
-			int dist = (int)GeneralizedLevensteinDistance(str, Operators[i].text, 2, 2, 3);
-			if (min < 0 || dist < min) {
-				min = dist;
-				best = i;
-			}
-		}
-	}
-
-	Assert(best >= 0);  // we better have some valid operator at this point.
+	// find the best operator
+	int best = sexp_match_closest_operator(str, opf);
+	if (best < 0)
+		return str;
 	return Operators[best].text;
 }
 
@@ -877,6 +919,7 @@ void sexp_tree::add_or_replace_operator(int op, int replace_flag) {
 					set_node(item_index, (SEXPT_OPERATOR | SEXPT_VALID), Operators[op].text.c_str());
 					tree_nodes[item_index].handle->setText(0, QString::fromStdString(Operators[op].text));
 					tree_nodes[item_index].flags = OPERAND;
+					nodeChanged(item_index);
 					return;
 				}
 			}
@@ -1340,6 +1383,7 @@ int sexp_tree::get_default_value(sexp_list_item* item, char* text_buf, int op, i
 	case OPF_SUBSYSTEM:
 	case OPF_AWACS_SUBSYSTEM:
 	case OPF_ROTATING_SUBSYSTEM:
+	case OPF_TRANSLATING_SUBSYSTEM:
 	case OPF_SUBSYS_OR_GENERIC:
 		str = "<name of subsystem>";
 		break;
@@ -1433,6 +1477,10 @@ int sexp_tree::get_default_value(sexp_list_item* item, char* text_buf, int op, i
 		str = "<container value>";
 		break;
 
+	case OPF_MESSAGE_TYPE:
+		str = Builtin_messages[0].name;
+		break;
+
 	default:
 		str = "<new default required!>";
 		break;
@@ -1474,6 +1522,7 @@ int sexp_tree::query_default_argument_available(int op, int i) {
 	case OPF_SUBSYSTEM:
 	case OPF_AWACS_SUBSYSTEM:
 	case OPF_ROTATING_SUBSYSTEM:
+	case OPF_TRANSLATING_SUBSYSTEM:
 	case OPF_SUBSYSTEM_TYPE:
 	case OPF_DOCKER_POINT:
 	case OPF_DOCKEE_POINT:
@@ -1510,6 +1559,7 @@ int sexp_tree::query_default_argument_available(int op, int i) {
 	case OPF_NEBULA_STORM_TYPE:
 	case OPF_NEBULA_POOF:
 	case OPF_TURRET_TARGET_ORDER:
+	case OPF_TURRET_TYPE:
 	case OPF_POST_EFFECT:
 	case OPF_TARGET_PRIORITIES:
 	case OPF_ARMOR_TYPE:
@@ -1539,6 +1589,9 @@ int sexp_tree::query_default_argument_available(int op, int i) {
 	case OPF_FUNCTIONAL_WHEN_EVAL_TYPE:
 	case OPF_ANIMATION_NAME:	
 	case OPF_CONTAINER_VALUE:
+	case OPF_WING_FORMATION:
+	case OPF_CHILD_LUA_ENUM:
+	case OPF_MESSAGE_TYPE:
 		return 1;
 
 	case OPF_SHIP:
@@ -1581,7 +1634,7 @@ int sexp_tree::query_default_argument_available(int op, int i) {
 		return 0;
 
 	case OPF_PERSONA:
-		return (Num_personas > 0) ? 1 : 0;
+		return Personas.empty() ? 0 : 1;
 
 	case OPF_POINT:
 	case OPF_WAYPOINT_PATH:
@@ -1619,7 +1672,7 @@ int sexp_tree::query_default_argument_available(int op, int i) {
 
 			// need to be sure that previous-goal functions are available.  (i.e. we are providing a default argument for them)
 		} else if ((value == OP_PREVIOUS_GOAL_TRUE) || (value == OP_PREVIOUS_GOAL_FALSE)
-			|| (value == OP_PREVIOUS_GOAL_INCOMPLETE) || Num_goals) {
+			|| (value == OP_PREVIOUS_GOAL_INCOMPLETE) || !Mission_goals.empty()) {
 				return 1;
 		}
 
@@ -1640,7 +1693,7 @@ int sexp_tree::query_default_argument_available(int op, int i) {
 
 			// need to be sure that previous-event functions are available.  (i.e. we are providing a default argument for them)
 		} else if ((value == OP_PREVIOUS_EVENT_TRUE) || (value == OP_PREVIOUS_EVENT_FALSE)
-			|| (value == OP_PREVIOUS_EVENT_INCOMPLETE) || Num_mission_events) {
+			|| (value == OP_PREVIOUS_EVENT_INCOMPLETE) || !Mission_events.empty()) {
 			return 1;
 		}
 
@@ -1679,8 +1732,52 @@ int sexp_tree::query_default_argument_available(int op, int i) {
 		}
 		return 0;
 
+	case OPF_MOTION_DEBRIS:
+		if (Motion_debris_info.size() > 0) {
+			return 1;
+		}
+		return 0;
+
+	case OPF_BOLT_TYPE:
+		if (Bolt_types.size() > 0) {
+			return 1;
+		}
+		return 0;
+
+	case OPF_ASTEROID_TYPES:
+		if (!get_list_valid_asteroid_subtypes().empty()) {
+			return 1;
+		}
+		return 0;
+
+	case OPF_DEBRIS_TYPES:
+		for (const auto& this_asteroid : Asteroid_info) {
+			if (this_asteroid.type == ASTEROID_TYPE_DEBRIS) {
+				return 1;
+			}
+		}
+		return 0;
+
+	case OPF_TRAITOR_OVERRIDE:
+		return Traitor_overrides.empty() ? 0 : 1;
+
+	case OPF_LUA_GENERAL_ORDER:
+		return (ai_lua_get_num_general_orders() > 0) ? 1 : 0;
+
+	case OPF_MISSION_CUSTOM_STRING:
+		return The_mission.custom_strings.empty() ? 0 : 1;
+		break;
+
 	default:
-		Int3();
+		if (!Dynamic_enums.empty()) {
+			if ((type - First_available_opf_id) < (int)Dynamic_enums.size()) {
+				return 1;
+			} else {
+				UNREACHABLE("Unhandled SEXP argument type!");
+			}
+		} else {
+			UNREACHABLE("Unhandled SEXP argument type!");
+		}
 
 	}
 
@@ -1716,6 +1813,32 @@ void sexp_tree::expand_branch(QTreeWidgetItem* h) {
 	for (auto i = 0; i < h->childCount(); ++i) {
 		expand_branch(h->child(i));
 	}
+}
+
+// edit the comment for the operator pointed to by item_index
+void sexp_tree::editNoteForItem(QTreeWidgetItem* it)
+{
+	const QString old = it->data(0, NoteRole).toString();
+	bool ok = false;
+	const QString text = QInputDialog::getMultiLineText(this, tr("Edit Note"), tr("Node note:"), old, &ok);
+	if (!ok)
+		return;
+	it->setData(0, NoteRole, text);
+	applyVisuals(it);
+
+	Q_EMIT nodeAnnotationChanged(static_cast<void*>(it), text);
+}
+
+void sexp_tree::editBgColorForItem(QTreeWidgetItem* it)
+{
+	const auto start = it->data(0, BgColorRole).value<QColor>();
+	const QColor c = QColorDialog::getColor(start.isValid() ? start : Qt::yellow, this, tr("Choose Background Color"));
+	if (!c.isValid())
+		return;
+	it->setData(0, BgColorRole, c);
+	applyVisuals(it);
+
+	Q_EMIT nodeBgColorChanged(static_cast<void*>(it), c);
 }
 
 void sexp_tree::merge_operator(int  /*node*/) {
@@ -1959,6 +2082,7 @@ int sexp_tree::verify_tree(int node, int *bypass)
 			case OPF_SUBSYSTEM:
 			case OPF_AWACS_SUBSYSTEM:
 			case OPF_ROTATING_SUBSYSTEM:
+			case OPF_TRANSLATING_SUBSYSTEM:
 				if (type2 == SEXP_ATOM_STRING)
 					if (ai_get_subsystem_type(tree_nodes[node].text) == SUBSYSTEM_UNKNOWN)
 						type2 = 0;
@@ -2092,11 +2216,9 @@ int sexp_tree::get_modify_variable_type(int parent) {
 
 	if (op_const == OP_MODIFY_VARIABLE) {
 		sexp_var_index = get_tree_name_to_sexp_variable_index(node_text);
-		Assert(sexp_var_index >= 0);
 	} else if (op_const == OP_SET_VARIABLE_BY_INDEX) {
 		if (can_construe_as_integer(node_text)) {
 			sexp_var_index = atoi(node_text);
-			Assert(sexp_var_index >= 0);
 		} else if (strchr(node_text, '(') && strchr(node_text, ')')) {
 			// the variable index is itself a variable!
 			return OPF_AMBIGUOUS;
@@ -2105,7 +2227,11 @@ int sexp_tree::get_modify_variable_type(int parent) {
 		Int3();  // should not be called otherwise
 	}
 
-	if (sexp_var_index < 0 || Sexp_variables[sexp_var_index].type & SEXP_VARIABLE_BLOCK
+	// if we don't have a valid variable, allow replacement with anything
+	if (sexp_var_index < 0)
+		return OPF_AMBIGUOUS;
+
+	if (Sexp_variables[sexp_var_index].type & SEXP_VARIABLE_BLOCK
 		|| Sexp_variables[sexp_var_index].type & SEXP_VARIABLE_NOT_USED) {
 		// assume number so that we can allow tree display of number operators
 		return OPF_NUMBER;
@@ -2304,6 +2430,8 @@ void sexp_tree::replace_data(const char* new_data, int type) {
 	// check remaining data beyond replaced data for validity (in case any of it is dependent on data just replaced)
 	verify_and_fix_arguments(tree_nodes[item_index].parent);
 
+	nodeChanged(item_index);
+
 	modified();
 	update_help(currentItem());
 }
@@ -2337,6 +2465,8 @@ void sexp_tree::replace_variable_data(int var_idx, int type) {
 
 	// check remaining data beyond replaced data for validity (in case any of it is dependent on data just replaced)
 	verify_and_fix_arguments(tree_nodes[item_index].parent);
+
+	nodeChanged(item_index);
 
 	modified();
 	update_help(currentItem());
@@ -2462,6 +2592,7 @@ void sexp_tree::replace_operator(const char* op) {
 	set_node(item_index, (SEXPT_OPERATOR | SEXPT_VALID), op);
 	h->setText(0, op);
 	tree_nodes[item_index].flags = OPERAND;
+	nodeChanged(item_index);
 	modified();
 	update_help(currentItem());
 
@@ -2539,84 +2670,247 @@ void sexp_tree::move_branch(int source, int parent) {
 	}
 }
 
-QTreeWidgetItem* sexp_tree::move_branch(QTreeWidgetItem* source, QTreeWidgetItem* parent, QTreeWidgetItem* after) {
-	QTreeWidgetItem* h = nullptr;
-	if (source) {
-		uint i;
+QTreeWidgetItem* sexp_tree::move_branch(QTreeWidgetItem* source, QTreeWidgetItem* parent, QTreeWidgetItem* after)
+{
+	if (!source)
+		return nullptr;
 
-		for (i = 0; i < tree_nodes.size(); i++) {
-			if (tree_nodes[i].handle == source) {
-				break;
-			}
-		}
+	// Find matching tree_nodes slot, if any, to update its handle
+	uint idx = 0;
+	while (idx < tree_nodes.size() && tree_nodes[idx].handle != source) {
+		++idx;
+	}
 
-		if (i < tree_nodes.size()) {
-			auto icon = source->icon(0);
-			h = insertWithIcon(source->text(0), icon, parent, after);
-			tree_nodes[i].handle = h;
-		} else {
-			auto icon = source->icon(0);
-			h = insertWithIcon(source->text(0), icon, parent, after);
-		}
+	// Create the destination item
+	const auto icon = source->icon(0);
+	QTreeWidgetItem* h = insertWithIcon(source->text(0), icon, parent, after);
+	if (idx < tree_nodes.size()) {
+		tree_nodes[idx].handle = h;
+	}
 
-		h->setData(0, FormulaDataRole, source->data(0, FormulaDataRole));
-		for (auto childIdx = 0; childIdx < source->childCount(); ++i) {
-			auto child = source->child(childIdx);
+	// Copy all per-item data we rely on for annotations/visuals
+	h->setData(0, FormulaDataRole, source->data(0, FormulaDataRole));
+	h->setData(0, NoteRole, source->data(0, NoteRole));
+	h->setData(0, BgColorRole, source->data(0, BgColorRole));
+	applyVisuals(h);
 
-			move_branch(child, h);
-		}
+	// Move children safely
+	while (source->childCount() > 0) {
+		auto* child = source->child(0);
+		move_branch(child, h);
+	}
 
-		h->setExpanded(source->isExpanded());
+	h->setExpanded(source->isExpanded());
 
-		source->parent()->removeChild(source);
+	// Remove the old item from the tree
+	if (auto* p = source->parent()) {
+		p->removeChild(source);
+		delete source;
+	} else if (auto* tw = source->treeWidget()) {
+		const int topIdx = tw->indexOfTopLevelItem(source);
+		if (topIdx >= 0)
+			tw->takeTopLevelItem(topIdx);
+		delete source;
 	}
 
 	return h;
 }
 
-void sexp_tree::copy_branch(QTreeWidgetItem* source, QTreeWidgetItem* parent, QTreeWidgetItem* after) {
-	QTreeWidgetItem* h = nullptr;
-	if (source) {
-		uint i;
+void sexp_tree::copy_branch(QTreeWidgetItem* source, QTreeWidgetItem* parent, QTreeWidgetItem* after)
+{
+	if (!source)
+		return;
 
-		for (i = 0; i < tree_nodes.size(); i++) {
-			if (tree_nodes[i].handle == source) {
-				break;
-			}
-		}
+	const auto icon = source->icon(0);
+	QTreeWidgetItem* h = insertWithIcon(source->text(0), icon, parent, after);
 
-		if (i < tree_nodes.size()) {
-			auto icon = source->icon(0);
-			h = insertWithIcon(source->text(0), icon, parent, after);
-			tree_nodes[i].handle = h;
-		} else {
-			auto icon = source->icon(0);
-			h = insertWithIcon(source->text(0), icon, parent, after);
-		}
+	// Copy per-item data/annotations
+	h->setData(0, FormulaDataRole, source->data(0, FormulaDataRole));
+	h->setData(0, NoteRole, source->data(0, NoteRole));
+	h->setData(0, BgColorRole, source->data(0, BgColorRole));
+	applyVisuals(h);
 
-		h->setData(0, FormulaDataRole, source->data(0, FormulaDataRole));
-		for (auto childIdx = 0; childIdx < source->childCount(); ++i) {
-			auto child = source->child(childIdx);
-
-			move_branch(child, h);
-		}
-
-		h->setExpanded(source->isExpanded());
+	// Copy children (recursively COPY, not move)
+	for (int i = 0; i < source->childCount(); ++i) {
+		copy_branch(source->child(i), h);
 	}
+
+	h->setExpanded(source->isExpanded());
 }
 
-void sexp_tree::swap_roots(QTreeWidgetItem* one, QTreeWidgetItem* two) {
-//	copy_branch(one, TVI_ROOT, two);
-//	move_branch(two, TVI_ROOT, one);
-//	DeleteItem(one);
-	auto h = move_branch(one, itemFromIndex(rootIndex()), two);
+// Old version of move_root
+/*void sexp_tree::move_root(QTreeWidgetItem* source, QTreeWidgetItem* dest, bool insert_before)
+{
+	auto after = dest;
+
+	if (insert_before) {
+		Warning(LOCATION, "Inserting before a tree item is not yet implemented in qtFRED");
+	}
+
+	auto h = move_branch(source, itemFromIndex(rootIndex()), after);
 	setCurrentItem(h);
 	modified();
+}*/
+
+void sexp_tree::move_root(QTreeWidgetItem* source, QTreeWidgetItem* dest, bool insert_before)
+{
+	if (!source || !dest)
+		return;
+	if (source->parent() || dest->parent())
+		return; // roots only
+
+	// Take the source out of the top-level list
+	const int srcIdx = indexOfTopLevelItem(source);
+	if (srcIdx < 0)
+		return;
+
+	// Remove first so the destination index we compute is correct after removal
+	QTreeWidgetItem* moved = takeTopLevelItem(srcIdx);
+
+	// Recompute the current index of dest after the removal
+	int dstIdx = indexOfTopLevelItem(dest);
+	if (dstIdx < 0) {
+		// put it back where it was
+		insertTopLevelItem(srcIdx, moved);
+		return;
+	}
+
+	if (!insert_before) {
+		// inserting after the drop target
+		++dstIdx;
+	}
+
+	// Clamp and insert
+	dstIdx = std::max(0, std::min(dstIdx, topLevelItemCount()));
+	insertTopLevelItem(dstIdx, moved);
+	setCurrentItem(moved);
+
+	// Mark the tree modified
+	modified();
+
+	Q_EMIT rootOrderChanged();
 }
 
 QTreeWidgetItem*
 sexp_tree::insert(const QString& lpszItem, NodeImage image, QTreeWidgetItem* hParent, QTreeWidgetItem* hInsertAfter) {
 	return insertWithIcon(lpszItem, convertNodeImageToIcon(image), hParent, hInsertAfter);
+}
+
+void sexp_tree::keyPressEvent(QKeyEvent* e)
+{
+	// Clear stale state if popup was closed externally
+	if (_opPopup && _opPopupActive && !_opPopup->isVisible()) {
+		_opPopupActive = false;
+		_opNodeIndex = -1;
+	}
+
+	// Route keys while popup is active
+	if (_opPopupActive && _opPopup) {
+		switch (e->key()) {
+		case Qt::Key_Escape:
+			endOperatorQuickSearch(false);
+			return;
+		case Qt::Key_Return:
+		case Qt::Key_Enter:
+			endOperatorQuickSearch(true);
+			return;
+		case Qt::Key_Up:
+		case Qt::Key_Down:
+		case Qt::Key_PageUp:
+		case Qt::Key_PageDown:
+		case Qt::Key_Home:
+		case Qt::Key_End:
+			QCoreApplication::sendEvent(_opList, e);
+			return;
+		default:
+			QCoreApplication::sendEvent(_opEdit, e);
+			return;
+		}
+	}
+
+	// Space opens the editor for the selected node
+	if (e->key() == Qt::Key_Space && currentItem()) {
+		openNodeEditor(currentItem());
+		return;
+	}
+
+	QTreeWidget::keyPressEvent(e);
+}
+
+bool sexp_tree::eventFilter(QObject* obj, QEvent* ev)
+{
+	if (obj == _opPopup) {
+		switch (ev->type()) {
+		case QEvent::Hide:
+		case QEvent::Close:
+		case QEvent::WindowDeactivate:
+			// Treat any external close as cancel; just clear state.
+			_opPopupActive = false;
+			_opNodeIndex = -1;
+			setFocus(Qt::OtherFocusReason);
+			break;
+		default:
+			break;
+		}
+	}
+	return QTreeWidget::eventFilter(obj, ev);
+}
+
+void sexp_tree::mousePressEvent(QMouseEvent* e)
+{
+	s_dragStartPos = e->pos();
+	s_dragSourceRoot = itemAt(e->pos());
+	if (!isRoot(s_dragSourceRoot))
+		s_dragSourceRoot = nullptr; // roots only
+	s_dragging = false;
+	QTreeWidget::mousePressEvent(e);
+}
+
+void sexp_tree::mouseMoveEvent(QMouseEvent* e)
+{
+	if (!s_dragSourceRoot) {
+		QTreeWidget::mouseMoveEvent(e);
+		return;
+	}
+	if (!(e->buttons() & Qt::LeftButton)) {
+		QTreeWidget::mouseMoveEvent(e);
+		return;
+	}
+	const int dist = (e->pos() - s_dragStartPos).manhattanLength();
+	if (!s_dragging && dist < QApplication::startDragDistance()) {
+		QTreeWidget::mouseMoveEvent(e);
+		return;
+	}
+
+	// “Dragging” – we just highlight potential drop target (a root under the cursor)
+	s_dragging = true;
+	if (auto* over = itemAt(e->pos())) {
+		if (isRoot(over))
+			setCurrentItem(over); // simple visual cue like OG’s SelectDropTarget
+	}
+
+	// No QDrag payload; we’ll do the move on mouse release to keep logic simple.
+	QTreeWidget::mouseMoveEvent(e);
+}
+
+void sexp_tree::mouseReleaseEvent(QMouseEvent* e)
+{
+	if (s_dragging && s_dragSourceRoot) {
+		auto* dropTarget = itemAt(e->pos());
+		if (dropTarget && isRoot(dropTarget) && dropTarget != s_dragSourceRoot) {
+			// OG rule: if moving up, insert_before=true; if moving down, insert_after
+			// (so we “end up where we dropped”). :contentReference[oaicite:1]{index=1}
+			const int srcIdx = indexOfTopLevelItem(s_dragSourceRoot);
+			const int dstIdx = indexOfTopLevelItem(dropTarget);
+			const bool insert_before = (srcIdx > dstIdx);
+
+			// Perform the visual move
+			move_root(s_dragSourceRoot, dropTarget, insert_before);
+		}
+	}
+	s_dragSourceRoot = nullptr;
+	s_dragging = false;
+	QTreeWidget::mouseReleaseEvent(e);
 }
 
 QTreeWidgetItem* sexp_tree::insertWithIcon(const QString& lpszItem,
@@ -2705,6 +2999,13 @@ int sexp_tree::get_node(QTreeWidgetItem* h) {
 	return i;
 }
 
+int sexp_tree::get_root(int node) {
+	while (tree_nodes[node].parent >= 0) {
+		node = tree_nodes[node].parent;
+	}
+	return node;
+}
+
 void sexp_tree::update_help(QTreeWidgetItem* h) {
 	if (h == nullptr) {
 		helpChanged("");
@@ -2717,7 +3018,7 @@ void sexp_tree::update_help(QTreeWidgetItem* h) {
 		for (j = 0; j < (int) op_menu.size(); j++) {
 			if (get_category(Operators[i].value) == op_menu[j].id) {
 				if (!help(Operators[i].value)) {
-					mprintf(("Allender!  If you add new sexp operators, add help for them too! :)\n"));
+					mprintf(("Allender!  If you add new sexp operators, add help for them too! :) Sexp %s has no help.\n", Operators[i].text.c_str()));
 				}
 			}
 		}
@@ -2729,11 +3030,30 @@ void sexp_tree::update_help(QTreeWidgetItem* h) {
 		}
 	}
 
+	// Node comments are not yet implemented in qtFRED, so just adding some base code here
+	// that can be used when the feature is completed - Mjn
+
+	//int thisIndex = event_annotation_lookup(h);
+	SCP_string nodeComment;
+
+	//if (thisIndex >= 0) {
+		//if (!Event_annotations[thisIndex].comment.empty()) {
+			//nodeComment = "Node Comments:\r\n   " + Event_annotations[thisIndex].comment;
+		//}
+	//} else {
+		nodeComment = "";
+	//}
+
 	if ((i >= (int) tree_nodes.size()) || !tree_nodes[i].type) {
-		helpChanged("");
+		helpChanged(nodeComment.c_str());
 		miniHelpChanged("");
 		return;
 	}
+
+	// Now that we're done with top level nodes we can add the empty lines because
+	// everything else below is supposed to have help text
+	if (!nodeComment.empty())
+		nodeComment.insert(0, "\r\n\r\n");
 
 	if (SEXPT_TYPE(tree_nodes[i].type) == SEXPT_OPERATOR) {
 		miniHelpChanged("");
@@ -2828,11 +3148,95 @@ void sexp_tree::update_help(QTreeWidgetItem* h) {
 			if (query_operator_argument_type(index, c) == OPF_MESSAGE) {
 				for (j = 0; j < Num_messages; j++) {
 					if (!stricmp(Messages[j].name, tree_nodes[i].text)) {
-						auto text = QString("Message Text:\n%1").arg(Messages[j].message);
+						auto text = QString("Message Text:\n%1%2").arg(Messages[j].message, nodeComment.c_str());
 						helpChanged(text);
 						return;
 					}
 				}
+			}
+
+			// If the node is a ship flag, then display the flag's description
+			if (query_operator_argument_type(index, c) == OPF_SHIP_FLAG) {
+				Object::Object_Flags object_flag = Object::Object_Flags::NUM_VALUES;
+				Ship::Ship_Flags ship_flag = Ship::Ship_Flags::NUM_VALUES;
+				Mission::Parse_Object_Flags parse_obj_flag = Mission::Parse_Object_Flags::NUM_VALUES;
+				AI::AI_Flags ai_flag = AI::AI_Flags::NUM_VALUES;
+				SCP_string desc;
+
+				sexp_check_flag_arrays(tree_nodes[i].text, object_flag, ship_flag, parse_obj_flag, ai_flag);
+
+				// Ship flags are pulled from multiple categories, so we have to search them all. Ew.
+				if (object_flag != Object::Object_Flags::NUM_VALUES) {
+					for (size_t n = 0; n < (size_t)Num_object_flag_names; n++) {
+						if (object_flag == Object_flag_descriptions[n].flag) {
+							desc = Object_flag_descriptions[n].flag_desc;
+							break;
+						}
+					}
+				}
+
+				if (ship_flag != Ship::Ship_Flags::NUM_VALUES) {
+					for (size_t n = 0; n < (size_t)Num_ship_flag_names; n++) {
+						if (ship_flag == Ship_flag_descriptions[n].flag) {
+							desc = Ship_flag_descriptions[n].flag_desc;
+							break;
+						}
+					}
+				}
+
+				if (ai_flag != AI::AI_Flags::NUM_VALUES) {
+					for (size_t n = 0; n < (size_t)Num_ai_flag_names; n++) {
+						if (ai_flag == Ai_flag_descriptions[n].flag) {
+							desc = Ai_flag_descriptions[n].flag_desc;
+							break;
+						}
+					}
+				}
+
+				// Only check through parse object flags if we haven't found anything yet
+				if (desc.empty()) {
+					if (parse_obj_flag != Mission::Parse_Object_Flags::NUM_VALUES) {
+						for (size_t n = 0; n < (size_t)Num_parse_object_flags; n++) {
+							if (parse_obj_flag == Parse_object_flag_descriptions[n].def) {
+								desc = Parse_object_flag_descriptions[n].flag_desc;
+								break;
+							}
+						}
+					}
+				}
+
+				// If we still didn't find anything, say so!
+				if (desc.empty())
+					desc = "Unknown flag. Let a coder know!";
+
+				auto text = QString("%s").arg(desc.c_str());
+				helpChanged(text);
+				return;
+			}
+
+			// If the node is a wing flag, then display the flag's description
+			if (query_operator_argument_type(index, c) == OPF_WING_FLAG) {
+				Ship::Wing_Flags wing_flag = Ship::Wing_Flags::NUM_VALUES;
+				SCP_string desc;
+
+				sexp_check_flag_array(tree_nodes[i].text, wing_flag);
+
+				if (wing_flag != Ship::Wing_Flags::NUM_VALUES) {
+					for (size_t n = 0; n < (size_t)Num_wing_flag_names; n++) {
+						if (wing_flag == Wing_flag_descriptions[n].flag) {
+							desc = Wing_flag_descriptions[n].flag_desc;
+							break;
+						}
+					}
+				}
+
+				// If we still didn't find anything, say so!
+				if (desc.empty())
+					desc = "Unknown flag. Let a coder know!";
+
+				auto text = QString("%s").arg(desc.c_str());
+				helpChanged(text);
+				return;
 			}
 		}
 
@@ -2841,11 +3245,14 @@ void sexp_tree::update_help(QTreeWidgetItem* h) {
 
 	code = get_operator_const(tree_nodes[i].text);
 	auto str = help(code);
+	QString text;
 	if (!str) {
-		str = "No help available";
+		text = QString("No help available%1").arg(nodeComment.c_str());
+	} else {
+		text = QString("%1%2").arg(str, nodeComment.c_str());
 	}
 
-	helpChanged(QString::fromUtf8(str));
+	helpChanged(text);
 }
 
 // find list of sexp_tree nodes with text
@@ -2940,6 +3347,7 @@ sexp_list_item* sexp_tree::get_listing_opf(int opf, int parent_node, int arg_ind
 
 	case OPF_AWACS_SUBSYSTEM:
 	case OPF_ROTATING_SUBSYSTEM:
+	case OPF_TRANSLATING_SUBSYSTEM:
 	case OPF_SUBSYSTEM:
 		list = get_listing_opf_subsystem(parent_node, arg_index);
 		break;
@@ -2997,7 +3405,7 @@ sexp_list_item* sexp_tree::get_listing_opf(int opf, int parent_node, int arg_ind
 		break;
 
 	case OPF_DOCKER_POINT:
-		list = get_listing_opf_docker_point(parent_node);
+		list = get_listing_opf_docker_point(parent_node, arg_index);
 		break;
 
 	case OPF_DOCKEE_POINT:
@@ -3168,6 +3576,10 @@ sexp_list_item* sexp_tree::get_listing_opf(int opf, int parent_node, int arg_ind
 		list = get_listing_opf_turret_target_order();
 		break;
 
+	case OPF_TURRET_TYPE:
+		list = get_listing_opf_turret_types();
+		break;
+
 	case OPF_TARGET_PRIORITIES:
 		list = get_listing_opf_turret_target_priorities();
 		break;
@@ -3304,9 +3716,49 @@ sexp_list_item* sexp_tree::get_listing_opf(int opf, int parent_node, int arg_ind
 		list = nullptr;
 		break;
 
+	case OPF_ASTEROID_TYPES:
+		list = get_listing_opf_asteroid_types();
+		break;
+
+	case OPF_DEBRIS_TYPES:
+		list = get_listing_opf_debris_types();
+		break;
+
+	case OPF_WING_FORMATION:
+		list = get_listing_opf_wing_formation();
+		break;
+
+	case OPF_MOTION_DEBRIS:
+		list = get_listing_opf_motion_debris();
+		break;
+
+	case OPF_BOLT_TYPE:
+		list = get_listing_opf_bolt_types();
+		break;
+
+	case OPF_TRAITOR_OVERRIDE:
+		list = get_listing_opf_traitor_overrides();
+		break;
+
+	case OPF_LUA_GENERAL_ORDER:
+		list = get_listing_opf_lua_general_orders();
+		break;
+
+	case OPF_MESSAGE_TYPE:
+		list = get_listing_opf_message_types();
+		break;
+
+	case OPF_CHILD_LUA_ENUM:
+		list = get_listing_opf_lua_enum(parent_node, arg_index);
+		break;
+
+	case OPF_MISSION_CUSTOM_STRING:
+		list = get_listing_opf_mission_custom_strings();
+		break;
+
 	default:
-		Int3();  // unknown OPF code
-		list = NULL;
+		// We're at the end of the list so check for any dynamic enums
+		list = check_for_dynamic_sexp_enum(opf);
 		break;
 	}
 
@@ -3599,12 +4051,13 @@ sexp_list_item* sexp_tree::get_listing_opf_wing() {
 }
 
 // specific types of subsystems we're looking for
-#define OPS_CAP_CARGO        1
-#define OPS_STRENGTH            2
-#define OPS_BEAM_TURRET        3
-#define OPS_AWACS                4
-#define OPS_ROTATE            5
-#define OPS_ARMOR            6
+#define OPS_CAP_CARGO		1	
+#define OPS_STRENGTH		2
+#define OPS_BEAM_TURRET		3
+#define OPS_AWACS			4
+#define OPS_ROTATE			5
+#define OPS_TRANSLATE		6
+#define OPS_ARMOR			7
 sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_index) {
 	int op, child, sh;
 	int special_subsys = 0;
@@ -3620,7 +4073,8 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 
 	// first child node
 	child = tree_nodes[parent_node].child;
-	Assert(child >= 0);
+	if (child < 0)
+		return nullptr;
 
 	switch (op) {
 		// where we care about hull strength
@@ -3632,6 +4086,7 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 
 		// Armor types need Hull and Shields but not Simulated Hull
 	case OP_SET_ARMOR_TYPE:
+	case OP_HAS_ARMOR_TYPE:
 		special_subsys = OPS_ARMOR;
 		break;
 
@@ -3646,6 +4101,14 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 	case OP_REVERSE_ROTATING_SUBSYSTEM:
 	case OP_ROTATING_SUBSYS_SET_TURN_TIME:
 		special_subsys = OPS_ROTATE;
+		break;
+
+	// translating
+	case OP_LOCK_TRANSLATING_SUBSYSTEM:
+	case OP_FREE_TRANSLATING_SUBSYSTEM:
+	case OP_REVERSE_TRANSLATING_SUBSYSTEM:
+	case OP_TRANSLATING_SUBSYS_SET_SPEED:
+		special_subsys = OPS_TRANSLATE;
 		break;
 
 		// where we care about capital ship subsystem cargo
@@ -3666,7 +4129,7 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 
 			// iterate to the next field two times
 			child = tree_nodes[child].next;
-			Assert(child >= 0);
+			if (child < 0) return nullptr;
 			child = tree_nodes[child].next;
 		} else {
 			Assert(arg_index == 1);
@@ -3687,6 +4150,7 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 	case OP_MISSILE_LOCKED:
 	case OP_SHIP_SUBSYS_GUARDIAN_THRESHOLD:
 	case OP_IS_IN_TURRET_FOV:
+	case OP_TURRET_SET_FORCED_TARGET:
 		// iterate to the next field
 		child = tree_nodes[child].next;
 		break;
@@ -3695,9 +4159,9 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 	case OP_QUERY_ORDERS:
 		// iterate to the next field three times
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
 		break;
 
@@ -3705,15 +4169,15 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 	case OP_BEAM_FLOATING_FIRE:
 		// iterate to the next field six times
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
 		break;
 
@@ -3721,25 +4185,69 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 	case OP_WEAPON_CREATE:
 		// iterate to the next field eight times
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
-		Assert(child >= 0);
+		if (child < 0) return nullptr;
 		child = tree_nodes[child].next;
 		break;
+    
+	// this sexp checks the third entry, but only for the 4th argument
+	case OP_TURRET_SET_FORCED_SUBSYS_TARGET:
+		if (arg_index >= 3) {
+			child = tree_nodes[child].next;
+			if (child < 0) return nullptr;
+			child = tree_nodes[child].next;
+		}
+		break;
+
+	default:
+		if (op < First_available_operator_id) {
+			break;
+		} else {
+			int this_index = get_dynamic_parameter_index(tree_nodes[parent_node].text, arg_index);
+
+			if (this_index >= 0) {
+				for (int count = 0; count < this_index; count++) {
+					child = tree_nodes[child].next;
+				}
+			} else {
+				error_display(1,
+					"Expected to find a dynamic lua parent parameter for node %i in operator %s but found nothing!",
+					arg_index,
+					tree_nodes[parent_node].text);
+			}
+		}
+
 	}
 
+	if (child < 0)
+		return nullptr;
+
+	
+	// if one of the subsystem strength operators, append the Hull string and the Simulated Hull string
+	if (special_subsys == OPS_STRENGTH) {
+		head.add_data(SEXP_HULL_STRING);
+		head.add_data(SEXP_SIM_HULL_STRING);
+	}
+
+	// if setting armor type we only need Hull and Shields
+	if (special_subsys == OPS_ARMOR) {
+		head.add_data(SEXP_HULL_STRING);
+		head.add_data(SEXP_SHIELD_STRING);
+	}
+
+
 	// now find the ship and add all relevant subsystems
-	Assert(child >= 0);
 	sh = ship_name_lookup(tree_nodes[child].text, 1);
 	if (sh >= 0) {
 		subsys = GET_FIRST(&Ships[sh].subsys_list);
@@ -3770,6 +4278,13 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 				}
 				break;
 
+				// translating
+			case OPS_TRANSLATE:
+				if (subsys->system_info->flags[Model::Subsystem_Flags::Translates]) {
+					head.add_data(subsys->system_info->subobj_name);
+				}
+				break;
+
 				// everything else
 			default:
 				head.add_data(subsys->system_info->subobj_name);
@@ -3779,17 +4294,6 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem(int parent_node, int arg_in
 			// next subsystem
 			subsys = GET_NEXT(subsys);
 		}
-	}
-
-	// if one of the subsystem strength operators, append the Hull string and the Simulated Hull string
-	if (special_subsys == OPS_STRENGTH) {
-		head.add_data(SEXP_HULL_STRING);
-		head.add_data(SEXP_SIM_HULL_STRING);
-	}
-	// if setting armor type we only need Hull and Shields
-	if (special_subsys == OPS_ARMOR) {
-		head.add_data(SEXP_HULL_STRING);
-		head.add_data(SEXP_SHIELD_STRING);
 	}
 
 	return head.next;
@@ -3802,7 +4306,8 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem_type(int parent_node) {
 
 	// first child node
 	child = tree_nodes[parent_node].child;
-	Assert(child >= 0);
+	if (child < 0)
+		return nullptr;
 
 	// now find the ship
 	shipnum = ship_name_lookup(tree_nodes[child].text, 1);
@@ -3843,13 +4348,11 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem_type(int parent_node) {
 
 sexp_list_item* sexp_tree::get_listing_opf_point() {
 	char buf[NAME_LENGTH + 8];
-	SCP_list<waypoint_list>::iterator ii;
-	int j;
 	sexp_list_item head;
 
-	for (ii = Waypoint_lists.begin(); ii != Waypoint_lists.end(); ++ii) {
-		for (j = 0; (uint) j < ii->get_waypoints().size(); ++j) {
-			sprintf(buf, "%s:%d", ii->get_name(), j + 1);
+	for (const auto &ii: Waypoint_lists) {
+		for (int j = 0; (uint) j < ii.get_waypoints().size(); ++j) {
+			sprintf(buf, "%s:%d", ii.get_name(), j + 1);
 			head.add_data(buf);
 		}
 	}
@@ -3984,7 +4487,9 @@ sexp_list_item* sexp_tree::get_listing_opf_ai_goal(int parent_node) {
 
 	Assert(parent_node >= 0);
 	child = tree_nodes[parent_node].child;
-	Assert(child >= 0);
+	if (child < 0)
+		return nullptr;
+
 	n = ship_name_lookup(tree_nodes[child].text, 1);
 	if (n >= 0) {
 		// add operators if it's an ai-goal and ai-goal is allowed for that ship
@@ -4022,28 +4527,51 @@ sexp_list_item* sexp_tree::get_listing_opf_ai_goal(int parent_node) {
 	return head.next;
 }
 
-sexp_list_item* sexp_tree::get_listing_opf_docker_point(int parent_node) {
+sexp_list_item* sexp_tree::get_listing_opf_docker_point(int parent_node, int arg_num) {
 	int z;
 	sexp_list_item head;
 	int sh = -1;
 
 	Assert(parent_node >= 0);
-	Assert(!stricmp(tree_nodes[parent_node].text, "ai-dock") || !stricmp(tree_nodes[parent_node].text, "set-docked"));
+	Assert(!stricmp(tree_nodes[parent_node].text, "ai-dock") || !stricmp(tree_nodes[parent_node].text, "set-docked") ||
+		   get_operator_const(tree_nodes[parent_node].text) >= (int)First_available_operator_id);
 
 	if (!stricmp(tree_nodes[parent_node].text, "ai-dock")) {
 		z = tree_nodes[parent_node].parent;
-		Assert(z >= 0);
+		if (z < 0)
+			return nullptr;
 		Assert(!stricmp(tree_nodes[z].text, "add-ship-goal") || !stricmp(tree_nodes[z].text, "add-wing-goal")
 				   || !stricmp(tree_nodes[z].text, "add-goal"));
 
 		z = tree_nodes[z].child;
-		Assert(z >= 0);
-
+		if (z < 0)
+			return nullptr;
 		sh = ship_name_lookup(tree_nodes[z].text, 1);
 	} else if (!stricmp(tree_nodes[parent_node].text, "set-docked")) {
 		//Docker ship should be the first child node
 		z = tree_nodes[parent_node].child;
+		if (z < 0)
+			return nullptr;
 		sh = ship_name_lookup(tree_nodes[z].text, 1);
+	}
+	// for Lua sexps
+	else if (get_operator_const(tree_nodes[parent_node].text) >= (int)First_available_operator_id) {
+		int this_index = get_dynamic_parameter_index(tree_nodes[parent_node].text, arg_num);
+
+		if (this_index >= 0) {
+			z = tree_nodes[parent_node].child;
+
+			for (int j = 0; j < this_index; j++) {
+				z = tree_nodes[z].next;
+			}
+
+			sh = ship_name_lookup(tree_nodes[z].text, 1);
+		} else {
+			error_display(1,
+				"Expected to find a dynamic lua parent parameter for node %i in operator %s but found nothing!",
+				arg_num,
+				tree_nodes[parent_node].text);
+		}
 	}
 
 	if (sh >= 0) {
@@ -4066,14 +4594,18 @@ sexp_list_item* sexp_tree::get_listing_opf_dockee_point(int parent_node) {
 
 	if (!stricmp(tree_nodes[parent_node].text, "ai-dock")) {
 		z = tree_nodes[parent_node].child;
-		Assert(z >= 0);
+		if (z < 0)
+			return nullptr;
 
 		sh = ship_name_lookup(tree_nodes[z].text, 1);
 	} else if (!stricmp(tree_nodes[parent_node].text, "set-docked")) {
 		//Dockee ship should be the third child node
-		z = tree_nodes[parent_node].child;    // 1
+		z = tree_nodes[parent_node].child;     // 1
+		if (z < 0) return nullptr;
 		z = tree_nodes[z].next;                // 2
+		if (z < 0) return nullptr;
 		z = tree_nodes[z].next;                // 3
+		if (z < 0) return nullptr;
 
 		sh = ship_name_lookup(tree_nodes[z].text, 1);
 	}
@@ -4099,12 +4631,11 @@ sexp_list_item* sexp_tree::get_listing_opf_message() {
 }
 
 sexp_list_item* sexp_tree::get_listing_opf_persona() {
-	int i;
 	sexp_list_item head;
 
-	for (i = 0; i < Num_personas; i++) {
-		if (Personas[i].flags & PERSONA_FLAG_WINGMAN) {
-			head.add_data(Personas[i].name);
+	for (const auto &persona: Personas) {
+		if (persona.flags & PERSONA_FLAG_WINGMAN) {
+			head.add_data(persona.name);
 		}
 	}
 
@@ -4116,7 +4647,7 @@ sexp_list_item* sexp_tree::get_listing_opf_font() {
 	sexp_list_item head;
 
 	for (i = 0; i < font::FontManager::numberOfFonts(); i++) {
-		head.add_data(const_cast<char*>(font::FontManager::getFont(i)->getName().c_str()));
+		head.add_data(font::FontManager::getFont(i)->getName().c_str());
 	}
 
 	return head.next;
@@ -4198,23 +4729,28 @@ sexp_list_item* sexp_tree::get_listing_opf_builtin_hud_gauge() {
 sexp_list_item *sexp_tree::get_listing_opf_custom_hud_gauge()
 {
 	sexp_list_item head;
-	SCP_unordered_set<SCP_string> all_gauges;
+	// prevent duplicate names, comparing case-insensitively
+	SCP_unordered_set<SCP_string, SCP_string_lcase_hash, SCP_string_lcase_equal_to> all_gauges;
 
 	for (auto &gauge : default_hud_gauges)
 	{
-		all_gauges.insert(gauge->getCustomGaugeName());
-		head.add_data(gauge->getCustomGaugeName());
+		SCP_string name = gauge->getCustomGaugeName();
+		if (!name.empty() && all_gauges.count(name) == 0)
+		{
+			head.add_data(name.c_str());
+			all_gauges.insert(std::move(name));
+		}
 	}
 
 	for (auto &si : Ship_info)
 	{
 		for (auto &gauge : si.hud_gauges)
 		{
-			// avoid duplicating any HUD gauges
-			if (all_gauges.count(gauge->getCustomGaugeName()) == 0)
+			SCP_string name = gauge->getCustomGaugeName();
+			if (!name.empty() && all_gauges.count(name) == 0)
 			{
-				all_gauges.insert(gauge->getCustomGaugeName());
-				head.add_data(gauge->getCustomGaugeName());
+				head.add_data(name.c_str());
+				all_gauges.insert(std::move(name));
 			}
 		}
 	}
@@ -4253,11 +4789,10 @@ sexp_list_item* sexp_tree::get_listing_opf_explosion_option() {
 }
 
 sexp_list_item* sexp_tree::get_listing_opf_waypoint_path() {
-	SCP_list<waypoint_list>::iterator ii;
 	sexp_list_item head;
 
-	for (ii = Waypoint_lists.begin(); ii != Waypoint_lists.end(); ++ii) {
-		head.add_data(ii->get_name());
+	for (const auto &ii: Waypoint_lists) {
+		head.add_data(ii.get_name());
 	}
 
 	return head.next;
@@ -4292,7 +4827,7 @@ sexp_list_item* sexp_tree::get_listing_opf_ship_wing_shiponteam_point() {
 	for (i = 0; i < (int)Iff_info.size(); i++) {
 		SCP_string tmp;
 		sprintf(tmp, "<any %s>", Iff_info[i].iff_name);
-		std::transform(begin(tmp), end(tmp), begin(tmp), [](char c) { return (char)::tolower(c); });
+		SCP_tolower(tmp);
 		head.add_data(tmp.c_str());
 	}
 
@@ -4324,7 +4859,7 @@ sexp_list_item* sexp_tree::get_listing_opf_mission_name() {
 	sexp_list_item head;
 
 	for (auto& mission : _interface->getMissionNames()) {
-		head.add_data(mission.c_str());
+		head.add_data(qPrintable(mission));
 	}
 
 	// This code is kept until the campaign editor is added
@@ -4349,13 +4884,10 @@ sexp_list_item* sexp_tree::get_listing_opf_goal_name(int parent_node) {
 	auto child = tree_nodes[parent_node].child;
 
 	// This is used by the campaign editor to show the entries for specific missions
-	SCP_string reference;
-	if (child >= 0) {
-		reference = tree_nodes[child].text;
-	}
+	QString reference{ child >= 0 ? tree_nodes[child].text : "" };
 
 	for (auto& entry : _interface->getMissionGoals(reference)) {
-		head.add_data(entry.c_str());
+		head.add_data(qPrintable(entry));
 	}
 
 	// This code is kept for reference purposes until the campaign editor is added
@@ -4365,23 +4897,26 @@ sexp_list_item* sexp_tree::get_listing_opf_goal_name(int parent_node) {
 
 		Assert(parent_node >= 0);
 		child = tree_nodes[parent_node].child;
-		Assert(child >= 0);
+		if (child < 0)
+			return nullptr;
 
 		for (m = 0; m < Campaign.num_missions; m++)
 			if (!stricmp(Campaign.missions[m].name, tree_nodes[child].text))
 				break;
 
 		if (m < Campaign.num_missions) {
-			if (Campaign.missions[m].num_goals < 0)  // haven't loaded goal names yet.
+			if (Campaign.missions[m].flags & CMISSION_FLAG_FRED_LOAD_PENDING)  // haven't loaded goal names yet.
+			{
 				read_mission_goal_list(m);
+				Campaign.missions[m].flags &= ~CMISSION_FLAG_FRED_LOAD_PENDING;
+			}
 
-			for (i = 0; i < Campaign.missions[m].num_goals; i++)
+			for (i = 0; i < (int)Campaign.missions[m].goals.size(); i++)
 				head.add_data(Campaign.missions[m].goals[i].name);
 		}
-
 	} else {
-		for (i = 0; i < Num_goals; i++)
-			head.add_data(Mission_goals[i].name);
+		for (i = 0; i < (int)Mission_goals.size(); i++)
+			head.add_data(Mission_goals[i].name.c_str());
 	}
 	 */
 
@@ -4414,6 +4949,9 @@ sexp_list_item* sexp_tree::get_listing_opf_ship_type() {
 	for (i = 0; i < Ship_types.size(); i++) {
 		head.add_data(Ship_types[i].name);
 	}
+	if (Fighter_bomber_valid) {
+		head.add_data(Fighter_bomber_type_name);
+	}
 
 	return head.next;
 }
@@ -4426,7 +4964,7 @@ sexp_list_item* sexp_tree::get_listing_opf_keypress() {
 		auto btn = Default_config[i].get_btn(CID_KEYBOARD);
 
 		if ((btn >= -1) && !Control_config[i].disabled) {
-			head.add_data(textify_scancode(btn));
+			head.add_data(textify_scancode_universal(btn));
 		}
 	}
 
@@ -4440,13 +4978,10 @@ sexp_list_item* sexp_tree::get_listing_opf_event_name(int parent_node) {
 	auto child = tree_nodes[parent_node].child;
 
 	// This is used by the campaign editor to show the entries for specific missions
-	SCP_string reference;
-	if (child >= 0) {
-		reference = tree_nodes[child].text;
-	}
+	QString reference{ child >= 0 ? tree_nodes[child].text : "" };
 
 	for (auto& entry : _interface->getMissionEvents(reference)) {
-		head.add_data(entry.c_str());
+		head.add_data(qPrintable(entry));
 	}
 
 	// This code is kept until the campaign editor is added
@@ -4454,22 +4989,26 @@ sexp_list_item* sexp_tree::get_listing_opf_event_name(int parent_node) {
 	if (m_mode == MODE_CAMPAIGN) {
 		Assert(parent_node >= 0);
 		auto child = tree_nodes[parent_node].child;
-		Assert(child >= 0);
+		if (child < 0)
+			return nullptr;
 
 		for (m = 0; m < Campaign.num_missions; m++)
 			if (!stricmp(Campaign.missions[m].name, tree_nodes[child].text))
 				break;
 
 		if (m < Campaign.num_missions) {
-			if (Campaign.missions[m].num_events < 0)  // haven't loaded goal names yet.
+			if (Campaign.missions[m].flags & CMISSION_FLAG_FRED_LOAD_PENDING)  // haven't loaded goal names yet.
+			{
 				read_mission_goal_list(m);
+				Campaign.missions[m].flags &= ~CMISSION_FLAG_FRED_LOAD_PENDING;
+			}
 
-			for (i = 0; i < Campaign.missions[m].num_events; i++)
+			for (i = 0; i < (int)Campaign.missions[m].events.size(); i++)
 				head.add_data(Campaign.missions[m].events[i].name);
 		}
 	} else {
-		for (i = 0; i < Num_mission_events; i++)
-			head.add_data(Mission_events[i].name);
+		for (i = 0; i < (int)Mission_events.size(); i++)
+			head.add_data(Mission_events[i].name.c_str());
 	}
 	 */
 
@@ -4522,7 +5061,7 @@ sexp_list_item* sexp_tree::get_listing_opf_medal_name() {
 	int i;
 	sexp_list_item head;
 
-	for (i = 0; i < Num_medals; i++) {
+	for (i = 0; i < (int)Medals.size(); i++) {
 		// don't add Rank or the Ace badges
 		if ((i == Rank_medal_index) || (Medals[i].kills_needed > 0)) {
 			continue;
@@ -4609,11 +5148,22 @@ sexp_list_item* sexp_tree::get_listing_opf_subsystem_or_none(int parent_node, in
 	return head.next;
 }
 
-sexp_list_item* sexp_tree::get_listing_opf_subsys_or_generic(int parent_node, int arg_index) {
+sexp_list_item* sexp_tree::get_listing_opf_subsys_or_generic(int parent_node, int arg_index)
+{
 	sexp_list_item head;
+	char buffer[NAME_LENGTH];
 
-	head.add_data(SEXP_ALL_ENGINES_STRING);
-	head.add_data(SEXP_ALL_TURRETS_STRING);
+	for (int i = 0; i < SUBSYSTEM_MAX; ++i)
+	{
+		// it's not clear what the "activator" subsystem was intended to do, so let's not display it by default
+		if (i != SUBSYSTEM_NONE && i != SUBSYSTEM_UNKNOWN && i != SUBSYSTEM_ACTIVATION)
+		{
+			sprintf(buffer, SEXP_ALL_GENERIC_SUBSYSTEM_STRING, Subsystem_types[i]);
+			SCP_tolower(buffer);
+			head.add_data(buffer);
+		}
+	}
+	head.add_data(SEXP_ALL_SUBSYSTEMS_STRING);
 	head.add_list(get_listing_opf_subsystem(parent_node, arg_index));
 
 	return head.next;
@@ -4717,6 +5267,16 @@ sexp_list_item* sexp_tree::get_listing_opf_turret_target_order() {
 	return head.next;
 }
 
+sexp_list_item* sexp_tree::get_listing_opf_turret_types()
+{
+	sexp_list_item head;
+
+	for (int i = 0; i < NUM_TURRET_TYPES; i++)
+		head.add_data(Turret_valid_types[i]);
+
+	return head.next;
+}
+
 sexp_list_item* sexp_tree::get_listing_opf_post_effect() {
 	unsigned int i;
 	sexp_list_item head;
@@ -4767,8 +5327,8 @@ sexp_list_item* sexp_tree::get_listing_opf_damage_type() {
 sexp_list_item* sexp_tree::get_listing_opf_animation_type() {
 	sexp_list_item head;
 
-	for (const auto &animation_type_name: animation::Animation_types) {
-		head.add_data(animation_type_name.second.first);
+	for (const auto &animation_type: animation::Animation_types) {
+		head.add_data(animation_type.second.first);
 	}
 
 	return head.next;
@@ -4852,10 +5412,154 @@ sexp_list_item* sexp_tree::get_listing_opf_nebula_patterns() {
 
 	head.add_data(SEXP_NONE_STRING);
 
-	for (int i = 0; i < MAX_NEB2_BITMAPS; i++) {
-		if (strlen(Neb2_bitmap_filenames[i]) > 0) {
-			head.add_data(Neb2_bitmap_filenames[i]);
+	for (int i = 0; i < (int)Neb2_bitmap_filenames.size(); i++) {
+		head.add_data(Neb2_bitmap_filenames[i].c_str());
+	}
+
+	return head.next;
+}
+
+sexp_list_item* sexp_tree::get_listing_opf_motion_debris()
+{
+	sexp_list_item head;
+
+	head.add_data(SEXP_NONE_STRING);
+
+	for (int i = 0; i < (int)Motion_debris_info.size(); i++) {
+		head.add_data(Motion_debris_info[i].name.c_str());
+	}
+
+	return head.next;
+}
+
+sexp_list_item* sexp_tree::get_listing_opf_bolt_types()
+{
+	sexp_list_item head;
+
+	head.add_data(SEXP_NONE_STRING);
+
+	for (int i = 0; i < (int)Bolt_types.size(); i++) {
+		head.add_data(Bolt_types[i].name);
+	}
+
+	return head.next;
+}
+
+sexp_list_item* sexp_tree::get_listing_opf_traitor_overrides()
+{
+	sexp_list_item head;
+
+	head.add_data(SEXP_NONE_STRING);
+
+	for (int i = 0; i < (int)Traitor_overrides.size(); i++) {
+		head.add_data(Traitor_overrides[i].name.c_str());
+	}
+
+	return head.next;
+}
+
+sexp_list_item* sexp_tree::get_listing_opf_lua_general_orders()
+{
+	sexp_list_item head;
+
+	SCP_vector<SCP_string> orders = ai_lua_get_general_orders();
+
+	for (const auto& val : orders) {
+		head.add_data(val.c_str());
+	}
+
+	return head.next;
+}
+
+sexp_list_item* sexp_tree::get_listing_opf_message_types()
+{
+	sexp_list_item head;
+
+	for (const auto& val : Builtin_messages) {
+		head.add_data(val.name);
+	}
+
+	return head.next;
+}
+
+sexp_list_item *sexp_tree::get_listing_opf_asteroid_types()
+{
+	sexp_list_item head;
+
+	head.add_data(SEXP_NONE_STRING);
+
+	auto list = get_list_valid_asteroid_subtypes();
+
+	for (const auto& this_asteroid : list) {
+		head.add_data(this_asteroid.c_str());
+	}
+
+	return head.next;
+}
+
+sexp_list_item *sexp_tree::get_listing_opf_debris_types()
+{
+	sexp_list_item head;
+
+	head.add_data(SEXP_NONE_STRING);
+
+	for (const auto& this_asteroid : Asteroid_info) {
+		if (this_asteroid.type == ASTEROID_TYPE_DEBRIS) {
+			head.add_data(this_asteroid.name);
 		}
+	}
+
+	return head.next;
+}
+
+sexp_list_item* sexp_tree::get_listing_opf_lua_enum(int parent_node, int arg_index)
+{
+
+	// first child node
+	int child = tree_nodes[parent_node].child;
+	if (child < 0)
+		return nullptr;
+
+	int this_index = get_dynamic_parameter_index(tree_nodes[parent_node].text, arg_index);
+
+	if (this_index >= 0) {
+		for (int count = 0; count < this_index; count++) {
+			child = tree_nodes[child].next;
+		}
+	} else {
+		error_display(1,
+			"Expected to find an enum parent parameter for node %i in operator %s but found nothing!",
+			arg_index,
+			tree_nodes[parent_node].text);
+		return nullptr;
+	}
+
+	// Append the suffix if it exists
+	SCP_string enum_name = tree_nodes[child].text + get_child_enum_suffix(tree_nodes[parent_node].text, arg_index);
+
+	sexp_list_item head;
+
+	int item = get_dynamic_enum_position(enum_name);
+
+	if (item >= 0 && item < static_cast<int>(Dynamic_enums.size())) {
+
+		for (const SCP_string& enum_item : Dynamic_enums[item].list) {
+			head.add_data(enum_item.c_str());
+		}
+	} else {
+		// else if enum is invalid do this
+		mprintf(("Could not find Lua Enum %s! Using <none> instead!", enum_name.c_str()));
+		head.add_data("<none>");
+	}
+	return head.next;
+}
+
+sexp_list_item* sexp_tree::get_listing_opf_mission_custom_strings()
+{
+	sexp_list_item head;
+
+	for (const auto& val : The_mission.custom_strings) {
+		head.add_data(val.name.c_str());
 	}
 
 	return head.next;
@@ -4879,9 +5583,9 @@ sexp_list_item *sexp_tree::get_listing_opf_fireball()
 {
 	sexp_list_item head;
 
-	for (int i = 0; i < Num_fireball_types; ++i)
+	for (const auto &fi: Fireball_info)
 	{
-		char *unique_id = Fireball_info[i].unique_id;
+		auto unique_id = fi.unique_id;
 
 		if (strlen(unique_id) > 0)
 			head.add_data(unique_id);
@@ -4932,7 +5636,8 @@ sexp_list_item *sexp_tree::get_listing_opf_animation_name(int parent_node)
 
 	// first child node
 	child = tree_nodes[parent_node].child;
-	Assert(child >= 0);
+	if (child < 0)
+		return nullptr;
 	sh = ship_name_lookup(tree_nodes[child].text, 1);
 
 	switch(op) {
@@ -4984,6 +5689,17 @@ sexp_list_item *sexp_tree::get_listing_opf_sexp_containers(ContainerType con_typ
 			head.add_data(container.container_name.c_str(), (SEXPT_CONTAINER_NAME | SEXPT_STRING | SEXPT_VALID));
 		}
 	}
+
+	return head.next;
+}
+
+sexp_list_item *sexp_tree::get_listing_opf_wing_formation()	// NOLINT
+{
+	sexp_list_item head;
+
+	head.add_data("Default");
+	for (const auto &formation : Wing_formations)
+		head.add_data(formation.name);
 
 	return head.next;
 }
@@ -5094,6 +5810,25 @@ sexp_list_item *sexp_tree::get_container_multidim_modifiers(int con_data_node) c
 	head.add_list(list);
 
 	return head.next;
+}
+
+sexp_list_item* sexp_tree::check_for_dynamic_sexp_enum(int opf)
+{
+	sexp_list_item head;
+
+	int item = opf - First_available_opf_id;
+
+	if (item < (int)Dynamic_enums.size()) {
+
+		for (const SCP_string& enum_item : Dynamic_enums[item].list) {
+			head.add_data(enum_item.c_str());
+		}
+		return head.next;
+	} else {
+		// else if opf is invalid do this
+		UNREACHABLE("Unhandled SEXP argument type!"); // unknown OPF code
+		return nullptr;
+	}
 }
 
 // given a node's parent, check if node is eligible for being used with the special argument
@@ -5299,7 +6034,6 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 	sexp_list_item* list;
 
 	add_instance = replace_instance = -1;
-	Assert(Operators.size() <= MAX_OPERATORS);
 	Assert((int) op_menu.size() < MAX_OP_MENUS);
 	Assert((int) op_submenu.size() < MAX_SUBMENUS);
 
@@ -5310,11 +6044,17 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 	auto edit_data_act = popup_menu->addAction(tr("&Edit Data"), this, [this]() { editDataActionHandler(); });
 	popup_menu->addAction(tr("Expand All"), this, [this]() { expand_branch(currentItem()); });
 
+	popup_menu->addSection(tr("Annotations"));
+	auto edit_comment_act = popup_menu->addAction(tr("Edit Comment"), this, [this, h]() { editNoteForItem(h); });
+	auto edit_color_act = popup_menu->addAction(tr("Edit Color"), this, [this, h]() { editBgColorForItem(h); });
+	edit_comment_act->setEnabled(_interface->getFlags()[TreeFlags::AnnotationsAllowed]);
+	edit_color_act->setEnabled(_interface->getFlags()[TreeFlags::AnnotationsAllowed]);
+
 	popup_menu->addSection(tr("Copy operations"));
 	auto cut_act = popup_menu->addAction(tr("Cut"), this, [this]() { cutActionHandler(); }, QKeySequence::Cut);
 	cut_act->setEnabled(false);
 	auto copy_act = popup_menu->addAction(tr("Copy"), this, [this]() { copyActionHandler(); }, QKeySequence::Copy);
-	auto paste_act = popup_menu->addAction(tr("Paste"), this, [this]() { pasteActionHandler(); }, QKeySequence::Paste);
+	auto paste_act = popup_menu->addAction(tr("Paste"), this, [this]() { pasteActionHandler(); }, QKeySequence::Paste); //TODO match paste/add paste
 	paste_act->setEnabled(false);
 
 	popup_menu->addSection(tr("Add"));
@@ -5352,7 +6092,6 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 	auto modify_variable_act = popup_menu->addAction(tr("Modify Variable"), this, []() {});
 
 	auto replace_variable_menu = popup_menu->addMenu(tr("Replace Variable"));
-
 	popup_menu->addSeparator();
 
 	popup_menu->addSection("Containers");
@@ -5361,6 +6100,17 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 	add_modify_container_act->setEnabled(false);
 	auto replace_container_name_menu = popup_menu->addMenu(tr("Replace Container Name"));
 	auto replace_container_data_menu = popup_menu->addMenu(tr("Replace Container Data"));
+  
+  if (_interface) {
+		auto extra_acts = _interface->getContextMenuExtras(popup_menu.get());
+		if (! extra_acts.isEmpty()) {
+			popup_menu->addSection("Special Actions");
+
+			for (QAction *act : extra_acts) {
+				popup_menu->addAction(act);
+			}
+		}
+	}
 
 	update_help(h);
 	//SelectDropTarget(h);  // WTF: Why was this here???
@@ -5540,7 +6290,8 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 				// Replace Container Data submenu
 				// disallowed on variable-type SEXP args, to prevent FSO/FRED crashes
 				// also disallowed for special argument options (not supported for now)
-				if (op_type != OPF_VARIABLE_NAME && op_type != OPF_ANYTHING && op_type != OPF_DATA_OR_STR_CONTAINER) {
+				// op < 0 means we're on a container modifier, and nested Replace Container Data is allowed
+				if (op_type != OPF_VARIABLE_NAME && (op < 0 || !is_argument_provider_op(Operators[op].value))) {
 					const auto &containers = get_all_sexp_containers();
 					for (int idx = 0; idx < (int)containers.size(); ++idx) {
 						const auto &container = containers[idx];
@@ -5611,7 +6362,7 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 	for (i = 0; i < (int) Operators.size(); i++) {
 		// add only if it is not in a subcategory
 		subcategory_id = get_subcategory(Operators[i].value);
-		if (subcategory_id == -1) {
+		if (subcategory_id == OP_SUBCATEGORY_NONE) {
 			// put it in the appropriate menu
 			for (j = 0; j < (int) op_menu.size(); j++) {
 				if (op_menu[j].id == get_category(Operators[i].value)) {
@@ -5629,7 +6380,14 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 						case OP_TECH_REMOVE_INTEL_XSTR:
 						case OP_TECH_RESET_TO_DEFAULT:
 #endif*/
-						// unlike the above operators, these are deprecated
+
+					// hide these operators per GitHub issue #6400
+					case OP_GET_VARIABLE_BY_INDEX:
+					case OP_SET_VARIABLE_BY_INDEX:
+					case OP_COPY_VARIABLE_FROM_INDEX:
+					case OP_COPY_VARIABLE_BETWEEN_INDEXES:
+
+					// unlike the various campaign operators, these are deprecated
 					case OP_HITS_LEFT_SUBSYSTEM:
 					case OP_CUTSCENES_SHOW_SUBTITLE:
 					case OP_ORDER:
@@ -5647,6 +6405,12 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 					case OP_TRIGGER_SUBMODEL_ANIMATION:
 					case OP_ADD_BACKGROUND_BITMAP:
 					case OP_ADD_SUN_BITMAP:
+					case OP_JUMP_NODE_SET_JUMPNODE_NAME:
+					case OP_KEY_RESET:
+					case OP_SET_ASTEROID_FIELD:
+					case OP_SET_DEBRIS_FIELD:
+					case OP_NEBULA_TOGGLE_POOF:
+					case OP_NEBULA_FADE_POOF:
 						j = (int) op_menu.size();    // don't allow these operators to be visible
 						break;
 					}
@@ -5700,7 +6464,14 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 						case OP_TECH_REMOVE_INTEL_XSTR:
 						case OP_TECH_RESET_TO_DEFAULT:
 #endif*/
-						// unlike the above operators, these are deprecated
+
+					// hide these operators per GitHub issue #6400
+					case OP_GET_VARIABLE_BY_INDEX:
+					case OP_SET_VARIABLE_BY_INDEX:
+					case OP_COPY_VARIABLE_FROM_INDEX:
+					case OP_COPY_VARIABLE_BETWEEN_INDEXES:
+
+					// unlike the various campaign operators, these are deprecated
 					case OP_HITS_LEFT_SUBSYSTEM:
 					case OP_CUTSCENES_SHOW_SUBTITLE:
 					case OP_ORDER:
@@ -5718,6 +6489,12 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 					case OP_TRIGGER_SUBMODEL_ANIMATION:
 					case OP_ADD_BACKGROUND_BITMAP:
 					case OP_ADD_SUN_BITMAP:
+					case OP_JUMP_NODE_SET_JUMPNODE_NAME:
+					case OP_KEY_RESET:
+					case OP_SET_ASTEROID_FIELD:
+					case OP_SET_DEBRIS_FIELD:
+					case OP_NEBULA_TOGGLE_POOF:
+					case OP_NEBULA_FADE_POOF:
 						j = (int) op_submenu.size();    // don't allow these operators to be visible
 						break;
 					}
@@ -6262,14 +7039,8 @@ std::unique_ptr<QMenu> sexp_tree::buildContextMenu(QTreeWidgetItem* h) {
 	for (j = 0; j < (int) Operators.size(); j++) {
 		z = 0;
 		if (_interface->requireCampaignOperators()) {
-			if (Operators[j].value & OP_NONCAMPAIGN_FLAG) {
+			if (!usable_in_campaign(Operators[j].value))
 				z = 1;
-			}
-
-		} else {
-			if (Operators[j].value & OP_CAMPAIGN_ONLY_FLAG) {
-				z = 1;
-			}
 		}
 
 		if (z) {
@@ -6402,36 +7173,309 @@ void sexp_tree::cutActionHandler() {
 	// fall through to ID_DELETE case.
 	deleteActionHandler();
 }
-void sexp_tree::deleteActionHandler() {
-	if (currentItem() == nullptr) {
+void sexp_tree::deleteActionHandler()
+{
+	if (currentItem() == nullptr || !_interface) {
 		return;
 	}
 
-	if (_interface->getFlags()[TreeFlags::RootDeletable] && (item_index == -1)) {
-		auto item = currentItem();
-		item_index = item->data(0, FormulaDataRole).toInt();
+	auto* item = currentItem();
+	const bool isRootItem = (item->parent() == nullptr);
 
-		rootNodeDeleted(item_index);
+	// Root delete: allowed if flag is set and the selected item is a top-level row
+	if (_interface->getFlags()[TreeFlags::RootDeletable] && isRootItem) {
+		const int formulaNode = item->data(0, FormulaDataRole).toInt();
 
-		free_node2(item_index);
+		// Tell the dialog/model first so it can drop the event row
+		rootNodeDeleted(formulaNode);
+
+		// Free the underlying SEXP subtree safely
+		if (formulaNode >= 0) {
+			free_node2(formulaNode);
+		}
+
+		// Remove the UI item and reset selection/index
 		delete item;
+		setCurrentItemIndex(-1);
 		modified();
 		return;
 	}
 
-	Assert(item_index >= 0);
-	auto h_parent = currentItem()->parent();
-	auto parent = tree_nodes[item_index].parent;
+	// Non-root delete
+	Assertion(item_index >= 0, "Attempt to delete node at invalid index!");
+	auto* h_parent = item->parent();
+	const int parent = tree_nodes[item_index].parent;
 
-	Assert(parent != -1 && tree_nodes[parent].handle == h_parent);
+	// If we somehow reached here on a root, bail safely
+	if (parent == -1) {
+		// Treat it as a root delete fallback
+		const int formulaNode = item->data(0, FormulaDataRole).toInt();
+		rootNodeDeleted(formulaNode);
+		if (formulaNode >= 0)
+			free_node2(formulaNode);
+		delete item;
+		setCurrentItemIndex(-1);
+		modified();
+		return;
+	}
+
+	Assertion(tree_nodes[parent].handle == h_parent, "Tree node handle mismatch!");
 	free_node(item_index);
-	delete currentItem();
+	delete item;
 
 	modified();
 }
 void sexp_tree::editDataActionHandler() {
 	beginItemEdit(currentItem());
 }
+
+// Compute the valid operators for replacing/adding at the given node, based on parent arg type.
+// This mirrors the original menu enable/disable logic. See original for how "type" is computed.
+QStringList sexp_tree::validOperatorsForNode(int nodeIndex)
+{
+	QStringList out;
+	if (nodeIndex < 0 || nodeIndex >= static_cast<int>(tree_nodes.size()))
+		return out;
+
+	const int parent = tree_nodes[nodeIndex].parent;
+	const int argIndex = (parent >= 0) ? find_argument_number(parent, nodeIndex) : 0;
+
+	// Original behavior: compute the OPF type expected at this node
+	const int opf = query_node_argument_type(nodeIndex); // handles top-level = OPF_NULL, etc.
+	if (opf < 0)
+		return out;
+
+	// Build the canonical list for this OPF (this mirrors classic FRED)
+	sexp_list_item* list = get_listing_opf(opf, parent, argIndex); // may be nullptr
+	for (auto* p = list; p; p = p->next) {
+		if (p->op >= 0) {
+			const int opIndex = p->op;
+
+			// Optional: keep parity with the menu, which disables ops lacking default args
+			if (!query_default_argument_available(opIndex))
+				continue;
+
+			out.push_back(QString::fromStdString(Operators[opIndex].text));
+		}
+		// (items with p->op < 0 are data items like strings/ships/etc.; we ignore for operator search)
+	}
+
+	if (list)
+		list->destroy();
+
+	out.removeDuplicates();
+	std::sort(out.begin(), out.end(), [](const QString& a, const QString& b) {
+		return a.compare(b, Qt::CaseInsensitive) < 0;
+	});
+	return out;
+}
+
+void sexp_tree::openNodeEditor(QTreeWidgetItem* item)
+{
+	if (!item || !_interface)
+		return;
+
+	// if this is the root and it's not editable, bail.
+	if (!_interface->getFlags()[TreeFlags::RootEditable] && !item->parent())
+		return;
+
+	if (item && !item->parent()) { // root only
+		beginItemEdit(item);       // sets _currently_editing + calls editItem
+		return;
+	}
+
+	// If an operator popup is already up, ignore
+	if (_opPopupActive && _opPopup && _opPopup->isVisible())
+		return;
+
+	// Map item -> internal node index
+	int nodeIdx = -1;
+	for (uint i = 0; i < tree_nodes.size(); ++i) {
+		if (tree_nodes[i].handle == item) {
+			nodeIdx = static_cast<int>(i);
+			break;
+		}
+	}
+	if (nodeIdx < 0)
+		return;
+
+	// operator chooser vs inline data edit
+	const QStringList ops = validOperatorsForNode(nodeIdx); // uses get_listing_opf(...)
+	if (!ops.isEmpty()) {
+		startOperatorQuickSearch(item, QString());
+		return;
+	}
+
+	// Fallback to inline edit
+	beginItemEdit(item);
+}
+
+void sexp_tree::startOperatorQuickSearch(QTreeWidgetItem* item, const QString& seed)
+{
+	if (!item)
+		return;
+
+	// Map item -> node index
+	int nodeIdx = -1;
+	for (uint i = 0; i < tree_nodes.size(); ++i) {
+		if (tree_nodes[i].handle == item) {
+			nodeIdx = static_cast<int>(i);
+			break;
+		}
+	}
+	if (nodeIdx < 0)
+		return;
+
+	// Only allow on editable positions (operator or data) that live beneath a parent
+	// (We’ll compute OPF from parent or root as necessary)
+	_opAll = validOperatorsForNode(nodeIdx);
+	if (_opAll.isEmpty())
+		return;
+
+	_opNodeIndex = nodeIdx;
+
+	if (!_opPopup) {
+		_opPopup = new QFrame(viewport(), Qt::Popup);
+		_opPopup->setFrameShape(QFrame::Box);
+		_opPopup->setFrameShadow(QFrame::Plain);
+		_opPopup->installEventFilter(this); // <-- important
+		auto* layout = new QVBoxLayout(_opPopup);
+		layout->setContentsMargins(4, 4, 4, 4);
+		_opEdit = new QLineEdit(_opPopup);
+		_opList = new QListWidget(_opPopup);
+		_opList->setSelectionMode(QAbstractItemView::SingleSelection);
+		_opList->setUniformItemSizes(true);
+		layout->addWidget(_opEdit);
+		layout->addWidget(_opList);
+		connect(_opEdit, &QLineEdit::textChanged, this, &sexp_tree::filterOperatorPopup);
+		connect(_opEdit, &QLineEdit::returnPressed, [this]() { endOperatorQuickSearch(true); });
+		connect(_opList, &QListWidget::itemActivated, [this](QListWidgetItem*) { endOperatorQuickSearch(true); });
+		connect(_opList, &QListWidget::itemClicked, [this](QListWidgetItem*) { endOperatorQuickSearch(true); });
+	}
+
+	_opList->clear();
+	_opList->addItems(_opAll);
+	if (!seed.isEmpty()) {
+		_opEdit->setText(seed);
+		_opEdit->selectAll();
+		filterOperatorPopup(seed);
+	} else {
+		_opEdit->clear();
+		if (_opList->count() > 0)
+			_opList->setCurrentRow(0);
+	}
+
+	// Size the popup: width = widest operator text + scrollbar + padding; height ~10 rows
+	QFontMetrics fm(_opList->font());
+	int w = 0;
+	for (const auto& s : _opAll)
+		w = std::max(w, fm.horizontalAdvance(s));
+	w += _opList->verticalScrollBar()->sizeHint().width() + 24; // padding
+	int rowH = fm.height() + 6;
+	int h = (std::min(10, std::max(4, _opList->count())) * rowH) + _opEdit->sizeHint().height() + 12;
+
+	// Place below the item
+	QRect itemRect = visualItemRect(item);
+	QPoint topLeft = viewport()->mapToGlobal(itemRect.topLeft());
+	_opPopup->setGeometry(QRect(topLeft.x(), topLeft.y(), std::max(w, 260), h));
+	_opPopup->show();
+	_opEdit->setFocus();
+	_opPopupActive = true;
+}
+
+void sexp_tree::filterOperatorPopup(const QString& text)
+{
+	_opList->clear();
+	if (text.isEmpty()) {
+		_opList->addItems(_opAll);
+	} else {
+		for (const auto& s : _opAll) {
+			if (s.contains(text, Qt::CaseInsensitive))
+				_opList->addItem(s);
+		}
+	}
+	if (_opList->count() > 0)
+		_opList->setCurrentRow(0);
+}
+
+void sexp_tree::endOperatorQuickSearch(bool confirm)
+{
+	if (!_opPopupActive)
+		return;
+
+	// Cache before hiding since hide triggers eventFilter which clears state
+	const int node = _opNodeIndex;
+
+	QString chosenOp;
+	QString typed = (_opEdit ? _opEdit->text().trimmed() : QString());
+
+	if (confirm) {
+		// If user selected an operator in the list, prefer that
+		if (_opList && _opList->currentItem())
+			chosenOp = _opList->currentItem()->text();
+
+		// If nothing selected, see if typed text is a valid *number* for this slot
+		if (chosenOp.isEmpty() && !typed.isEmpty()) {
+			const int expected = query_node_argument_type(node); // OPF_*
+			const bool expectsNumber = (expected == OPF_NUMBER) || (expected == OPF_POSITIVE) ||
+									   (expected == OPF_AMBIGUOUS); // allow numerics here too???
+
+			// Accept +/- integers
+			static const QRegularExpression kIntRx(QStringLiteral(R"(^[+-]?\d+$)"));
+			const bool isInt = kIntRx.match(typed).hasMatch();
+
+			// Enforce positivity if required
+			bool okForPositive = true;
+			if (expected == OPF_POSITIVE && isInt) {
+				okForPositive = typed.toLongLong() > 0;
+			}
+
+			if (expectsNumber && isInt && okForPositive) {
+				// Commit as NUMBER data
+				if (_opPopup)
+					_opPopup->hide();
+				_opPopupActive = false;
+				_opNodeIndex = -1;
+
+				setCurrentItemIndex(node); // sets item_index for replace_data()
+				int type = SEXPT_NUMBER | SEXPT_VALID;
+				if (tree_nodes[item_index].type & SEXPT_MODIFIER)
+					type |= SEXPT_MODIFIER;
+
+				replace_data(typed.toUtf8().constData(), type);
+				setFocus(Qt::OtherFocusReason);
+				return; // done
+			}
+		}
+
+		// fall back to closest operator match from typed text
+		if (chosenOp.isEmpty() && !typed.isEmpty()) {
+			auto best = match_closest_operator(typed.toStdString(), node);
+			if (!best.empty())
+				chosenOp = QString::fromStdString(best);
+		}
+	}
+
+	// Close popup and reset state
+	if (_opPopup)
+		_opPopup->hide();
+	_opPopupActive = false;
+	_opNodeIndex = -1;
+
+	// Commit operator if we resolved one
+	if (confirm && !chosenOp.isEmpty() && node >= 0 && node < static_cast<int>(tree_nodes.size())) {
+		setCurrentItemIndex(node);
+		const int op_num = get_operator_index(chosenOp.toUtf8().constData());
+		if (op_num >= 0) {
+			add_or_replace_operator(op_num, /*replace_flag*/ 1);
+			if (tree_nodes[node].handle)
+				tree_nodes[node].handle->setExpanded(true);
+		}
+	}
+
+	setFocus(Qt::OtherFocusReason);
+}
+
 void sexp_tree::handleItemChange(QTreeWidgetItem* item, int  /*column*/) {
 	if (!_currently_editing) {
 		return;
@@ -6462,7 +7506,8 @@ void sexp_tree::handleItemChange(QTreeWidgetItem* item, int  /*column*/) {
 
 	Assert(node < tree_nodes.size());
 	if (tree_nodes[node].type & SEXPT_OPERATOR) {
-		auto op = match_closest_operator(str.toStdString(), node);
+		SCP_string text = str.toUtf8().constData();
+		auto op = match_closest_operator(text, node);
 		if (op.empty()) {
 			return;
 		}    // Goober5000 - avoids crashing
@@ -6498,6 +7543,9 @@ void sexp_tree::handleItemChange(QTreeWidgetItem* item, int  /*column*/) {
 
 	if (update_node) {
 		modified();
+
+		nodeChanged(node);
+
 		auto strBytes = str.toUtf8(); // avoid using dangling ptr
 		strncpy(tree_nodes[node].text, strBytes.constData(), len);
 		tree_nodes[node].text[len] = 0;
@@ -6856,6 +7904,17 @@ void sexp_tree::handleNewItemSelected() {
 }
 void sexp_tree::deleteCurrentItem() {
 	deleteActionHandler();
+}
+void sexp_tree::applyVisuals(QTreeWidgetItem* it)
+{
+	const auto note = it->data(0, NoteRole).toString();
+	const auto color = it->data(0, BgColorRole).value<QColor>();
+	it->setToolTip(0, note);
+
+	// Background color for the entire row
+	if (color.isValid()) {
+		it->setBackground(0, QBrush(color));
+	}
 }
 int sexp_tree::getCurrentItemIndex() const {
 	return item_index;

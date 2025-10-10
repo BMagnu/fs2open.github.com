@@ -17,8 +17,9 @@
 #include "math/vecmat.h"
 #include "object/object_flags.h"
 #include "physics/physics.h"
+#include "physics/physics_state.h"
+#include "io/timer.h"					// prevents some include issues with files in the actions folder
 #include "utils/event.h"
-#include "network/multi_interpolate.h"
 
 #include <functional>
 
@@ -33,25 +34,26 @@
 #endif
 
 //Object types
-#define OBJ_NONE				0		//unused object
-#define OBJ_SHIP				1		//a ship
-#define OBJ_WEAPON			2		//a laser, missile, etc
-#define OBJ_FIREBALL			3		//an explosion
-#define OBJ_START				4		//a starting point marker (player start, etc)
-#define OBJ_WAYPOINT			5		//a waypoint object, maybe only ever used by Fred
-#define OBJ_DEBRIS			6		//a flying piece of ship debris
-//#define OBJ_CMEASURE			7		//a countermeasure, such as chaff
-#define OBJ_GHOST				8		//so far, just a placeholder for when a player dies.
-#define OBJ_POINT				9		//generic object type to display a point in Fred.
-#define OBJ_SHOCKWAVE		10		// a shockwave
-#define OBJ_WING				11		// not really a type used anywhere, but I need it for Fred.
-#define OBJ_OBSERVER       12    // used for multiplayer observers (possibly single player later)
-#define OBJ_ASTEROID			13		//	An asteroid, you know, a big rock, like debris, sort of.
-#define OBJ_JUMP_NODE		14		// A jump node object, used only in Fred.
-#define OBJ_BEAM				15		// beam weapons. we have to roll them into the object system to get the benefits of the collision pairs
+#define OBJ_NONE            0	//unused object
+#define OBJ_SHIP            1	//a ship
+#define OBJ_WEAPON          2	//a laser, missile, etc
+#define OBJ_FIREBALL        3	//an explosion
+#define OBJ_START           4	//a starting point marker (player start, etc)
+#define OBJ_WAYPOINT        5	//a waypoint object, maybe only ever used by Fred
+#define OBJ_DEBRIS          6	//a flying piece of ship debris
+//#define OBJ_CMEASURE      7	//a countermeasure, such as chaff
+#define OBJ_GHOST           8	//so far, just a placeholder for when a player dies.
+#define OBJ_POINT           9	//generic object type to display a point in Fred.
+#define OBJ_SHOCKWAVE       10	// a shockwave
+#define OBJ_WING            11	// not really a type used anywhere, but I need it for Fred.
+#define OBJ_OBSERVER        12	// used for multiplayer observers (possibly single player later)
+#define OBJ_ASTEROID        13	//	An asteroid, you know, a big rock, like debris, sort of.
+#define OBJ_JUMP_NODE       14	// A jump node object, used only in Fred.
+#define OBJ_BEAM            15	// beam weapons. we have to roll them into the object system to get the benefits of the collision pairs
+#define OBJ_RAW_POF         16	// A raw pof file. has no physics, ai or anything. Currently only used in the Lab to render tech models
 
 //Make sure to change Object_type_names in Object.c when adding another type!
-#define MAX_OBJECT_TYPES	16
+#define MAX_OBJECT_TYPES	17
 
 #define UNUSED_OBJNUM		(-MAX_OBJECTS*2)	//	Newer systems use this instead of -1 for invalid object.
 
@@ -109,21 +111,37 @@ typedef struct obj_flag_name {
 	char flag_name[TOKEN_LENGTH];
 } obj_flag_name;
 
+typedef struct obj_flag_description {
+	Object::Object_Flags flag;
+	const char *flag_desc;
+} obj_flag_description;
+
 extern obj_flag_name Object_flag_names[];
+extern obj_flag_description Object_flag_descriptions[];
 extern const int Num_object_flag_names;
 
 struct dock_instance;
 class model_draw_list;
+class polymodel;
+struct polymodel_instance;
+
+typedef struct raw_pof_obj {
+	  int                            model_num;      // The model number of the loaded POF
+	  int                            model_instance; // The model instance
+	  flagset<Object::Raw_Pof_Flags> flags;          // Render flags
+} raw_pof_obj;
+
+extern SCP_map<int, raw_pof_obj> Pof_objects;
 
 class object
 {
 public:
 	class object	*next, *prev;	// for linked lists of objects
 	int				signature;		// Every object ever has a unique signature...
-	char			type;				// what type of object this is... robot, weapon, hostage, powerup, fireball
+	char			type;			// what type of object this is... ship, weapon, debris, asteroid, fireball, see OBJ_* defines above
 	int				parent;			// This object's parent.
 	int				parent_sig;		// This object's parent's signature
-	int				instance;		// which instance.  ie.. if type is Robot, then this indexes into the Robots array
+	int				instance;		// index into the corresponding type array, i.e. if type == OBJ_SHIP then instance indexes the Ships array
 	flagset<Object::Object_Flags> flags;			// misc flags.  Call obj_set_flags to change this.
 	vec3d			pos;				// absolute x,y,z coordinate of center of object
 	matrix			orient;			// orientation of object in world
@@ -131,7 +149,6 @@ public:
 	vec3d			last_pos;		// where object was last frame
 	matrix			last_orient;	// how the object was oriented last frame
 	physics_info	phys_info;		// a physics object
-	int				n_quadrants;	// how many shield quadrants the ship has
 	SCP_vector<float>	shield_quadrant;	//	Shield is broken into components, quadrants by default.
 	float			hull_strength;	//	Remaining hull strength.
 	float			sim_hull_strength;	// Simulated hull strength - used with training weapons.
@@ -147,25 +164,44 @@ public:
 	util::event<void, object*> pre_move_event;
 	util::event<void, object*> post_move_event;
 
-	interpolation_manager interp_info;
+	void clear();
+
 
 	object();
 	~object();
-	void clear();
 
-private:
 	// An object should never be copied; there are allocated pointers, and linked list shenanigans.
-	object(const object& other); // no implementation
-	object& operator= (const object & other); // no implementation
+	object(const object& other) = delete;
+	object& operator=(const object& other) = delete;
+
+	// Eventually we want to allow an object to be moved, especially when we get around to making Objects[] dynamic
+	object(object&& other) noexcept = delete;
+	object& operator=(object&& other) noexcept = delete;
 };
 
-struct object_h {
-	object *objp;
-	int sig;
+struct lua_State;
+namespace scripting {
+	class ade_table_entry;
+}
+namespace luacpp {
+	class LuaValue;
+}
 
-	bool IsValid() const {return (objp != NULL && objp->signature == sig && sig > 0);}
-	object_h(object *in){objp=in; if(objp!=NULL){sig=in->signature;}}
-	object_h(){objp=NULL;sig=-1;}
+extern int Num_objects;
+extern object Objects[];
+
+struct object_h final	// prevent subclassing because classes which might use this should have their own isValid member function
+{
+	int objnum = -1;
+	int sig = -1;
+
+	object_h(const object* in_objp);
+	object_h(int in_objnum);
+	object_h();
+
+	bool isValid() const;
+	object* objp() const;
+	object* objp_or_null() const;
 };
 
 // object backup struct used by Fred.
@@ -194,13 +230,10 @@ public:
 extern int Object_inited;
 extern int Show_waypoints;
 
-// The next signature for the next newly created object. Zero is bogus
-extern int Object_next_signature;		
-extern int Num_objects;
-
-extern object Objects[];
+extern int Object_next_signature;		// The next signature for the next newly created object. Zero is bogus
 extern int Highest_object_index;		//highest objnum
 extern int Highest_ever_object_index;
+
 extern object obj_free_list;
 extern object obj_used_list;
 extern object obj_create_list;
@@ -231,7 +264,7 @@ void obj_shutdown();
 //object.  Returns 0 if failed, otherwise object index.
 //You can pass 0 for parent if you don't care about that.
 //You can pass null for orient and/or pos if you don't care.
-int obj_create(ubyte type,int parent_obj, int instance, matrix * orient, vec3d * pos, float radius, const flagset<Object::Object_Flags> &flags, bool essential = true );
+int obj_create(ubyte type, int parent_obj, int instance, const matrix *orient, const vec3d *pos, float radius, const flagset<Object::Object_Flags> &flags, bool essential = true);
 
 void obj_render(object* obj);
 
@@ -247,6 +280,8 @@ void obj_move_all(float frametime);		// moves all objects
 void obj_delete(int objnum);
 
 void obj_delete_all();
+
+void obj_delete_all_that_should_be_dead();
 
 // should only be used by the editor!
 void obj_merge_created_list(void);
@@ -267,9 +302,18 @@ int objects_will_collide(object *A, object *B, float duration, float radius_scal
 void obj_init_all_ships_physics();
 
 // Goober5000
-float get_hull_pct(object *objp);
-float get_sim_hull_pct(object *objp);
-float get_shield_pct(object *objp);
+float get_hull_pct(const object *objp, bool allow_negative = false);
+float get_sim_hull_pct(const object *objp, bool allow_negative = false);
+float get_shield_pct(const object *objp);
+
+struct ship_registry_entry;
+
+// SEXPs evaluated during debriefing are susceptible to a "use-after-free" problem where the object and ship have been deleted but still
+// contain information useful for debriefing.  Since the ship registry still contains object and ship indexes, use this rather than the
+// instance and objnum indexes in the object and ship structures themselves.
+float get_hull_pct(const ship_registry_entry *ship_entry, bool allow_negative = false);
+float get_sim_hull_pct(const ship_registry_entry *ship_entry, bool allow_negative = false);
+float get_shield_pct(const ship_registry_entry *ship_entry);
 
 // returns the average 3-space position of all ships.  useful to find "center" of battle (sort of)
 void obj_get_average_ship_pos(vec3d *pos);
@@ -293,14 +337,6 @@ void obj_move_all_pre(object *objp, float frametime);
 void obj_move_all_post(object *objp, float frametime);
 
 void obj_move_call_physics(object *objp, float frametime);
-
-// multiplayer object update stuff begins -------------------------------------------
-
-// do client-side pre-interpolation object movement
-void obj_client_pre_interpolate();
-
-// do client-side post-interpolation object movement
-void obj_client_post_interpolate();
 
 // move an observer object in multiplayer
 void obj_observer_move(float frame_time);
@@ -343,8 +379,11 @@ void object_set_gliding(object *objp, bool enable=true, bool force = false);
 bool object_get_gliding(object *objp);
 bool object_glide_forced(object* objp);
 int obj_get_by_signature(int sig);
-int object_get_model(const object *objp);
-int object_get_model_instance(const object *objp);
+
+int object_get_model_num(const object *objp);
+polymodel *object_get_model(const object *objp);
+int object_get_model_instance_num(const object *objp);
+polymodel_instance *object_get_model_instance(const object *objp);
 
 void obj_render_queue_all();
 
@@ -358,5 +397,38 @@ void obj_render_queue_all();
  * @return @c true if the two pointers refer to the same object
  */
 bool obj_compare(object *left, object *right);
+
+////////////////////////////////////////////////////////////
+// physics_state api functions that require the object type
+
+/**
+ * @brief Populate a physics snapshot directly from the info in an object
+ *
+ * @param[in,out] snapshot Destination physics snapshot
+ * @param[in]     objp The object pointer that we are pulling information from
+ *
+ * @author J Fernandez
+ */
+void physics_populate_snapshot(physics_snapshot& snapshot, const object* objp);
+
+/**
+ * @brief Change the object's physics info to match the info contained in a snapshot.
+ *
+ * @param[in,out] objp Destination object pointer
+ * @param[in]     source The physics snapshot we are pulling information from
+ *
+ * @details To be used when interpolating or restoring a game state.
+ * 
+ * @author J Fernandez
+ */
+void physics_apply_pstate_to_object(object* objp, const physics_snapshot& source);
+
+/**
+ *@brief create a raw pof instance
+ *
+ * @author Mike Nelson
+ */
+int obj_raw_pof_create(const char* pof_filename, const matrix* orient, const vec3d* pos);
+
 
 #endif

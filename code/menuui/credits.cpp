@@ -56,24 +56,28 @@ const char *fs2_open_credit_text =
 	"Hassan \"Karajorma\" Kazmi\n"
 	"Derek \"Kazan\" Meek\n"
 	"Nick \"phreak\" Iannetta\n"
+	"Zoe \"EatThePath\" Gibson\n"
+	"Mike \"MjnMixael\" Nelson\n"
 	"argv[-1], Backslash, Baezon\n"
 	"CommanderDJ, Cyborg, DTP\n"
 	"Echelon9, EdrickV, Eternal1\n"
 	"Flaming_Sword, Fry_Day, FUBAR\n"
 	"Hery, Iss Mneur, jg18\n"
-	"m!m, MageKing17, mrduckman\n"
-	"niffiwan, penguin, portej05\n"
-	"RandomTiger, Righteous1, Sesquipedalian\n"
-	"Shade, Sticks, Sushi\n"
-	"Swifty, UnknownPlayer, Valathil\n"
-	"Wanderer, WMCoolmon, wookieejedi\n"
-	"Yarn, z64555, zookeeper\n"
+	"Kiloku, Lafiel, m!m\n"
+	"MageKing17, mrduckman, naomimyselfandi\n"
+	"niffiwan, penguin, Phantom Hoover\n"
+	"portej05, qazwsxal, RandomTiger\n"
+	"Righteous1, Sesquipedalian, Shade\n"
+	"Sticks, Sushi, Swifty\n"
+	"UnknownPlayer, Valathil, Wanderer\n"
+	"WMCoolmon, wookieejedi, Yarn\n"
+	"z64555, zookeeper\n"
 	"\n"
 	"\n"
 	"Web Support:\n"
 	"\n"
-	"http://www.hard-light.net/\n"
-	"http://scp.indiegames.us/\n"
+	"https://www.hard-light.net/\n"
+	"https://scp.indiegames.us/\n"
 	"\n"
 	"\n"
 	"Special thanks to:\n"
@@ -110,6 +114,8 @@ const char *fs2_open_credit_text =
 	"FXAA - Copyright (c) 2010 NVIDIA Corporation. All rights reserved.\n"
 	"libpcp - Copyright (c) 2013 by Cisco Systems, Inc.\n"
 	"This software uses libraries from the FFmpeg project under the LGPLv2.1\n"
+	"Dear ImGui by Omar Cornut and contributors\n"
+	"dkjson.lua - Copyright (C) 2010-2014 David Heiko Kolf"
 	"\n"
 	"\n"
 	"\n";
@@ -199,6 +205,8 @@ static credits_screen_buttons Buttons[NUM_BUTTONS][GR_NUM_RESOLUTIONS] = {
 };
 
 char Credits_music_name[NAME_LENGTH] = "Cinema";
+char Credits_substitute_music_name[NAME_LENGTH] = "";
+
 static int	Credits_music_handle = -1;
 static UI_TIMESTAMP	Credits_music_begin_timestamp;
 
@@ -223,6 +231,8 @@ SCP_string credits_complete;
 SCP_vector<SCP_string> Credit_text_parts;
 
 static bool Credits_parsed;
+
+static bool Split_credits_lines = true;
 
 enum CreditsPosition
 {
@@ -311,6 +321,10 @@ void credits_parse_table(const char* filename)
 		{
 			stuff_string(Credits_music_name, F_NAME, NAME_LENGTH);
 		}
+		if (optional_string("$Substitute Music:"))
+		{
+			stuff_string(Credits_substitute_music_name, F_NAME, NAME_LENGTH);
+		}
 		if (optional_string("$Number of Images:"))
 		{
 			int temp;
@@ -397,18 +411,31 @@ void credits_parse_table(const char* filename)
 			}
 			else
 			{
-				// split_str doesn't take care of this.
-				charNum.clear();
+				// optionally split lines. This is default behavior but SCPUI doesn't use it
+				if (Split_credits_lines) {
 
-				// Split the string into multiple lines if it's too long
-				numLines = split_str(line.c_str(), Credits_text_coords[gr_screen.res][2], charNum, lines);
+					// split_str doesn't take care of this.
+					charNum.clear();
 
-				// Make sure that we have valid data
-				Assertion(lines.size() == (size_t)numLines, "split_str reported %d lines but vector contains " SIZE_T_ARG " entries!", numLines, lines.size());
+					// Split the string into multiple lines if it's too long
+					numLines = split_str(line.c_str(), Credits_text_coords[gr_screen.res][2], charNum, lines);
 
-				Assertion(lines.size() <= charNum.size(),
-					"Something has gone wrong while splitting strings. Got " SIZE_T_ARG " lines but only " SIZE_T_ARG " chacter lengths.",
-					lines.size(), charNum.size());
+					// Make sure that we have valid data
+					Assertion(lines.size() == (size_t)numLines,
+						"split_str reported %d lines but vector contains " SIZE_T_ARG " entries!",
+						numLines,
+						lines.size());
+
+					Assertion(lines.size() <= charNum.size(),
+						"Something has gone wrong while splitting strings. Got " SIZE_T_ARG
+						" lines but only " SIZE_T_ARG " chacter lengths.",
+						lines.size(),
+						charNum.size());
+				} else {
+					lines.push_back(line.c_str());
+					charNum.push_back((int)line.length());
+					numLines = 1;
+				}
 
 				// Now add all splitted lines to the credit text and append a newline to the end
 				for (int i = 0; i < numLines; i++)
@@ -416,6 +443,10 @@ void credits_parse_table(const char* filename)
 					credits_text.append(SCP_string(lines[i], charNum[i]));
 					credits_text.append("\n");
 				}
+
+				// clear vectors for the next round
+				lines.clear();
+				charNum.clear();
 			}
 		}
 
@@ -447,8 +478,10 @@ void credits_scp_position()
 	}
 }
 
-void credits_parse()
+void credits_parse(bool split_lines)
 {
+
+	Split_credits_lines = split_lines;
 
 	// Parse main table
 	credits_parse_table("credits.tbl");
@@ -472,12 +505,21 @@ void credits_init()
 		Credits_artwork_index = Random::next(Credits_num_images);
 	}
 
-	auto credits_wavfile_name = credits_get_music_filename(Credits_music_name);
-	if (credits_wavfile_name != nullptr) {
-		credits_load_music(credits_wavfile_name);
-	}
+	const char *credits_wavfile_name = nullptr;
 
-	// Use this id to trigger the start of music playing on the briefing screen
+	// try substitute music first
+	if (*Credits_substitute_music_name)
+		credits_wavfile_name = credits_get_music_filename(Credits_substitute_music_name);
+
+	// fall back to regular music
+	if (!credits_wavfile_name)
+		credits_wavfile_name = credits_get_music_filename(Credits_music_name);
+
+	// if we have something, play it
+	if (credits_wavfile_name)
+		credits_load_music(credits_wavfile_name);
+
+	// Use this id to trigger the start of music playing on the credits screen
 	Credits_music_begin_timestamp = ui_timestamp(Credits_music_delay);
 
 	Credits_frametime = 0;
@@ -612,7 +654,7 @@ void credits_init()
 
 	for (iter = Credit_text_parts.begin(); iter != Credit_text_parts.end(); ++iter)
 	{
-		gr_get_string_size(NULL, &temp_h, iter->c_str(), (int)iter->length());
+		gr_get_string_size(nullptr, &temp_h, iter->c_str(), 1.0f, iter->length());
 
 		h = h + temp_h;
 	}
@@ -828,12 +870,12 @@ void credits_do_frame(float  /*frametime*/)
 				length = std::numeric_limits<size_t>::max();
 			}
 
-			gr_get_string_size(&width, &height, iter->c_str() + currentPos, static_cast<int>(length));
+			gr_get_string_size(&width, &height, iter->c_str() + currentPos, 1.0f, length);
 			// Check if the text part is actually visible
 			if (Credit_position + y_offset + height > 0.0f)
 			{
-				float x = static_cast<float>((gr_screen.clip_width_unscaled - width) / 2);
-				gr_string(x, Credit_position + y_offset, iter->c_str() + currentPos, GR_RESIZE_MENU, static_cast<int>(length));
+				int x = (gr_screen.clip_width_unscaled - width) / 2;
+				gr_string(i2fl(x), Credit_position + y_offset, iter->c_str() + currentPos, GR_RESIZE_MENU, 1.0f, length);
 			}
 
 			y_offset += height;
@@ -848,7 +890,7 @@ void credits_do_frame(float  /*frametime*/)
 	Credits_last_time = temp_time;
 
 	float fl_frametime = i2fl(Credits_frametime) / 1000.f;
-	if (keyd_pressed[KEY_LSHIFT]) {
+	if (key_is_pressed(KEY_LSHIFT)) {
 		Credit_position -= fl_frametime * Credits_scroll_rate * 4.0f;
 	} else {
 		Credit_position -= fl_frametime * Credits_scroll_rate;

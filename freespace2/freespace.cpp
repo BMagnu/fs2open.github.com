@@ -42,6 +42,7 @@
 #include "autopilot/autopilot.h"
 #include "bmpman/bmpman.h"
 #include "cfile/cfile.h"
+#include "cheats_table/cheats_table.h"
 #include "cmdline/cmdline.h"
 #include "cmeasure/cmeasure.h"
 #include "cutscene/cutscenes.h"
@@ -63,6 +64,7 @@
 #include "graphics/font.h"
 #include "graphics/light.h"
 #include "graphics/matrix.h"
+#include "graphics/openxr.h"
 #include "graphics/shadows.h"
 #include "headtracking/headtracking.h"
 #include "hud/hud.h"
@@ -83,13 +85,13 @@
 #include "io/timer.h"
 #include "jumpnode/jumpnode.h"
 #include "lab/labv2.h"
-#include "lab/wmcgui.h" //So that GUI_System can be initialized
 #include "libs/discord/discord.h"
 #include "libs/ffmpeg/FFmpeg.h"
 #include "lighting/lighting.h"
 #include "lighting/lighting_profiles.h"
 #include "localization/localize.h"
 #include "math/staticrand.h"
+#include "math/curve.h"
 #include "menuui/barracks.h"
 #include "menuui/credits.h"
 #include "menuui/mainhallmenu.h"
@@ -122,16 +124,19 @@
 #include "model/modelreplace.h"
 #include "nebula/neb.h"
 #include "nebula/neblightning.h"
+#include "nebula/volumetrics.h"
 #include "network/multi.h"
 #include "network/multi_dogfight.h"
 #include "network/multi_endgame.h"
 #include "network/multi_fstracker.h"
 #include "network/multi_ingame.h"
+#include "network/multi_interpolate.h"
 #include "network/multi_log.h"
 #include "network/multi_pause.h"
 #include "network/multi_pxo.h"
 #include "network/multi_rate.h"
 #include "network/multi_respawn.h"
+#include "network/multi_turret_manager.h"
 #include "network/multi_voice.h"
 #include "network/multimsgs.h"
 #include "network/multiteamselect.h"
@@ -142,6 +147,8 @@
 #include "object/objectsnd.h"
 #include "object/waypoint.h"
 #include "observer/observer.h"
+#include "options/default_settings_table.h"
+#include "options/Ingame_Options.h"
 #include "options/Option.h"
 #include "options/OptionsManager.h"
 #include "osapi/osapi.h"
@@ -164,6 +171,7 @@
 #include "render/batching.h"
 #include "scpui/rocket_ui.h"
 #include "scripting/api/objs/gamestate.h"
+#include "scripting/api/objs/camera.h"
 #include "scripting/global_hooks.h"
 #include "scripting/hook_api.h"
 #include "scripting/scripting.h"
@@ -185,6 +193,7 @@
 #include "tracing/Monitor.h"
 #include "tracing/tracing.h"
 #include "utils/Random.h"
+#include "utils/threading.h"
 #include "weapon/beam.h"
 #include "weapon/emp.h"
 #include "weapon/flak.h"
@@ -198,6 +207,8 @@
 
 #include <cinttypes>
 #include <stdexcept>
+
+#include "imgui.h"
 
 #ifdef WIN32
 // According to AMD and NV, these _should_ force their drivers into high-performance mode
@@ -237,7 +248,7 @@ void game_show_framerate();			// draws framerate in lower right corner
 struct big_expl_flash {
 	float max_flash_intensity;	// max intensity
 	float cur_flash_intensity;	// cur intensity
-	int	flash_start;		// start time
+	TIMESTAMP	flash_start;		// start time
 };
 
 #define FRAME_FILTER 16
@@ -250,16 +261,73 @@ static SCP_string skill_level_display(int value)
 	return SCP_string(Skill_level_names(value, true));
 }
 
-static auto GameSkillOption =
-    options::OptionBuilder<int>("Game.SkillLevel", "Skill Level", "The skill level for the game.")
-        .category("Game")
-        .range(0, 4)
-        .level(options::ExpertLevel::Beginner)
-        .default_val(DEFAULT_SKILL_LEVEL)
-        .bind_to(&Game_skill_level)
-        .display(skill_level_display)
-        .importance(1)
-        .finish();
+static void parse_skill_func()
+{
+	int value;
+	stuff_int(&value);
+
+	value -= 1; // Parse 1-5 for the skill levels but convert to our internal 0-4
+	CLAMP(value, 0, 4);
+
+	Game_skill_level = value;
+}
+
+static auto GameSkillOption __UNUSED = options::OptionBuilder<int>("Game.SkillLevel",
+                     std::pair<const char*, int>{"Skill Level", 1284},
+                     std::pair<const char*, int>{"The skill level for the game.", 1700})
+                     .category(std::make_pair("Game", 1824))
+                     .range(0, 4)
+                     .level(options::ExpertLevel::Beginner)
+                     .default_func([]() { return DEFAULT_SKILL_LEVEL; })
+                     .bind_to(&Game_skill_level)
+                     .display(skill_level_display)
+                     .importance(1)
+                     .flags({options::OptionFlags::RetailBuiltinOption})
+                     .parser(parse_skill_func)
+                     .finish();
+
+bool Screenshake_enabled = true;
+
+static void parse_screenshake_func()
+{
+	bool enabled;
+	stuff_boolean(&enabled);
+	Screenshake_enabled = enabled;
+}
+
+auto ScreenShakeOption = options::OptionBuilder<bool>("Graphics.ScreenShake",
+                     std::pair<const char*, int>{"Screen Shudder Effect", 1812}, // do xstr
+                     std::pair<const char*, int>{"Toggles the screen shake effect for weapons, afterburners, and shockwaves", 1813})
+                     .category(std::make_pair("Graphics", 1825))
+                     .default_func([]() { return Screenshake_enabled; })
+                     .level(options::ExpertLevel::Advanced)
+                     .importance(55)
+                     .bind_to(&Screenshake_enabled)
+                     .parser(parse_screenshake_func)
+                     .finish();
+
+bool Allow_unfocused_pause = true;
+
+static SCP_string unfocused_pause_display(bool mode) { return mode ? XSTR("Yes", 1394) : XSTR("No", 1395); }
+
+static void parse_unfocused_pause_func()
+{
+	bool enabled;
+	stuff_boolean(&enabled);
+	Allow_unfocused_pause = enabled;
+}
+
+auto UnfocusedPauseOption = options::OptionBuilder<bool>("Game.UnfocusedPause",
+                     std::pair<const char*, int>{"Pause If Unfocused", 1814}, // do xstr
+                     std::pair<const char*, int>{"Whether or not the game automatically pauses if it loses focus", 1815})
+                     .category(std::make_pair("Game", 1824))
+                     .default_func([]() { return Allow_unfocused_pause; })
+                     .level(options::ExpertLevel::Advanced)
+                     .display(unfocused_pause_display) 
+                     .importance(55)
+                     .bind_to(&Allow_unfocused_pause)
+                     .parser(parse_unfocused_pause_func)
+                     .finish();
 
 #define EXE_FNAME			("fs2.exe")
 
@@ -323,7 +391,7 @@ int Test_begin = 0;
 extern int	Player_attacking_enabled;
 int Show_net_stats;
 
-int Pre_player_entry;
+bool Pre_player_entry = false;
 
 int	Fred_running = 0;
 bool running_unittests = false;
@@ -352,28 +420,6 @@ extern void ssm_process();
 UI_TIMESTAMP Player_died_popup_wait;
 
 UI_TIMESTAMP Multi_ping_timestamp;
-
-
-const auto OnMissionAboutToEndHook = scripting::Hook::Factory(
-	"On Mission About To End", "Called when a mission is about to end but has not run any mission-ending logic", {});
-
-const auto OnMissionEndHook = scripting::OverridableHook::Factory(
-	"On Mission End", "Called when a mission has ended", {});
-
-const auto OnStateAboutToEndHook = scripting::Hook::Factory(
-	"On State About To End", "Called when a game state is about to end but has not run any state-ending logic",
-	{
-		{"OldState", "gamestate", "The game state that has ended."},
-		{"NewState", "gamestate", "The game state that will begin next."},
-	});
-
-const auto OnStateEndHook = scripting::OverridableHook::Factory(
-	"On State End", "Called when a game state has ended",
-	{
-		{"OldState", "gamestate", "The game state that has ended."},
-		{"NewState", "gamestate", "The game state that will begin next."},
-	});
-
 
 // builtin mission list stuff
 int Game_builtin_mission_count = 92;
@@ -539,7 +585,7 @@ float Game_flash_red = 0.0f;
 float Game_flash_green = 0.0f;
 float Game_flash_blue = 0.0f;
 float Sun_spot = 0.0f;
-big_expl_flash Big_expl_flash = {0.0f, 0.0f, 0};
+big_expl_flash Big_expl_flash = {0.0f, 0.0f, TIMESTAMP::invalid()};
 
 // game shudder stuff (in ms)
 bool Game_shudder_perpetual = false;
@@ -552,7 +598,7 @@ float Game_shudder_intensity = 0.0f;			// should be between 0.0 and 100.0
 sound_env Game_sound_env;
 sound_env Game_default_sound_env = { EAX_ENVIRONMENT_BATHROOM, 0.2f, 0.2f, 1.0f };
 
-fs_builtin_mission *game_find_builtin_mission(char *filename)
+const fs_builtin_mission *game_find_builtin_mission(const char *filename)
 {
 	// look through all existing builtin missions
 	for(int idx=0; idx<Game_builtin_mission_count; idx++){
@@ -579,7 +625,7 @@ void game_flash_reset()
 	Sun_spot = 0.0f;
 	Big_expl_flash.max_flash_intensity = 0.0f;
 	Big_expl_flash.cur_flash_intensity = 0.0f;
-	Big_expl_flash.flash_start = 0;
+	Big_expl_flash.flash_start = TIMESTAMP::invalid();
 }
 
 extern float Framerate;
@@ -628,7 +674,7 @@ void big_explosion_flash(float flash)
 {
 	CLAMP(flash, 0.0f, 1.0f);
 
-	Big_expl_flash.flash_start = timestamp(1);
+	Big_expl_flash.flash_start = TIMESTAMP::immediate();
 	Big_expl_flash.max_flash_intensity = flash;
 	Big_expl_flash.cur_flash_intensity = 0.0f;
 }
@@ -646,16 +692,18 @@ DCF(sn_glare, "Sets the sun glare scale (Default is 1.7)")
 }
 
 float Supernova_last_glare = 0.0f;
-bool stars_sun_has_glare(int index);
+
 void game_sunspot_process(float frametime)
 {
 	TRACE_SCOPE(tracing::SunspotProcess);
-	int n_lights, idx;
 	float Sun_spot_goal = 0.0f;
+
+	int supernova_sun_idx = 0;
+	int supernova_light_idx = light_find_for_sun(supernova_sun_idx);
 
 	// supernova
 	auto sn_stage = supernova_stage();
-	if (sn_stage != SUPERNOVA_STAGE::NONE) {
+	if (sn_stage != SUPERNOVA_STAGE::NONE && supernova_light_idx >= 0) {
 		// sunspot differently based on supernova stage
 		switch (sn_stage) {
 		// this case is only here to make gcc happy - apparently it doesn't know we already checked for it
@@ -670,7 +718,7 @@ void game_sunspot_process(float frametime)
 			pct = supernova_sunspot_pct();
 
 			vec3d light_dir;				
-			light_get_global_dir(&light_dir, 0);
+			light_get_global_dir(&light_dir, supernova_light_idx);
 			float dot;
 			dot = vm_vec_dot( &light_dir, &Eye_matrix.vec.fvec );
 			
@@ -683,9 +731,9 @@ void game_sunspot_process(float frametime)
 			}
 
 			// draw the sun glow
-			if ( !shipfx_eye_in_shadow( &Eye_position, Viewer_obj, 0 ) )	{
+			if ( !shipfx_eye_in_shadow( &Eye_position, Viewer_obj, supernova_light_idx ) )	{
 				// draw the glow for this sun
-				stars_draw_sun_glow(0);	
+				stars_draw_sun_glow(supernova_sun_idx);
 			}
 
 			Supernova_last_glare = Sun_spot_goal;
@@ -722,25 +770,27 @@ void game_sunspot_process(float frametime)
 		Sun_spot_goal = 0.0f;
 		if ( Sun_drew )	{
 			// check sunspots for all suns
-			n_lights = light_get_global_count();
+			int n_lights = light_get_global_count();
 
 			// check
-			for(idx=0; idx<n_lights; idx++)	{
-				bool in_shadow = shipfx_eye_in_shadow(&Eye_position, Viewer_obj, idx);
+			for(int light_idx=0; light_idx<n_lights; light_idx++)	{
+				bool in_shadow = shipfx_eye_in_shadow(&Eye_position, Viewer_obj, light_idx);
 
-				if (gr_lightshafts_enabled() && !in_shadow) {
+				if (!in_shadow) {
 					vec3d light_dir;				
-					light_get_global_dir(&light_dir, idx);
+					light_get_global_dir(&light_dir, light_idx);
 
-					//only do sunglare stuff if this sun has one
-					if (stars_sun_has_glare(idx))	{
+					//only do sunglare stuff if this light source has one
+					if (light_has_glare(light_idx))	{
 						float dot = vm_vec_dot( &light_dir, &Eye_matrix.vec.fvec )*0.5f+0.5f;
 						Sun_spot_goal += (float)pow(dot,85.0f);
 					}
-				}
-				if ( !in_shadow )	{
+
 					// draw the glow for this sun
-					stars_draw_sun_glow(idx);				
+					int sun_idx = light_get_sun_index(light_idx);
+					if (sun_idx >= 0) {
+						stars_draw_sun_glow(sun_idx);
+					}
 				}
 			}
 
@@ -803,18 +853,23 @@ static void game_flash_diminish(float frametime)
 	} 
 
 	// update big_explosion_cur_flash
+	if (Big_expl_flash.flash_start.isValid()) {
 #define	TIME_UP		1500
 #define	TIME_DOWN	2500
-	int duration = TIME_UP + TIME_DOWN;
-	int time = timestamp_until(Big_expl_flash.flash_start);
-	if (time > -duration) {
-		time = -time;
-		if (time < TIME_UP) {
-			Big_expl_flash.cur_flash_intensity = Big_expl_flash.max_flash_intensity * time / (float) TIME_UP;
-		} else {
-			time -= TIME_UP;
-			Big_expl_flash.cur_flash_intensity = Big_expl_flash.max_flash_intensity * ((float) TIME_DOWN - time) / (float) TIME_DOWN;
+		int duration = TIME_UP + TIME_DOWN;
+		int time = timestamp_until(Big_expl_flash.flash_start);
+		if (time > -duration) {
+			time = -time;
+			if (time < TIME_UP) {
+				Big_expl_flash.cur_flash_intensity = Big_expl_flash.max_flash_intensity * time / (float)TIME_UP;
+			}
+			else {
+				time -= TIME_UP;
+				Big_expl_flash.cur_flash_intensity = Big_expl_flash.max_flash_intensity * ((float)TIME_DOWN - time) / (float)TIME_DOWN;
+			}
 		}
+	} else {
+		Big_expl_flash.cur_flash_intensity = 0.0f;
 	}
 	
 	if ( Use_palette_flash )	{
@@ -825,7 +880,7 @@ static void game_flash_diminish(float frametime)
 		g = fl2i( Game_flash_green*128.0f );   
 		b = fl2i( Game_flash_blue*128.0f );  
 
-		if ( Sun_spot > 0.0f && !gr_lightshafts_enabled()) {
+		if ( Sun_spot > 0.0f && gr_sunglare_enabled() && !gr_lightshafts_enabled()) {
 			r += fl2i(Sun_spot*128.0f);
 			g += fl2i(Sun_spot*128.0f);
 			b += fl2i(Sun_spot*128.0f);
@@ -851,14 +906,14 @@ static void game_flash_diminish(float frametime)
 
 void game_level_close()
 {
-	if (OnMissionAboutToEndHook->isActive())
+	if (scripting::hooks::OnMissionAboutToEndHook->isActive())
 	{
-		OnMissionAboutToEndHook->run();
+		scripting::hooks::OnMissionAboutToEndHook->run();
 	}
 
 	//WMC - this is actually pretty damn dangerous, but I don't want a modder
 	//to accidentally use an override here without realizing it.
-	if (!OnMissionEndHook->isActive() || !OnMissionEndHook->isOverride())
+	if (!scripting::hooks::OnMissionEndHook->isActive() || !scripting::hooks::OnMissionEndHook->isOverride())
 	{
 		// save player-persistent variables and containers
 		mission_campaign_save_on_close_variables();	// Goober5000
@@ -867,6 +922,7 @@ void game_level_close()
 		// De-Initialize the game subsystems
 		obj_delete_all();
 		obj_reset_colliders();
+		multi_interpolate_clear_all(); // object related
 		sexp_music_close();	// Goober5000
 		event_music_level_close();
 		game_stop_looped_sounds();
@@ -878,15 +934,14 @@ void game_level_close()
 		shockwave_level_close();
 		fireball_close();	
 		shield_hit_close();
-		mission_event_shutdown();
 		asteroid_level_close();
 		jumpnode_level_close();
 		waypoint_level_close();
 		flak_level_close();						// unload flak stuff
 		neb2_level_close();						// shutdown gaseous nebula stuff
+		volumetrics_level_close();
 		ct_level_close();
 		beam_level_close();
-		mflash_level_close();
 		mission_brief_common_reset();		// close out parsed briefing/mission stuff
 		cam_close();
 		subtitles_close();
@@ -894,7 +949,7 @@ void game_level_close()
 		particle::ParticleManager::get()->clearSources();
 		particle::close();
 		trail_level_close();
-		ship_clear_cockpit_displays();
+		ship_close_cockpit_displays(Player_ship);
 		hud_level_close();
 		hud_escort_clear_all();
 		model_instance_free_all();
@@ -912,6 +967,7 @@ void game_level_close()
 		stars_level_close();
 
 		multi_close_oo_and_ship_tracker();
+		Multi_Turret_Manager.reset(); // Cyborg, this can safely be done after everything else.  At some point, I'll probably consolidate these.
 
 		Pilot.save_savefile();
 
@@ -938,14 +994,13 @@ void game_level_close()
 		Error(LOCATION, "Scripting Mission End override is not fully supported yet.");
 	}
 
-	if (OnMissionEndHook->isActive())
+	if (scripting::hooks::OnMissionEndHook->isActive())
 	{
-		OnMissionEndHook->run();
+		scripting::hooks::OnMissionEndHook->run();
 	}
 }
 
-uint load_gl_init;
-uint load_mission_load;
+time_t load_gl_init;
 uint load_post_level_init;
 extern bool Cmdline_reuse_rng_seed;
 extern uint Cmdline_rng_seed;
@@ -957,7 +1012,7 @@ extern uint Cmdline_rng_seed;
 void game_level_init()
 {
 	game_busy( NOX("** starting game_level_init() **") );
-	load_gl_init = (uint) time(nullptr);
+	load_gl_init = time(nullptr);
 
 	// seed the random number generator in multiplayer
 	if ( Game_mode & GM_MULTIPLAYER ) {
@@ -977,10 +1032,12 @@ void game_level_init()
 
 	Key_normal_game = (Game_mode & GM_NORMAL);
 	Cheats_enabled = 0;
+	CheatUsed = "";
 
 	Game_shudder_time = TIMESTAMP::invalid();
 
 	Perspective_locked = false;
+	Slew_locked = false;
 
 	// reset the geometry map and distortion map batcher, this should to be done pretty soon in this mission load process (though it's not required)
 	batch_reset();
@@ -1016,7 +1073,7 @@ void game_level_init()
 	debris_init();
 	shield_hit_init();				//	Initialize system for showing shield hits
 
-	mission_init_goals();
+	mission_goals_and_events_init();
 	mission_log_init();
 	messages_init();
 	obj_snd_level_init();					// init object-linked persistant sounds
@@ -1029,8 +1086,7 @@ void game_level_init()
 	control_config_clear_used_status();
 	collide_ship_ship_sounds_init();
 
-	Skybox_timestamp = game_get_overall_frametime();
-	Pre_player_entry = 1;			//	Means the player has not yet entered.
+	Pre_player_entry = true;		//	Means the player has not yet entered.
 	Entry_delay_time = 0;			//	Could get overwritten in mission read.
 
 	observer_init();
@@ -1038,7 +1094,6 @@ void game_level_init()
 	ct_level_init();				// initialize ships contrails, etc
 	awacs_level_init();				// initialize AWACS
 	beam_level_init();				// initialize beam weapons
-	mflash_level_init();
 	ssm_level_init();	
 	supernova_level_init();
 	cam_init();
@@ -1058,7 +1113,8 @@ void game_level_init()
 	// campaign wasn't ended
 	Campaign_ending_via_supernova = 0;
 
-	load_gl_init = (uint) (time(nullptr) - load_gl_init);
+	load_gl_init = (time(nullptr) - load_gl_init);
+	mprintf(("Game_level_init took %ld seconds\n", load_gl_init));
 
 	//WMC - Init multi players for level
 	if (Game_mode & GM_MULTIPLAYER && Player != nullptr) {
@@ -1190,14 +1246,11 @@ void game_loading_callback(int count)
 
 	auto progress = static_cast<float>(count) / static_cast<float>(COUNT_ESTIMATE);
 	CLAMP(progress, 0.0f, 1.0f);
-	Script_system.SetHookVar("Progress", 'f', progress);
 
-	if (Script_system.RunCondition(CHA_LOADSCREEN)) {
+	if (scripting::hooks::OnLoadScreen->run(scripting::hook_param_list(scripting::hook_param("Progress", 'f', progress))) > 0) {
 		// At least one script exeuted so we probably need to do a flip now
 		do_flip = 1;
 	}
-
-	Script_system.RemHookVar("Progress");
 
 	os_defer_events_on_load_screen();
 
@@ -1254,6 +1307,13 @@ void game_loading_callback_close()
 	Game_loading_background = -1;
 
 	font::set_font(font::FONT1);
+
+	// Mission loading during multi doesn't always set a new state event
+	// so this hook will let Lua scripts know we've finished no matter what
+	// game type is currently being played.
+	if (scripting::hooks::OnLoadComplete->isActive()) {
+		scripting::hooks::OnLoadComplete->run();
+	}
 }
 
 /**
@@ -1370,26 +1430,23 @@ void game_post_level_init()
 							(The_mission.ambient_light_level >> 8) & 0xff,
 							(The_mission.ambient_light_level >> 16) & 0xff);
 
-	// If this is a red alert mission in campaign mode, bash wingman status
+	// If this is a red alert mission in campaign mode, bash status
 	if ( (Game_mode & GM_CAMPAIGN_MODE) && red_alert_mission() ) {
-		red_alert_bash_wingman_status();
+		red_alert_bash_ship_status();
 	}
 
 	freespace_mission_load_stuff();
 
 	mission_process_alt_types();
 
-	// m!m Make hv.Player available in "On Mission Start" hook
-	if(Player_obj)
-		Script_system.SetHookObject("Player", Player_obj);
-
-	// HACK: That scripting hook should be in mission so GM_IN_MISSION has to be set
-	Game_mode |= GM_IN_MISSION;
-	Script_system.RunCondition(CHA_MISSIONSTART);
-	Game_mode &= ~GM_IN_MISSION;
-
-	if (Player_obj)
-		Script_system.RemHookVar("Player");
+	if (scripting::hooks::OnMissionStart->isActive()) {
+		// HACK: That scripting hook should be in mission so GM_IN_MISSION has to be set
+		Game_mode |= GM_IN_MISSION;
+		scripting::hooks::OnMissionStart->run(scripting::hook_param_list(
+			scripting::hook_param("Player", 'o', Player_obj, Player_obj != nullptr)
+		));
+		Game_mode &= ~GM_IN_MISSION;
+	}
 }
 
 /**
@@ -1419,16 +1476,21 @@ bool game_start_mission()
 	}
 
 	game_busy( NOX("** starting mission_load() **") );
-	load_mission_load = (uint) time(nullptr);
 	bool load_success = mission_load(Game_current_mission_filename);
-	load_mission_load = (uint)(time(nullptr) - load_mission_load);
 
 	// free up memory from parsing the mission
 	stop_parse();
 
 	if ( !load_success ) {
 		if ( !(Game_mode & GM_MULTIPLAYER) ) {
-			popup(PF_BODY_BIG | PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, XSTR( "Attempt to load the mission failed", 169));
+			// the version will have been assigned before loading was aborted
+			if (!gameversion::check_at_least(The_mission.required_fso_version)) {
+				popup(PF_BODY_BIG | PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, XSTR("This mission requires FSO version %s", 1671), format_version(The_mission.required_fso_version, true).c_str());
+			}
+			// standard load failure
+			else {
+				popup(PF_BODY_BIG | PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, XSTR("Attempt to load the mission failed", 169));
+			}
 			gameseq_post_event(GS_EVENT_MAIN_MENU);
 		} else {
 			multi_quit_game(PROMPT_NONE, MULTI_END_NOTIFY_NONE, MULTI_END_ERROR_LOAD_FAIL);
@@ -1670,6 +1732,8 @@ void game_init()
 	// seed the random number generator
 	Random::seed(static_cast<unsigned int>(time(nullptr)));
 
+	ImGui::CreateContext();
+
 	Framerate_delay = 0;
 
 #ifndef NDEBUG
@@ -1693,6 +1757,8 @@ void game_init()
 
 	// init os stuff next
 	os_init( Osreg_class_name, Window_title.c_str(), Osreg_app_name );
+
+	threading::init_task_pool();
 
 #ifndef NDEBUG
 	mprintf(("FreeSpace 2 Open version: %s\n", FS_VERSION_FULL));
@@ -1719,8 +1785,11 @@ void game_init()
 
 	mod_table_init();		// load in all the mod dependent settings
 
-	// This needs to be delayed until we know if the new options are actually going to be used
-	if (Using_in_game_options) {
+	// Must be run after mod table is parsed so we know the value of Using_in_game_options
+	// Must be run before everything else inits so we can init those with the correct
+	// default values or user preferences
+ 	if (Using_in_game_options) {
+		default_settings_init(); // load in current preferred default options values, if any
 		options::OptionsManager::instance()->loadInitialValues();
 	}
 
@@ -1741,8 +1810,10 @@ void game_init()
 		Cmdline_freespace_no_music = 1;
 		Cmdline_NoFPSCap = 0;
 		Cmdline_load_all_weapons = 0;
-		Cmdline_enable_3d_shockwave = 0;
-		Fireball_use_3d_warp = false;
+
+		// Force some ingame options to off
+		Use_3D_shockwaves = false;
+		options::OptionsManager::instance()->set_ingame_binary_option("Graphics.3DShockwaves", false);
 
 		// now init the standalone server code
 		std_init_standalone();
@@ -1793,8 +1864,13 @@ void game_init()
 		// Standalone mode doesn't require graphics operations
 		sdlGraphicsOperations.reset(new SDLGraphicsOperations());
 	}
-	if (!gr_init(std::move(sdlGraphicsOperations))) {
-		os::dialogs::Message(os::dialogs::MESSAGEBOX_ERROR, "Error intializing graphics!");
+
+	int graphics_api = GR_DEFAULT;
+	if (Cmdline_vulkan)
+		graphics_api = GR_VULKAN;
+
+	if (!gr_init(std::move(sdlGraphicsOperations), graphics_api)) {
+		os::dialogs::Message(os::dialogs::MESSAGEBOX_ERROR, "Error initializing graphics!");
 		exit(1);
 		return;
 	}
@@ -1831,13 +1907,10 @@ void game_init()
 #endif
 
 	font::init();					// loads up all fonts
+	font::checkFontOptions();
 	
 	// add title screen
-	if(!Is_standalone){
-		// #Kazan# - moved this down - WATCH THESE calls - anything that shares code between standalone and normal
-		// cannot make gr_* calls in standalone mode because all gr_ calls are NULL pointers
-		game_title_screen_display();
-	}
+	game_title_screen_display();
 	
 	// attempt to load up master tracker registry info (login and password)
 	Multi_tracker_id = -1;		
@@ -1879,17 +1952,14 @@ void game_init()
 		mprintf(( "Using high memory settings...\n" ));
 		bm_set_low_mem(0);		// Use all frames of bitmaps
 	}
-
-	//WMC - Initialize my new GUI system
-	//This may seem scary, but it should take up 0 processing time and very little memory
-	//as long as it's not being used.
-	//Otherwise, it just keeps the parsed interface.tbl in memory.
-	GUI_system.ParseClassInfo("interface.tbl");
 	
+	curves_init();
 	particle::ParticleManager::init();
 
+	gamesnd_parse_soundstbl(true);	// Goober5000 - this needs to be split
 	iff_init();						// Goober5000 - this must be done even before species_defs :p
 	species_init();					// Load up the species defs - this needs to be done FIRST -- Kazan
+	gamesnd_parse_soundstbl(false);
 
 	brief_icons_init();
 
@@ -1897,14 +1967,13 @@ void game_init()
 
 	control_config_common_init();				// sets up localization stuff in the control config
 
-	parse_rank_tbl();
-	parse_traitor_tbl();
-	parse_medal_tbl();
+	rank_init();
+	traitor_init();
+	medals_init();
 
 	cutscene_init();
 	key_init();
 	mouse_init();
-	gamesnd_parse_soundstbl();
 
 	gameseq_init();
 
@@ -1921,6 +1990,7 @@ void game_init()
 
 	player_controls_init();
 	model_init();	
+	virtual_pof_init();
 
 	event_music_init();
 
@@ -1936,11 +2006,11 @@ void game_init()
 
 	animation::ModelAnimationParseHelper::parseTables();
 
-	// Initialize dynamic SEXPs. Must happen before ship init for LuaAI
-	sexp::dynamic_sexp_init();
+	// Initialize SEXPs. Must happen before ship init for LuaAI
+	sexp_startup();
 
-	obj_init();	
-	virtual_pof_init();
+	obj_init();
+	collide_init();
 	mflash_game_init();	
 	armor_init();
 	ai_init();
@@ -1969,7 +2039,9 @@ void game_init()
 	player_tips_init();				// helpful tips
 	beam_init();
 
-	lighting_profile::load_profiles();
+	cheat_table_init();
+
+	lighting_profiles::load_profiles();
 
 	// load the list of pilot pic filenames (for barracks and pilot select popup quick reference)
 	pilot_load_pic_list();	
@@ -1988,24 +2060,34 @@ void game_init()
 		main_hall_table_init();
 	}
 
-	script_init();			//WMC
-
-	// This needs to be done after the dynamic SEXP init so that our documentation contains the dynamic sexps
-	if (Cmdline_output_sexp_info) {
-		output_sexps("sexps.html");
-	}
-
 	Viewer_mode = 0;
+
+	// Now that all data has been loaded, post-process anything from game_settings before we initialize scripting
+	mod_table_post_process();
+
+	// Note: Avoid calling any non-script functions after this line and before OnGameInit->run(), lest they run before scripting has completely initialized.
+	script_init();			//WMC
 
 	// Do this before the initial scripting hook runs in case that hook does something with the UI
 	scpui::initialize();
 
 	Script_system.RunInitFunctions();
+	Scripting_game_init_run = true;	// set this immediately before OnGameInit so that OnGameInit *itself* will run
 	if (scripting::hooks::OnGameInit->isActive()) {
 		scripting::hooks::OnGameInit->run();
 	}
+	//Technically after the splash screen, but the best we can do these days. Since the override is hard-deprecated, we don't need to check it.
+	if (scripting::hooks::OnSplashScreen->isActive()) {
+		scripting::hooks::OnSplashScreen->run();
+	}
 
+	// This calls os_poll() so it should be placed after script initialization.
 	game_title_screen_close();
+
+	// A non-deprecated hook that runs after the splash screen has faded out.
+	if (scripting::hooks::OnSplashEnd->isActive()) {
+		scripting::hooks::OnSplashEnd->run();
+	}
 
 	// convert old pilot files (if they need it)
 	convert_pilot_files();
@@ -2014,16 +2096,17 @@ void game_init()
 #ifdef WITH_FFMPEG
 		libs::ffmpeg::initialize();
 #endif
-
-		libs::discord::init();
+		if (Discord_presence) {
+			libs::discord::init();
+		}
 	}
-
-	mod_table_post_process();
 
 	nprintf(("General", "Ships.tbl is : %s\n", Game_ships_tbl_valid ? "VALID" : "INVALID!!!!"));
 	nprintf(("General", "Weapons.tbl is : %s\n", Game_weapons_tbl_valid ? "VALID" : "INVALID!!!!"));
 
 	mprintf(("cfile_init() took %d\n", e1 - s1));
+
+	options::OptionsManager::instance()->printValues();
 
 	// if we are done initializing, start showing the cursor
 	io::mouse::CursorManager::get()->showCursor(true);
@@ -2510,14 +2593,14 @@ void game_set_view_clip(float  /*frametime*/)
 
 extern int Tool_enabled;
 int tst = 0;
-int tst_time = 0;
+time_t tst_time = 0;
 int tst_big = 0;
 vec3d tst_pos;
 int tst_bitmap = -1;
 float tst_x, tst_y;
 float tst_offset, tst_offset_total;
 int tst_mode;
-int tst_stamp;
+TIMESTAMP tst_stamp;
 void game_tst_frame_pre()
 {
 	// start tst
@@ -2565,10 +2648,10 @@ void game_tst_frame()
 	
 	// setup tst
 	if(tst == 2){		
-		tst_time = (int) time(nullptr);
+		tst_time = time(nullptr);
 
 		// load the tst bitmap		
-		switch((int)frand_range(0.0f, 3.0)){
+		switch(Random::next(4)){
 		case 0:			
 			tst_bitmap = bm_load("ig_jim");
 			left = 1;
@@ -2653,7 +2736,7 @@ void game_tst_frame()
 				switch(tst_mode){
 				case 0:
 					tst_mode = 1;
-					tst_stamp = timestamp(1000);
+					tst_stamp = _timestamp(1000);
 					tst_offset = fl_abs(tst_offset_total);
 					break;				
 
@@ -2665,7 +2748,7 @@ void game_tst_frame()
 		}
 	}
 }
-void game_tst_mark(object *objp, ship *shipp)
+void game_tst_mark(const object *objp, const ship *shipp)
 {
 	ship_info *sip;	
 
@@ -2765,7 +2848,7 @@ DCF(fov, "Change the field of view of the main camera")
 		if(cam == nullptr) {
 			dc_printf("Camera unavailable.");
 		} else {
-			dc_printf("Zoom factor set to %6.3f (original = 0.5, John = 0.75)\n", cam->get_fov());
+			dc_printf("Zoom factor set to %6.3f (original = 0.5, John = 0.75)\n", g3_get_hfov(cam->get_fov()));
 		}
 
 		process = false;
@@ -2950,6 +3033,15 @@ float get_shake(float intensity, int decay_time, int max_decay_time)
 	return shake;
 }
 
+bool is_screenshake_enabled()
+{
+	if (Game_mode & GM_MULTIPLAYER) {
+		return true;
+	} else {
+		return ScreenShakeOption->getValue();
+	}
+}
+
 #define FF_SCALE	10000
 extern int Wash_on;
 extern float sn_shudder;
@@ -2961,8 +3053,13 @@ void apply_view_shake(matrix *eye_orient)
 	tangles.h = 0.0f;
 	tangles.b = 0.0f;
 
-	// do shakes that only affect the HUD (unless disabled by cmdline in singleplayer)
-	if (Viewer_obj == Player_obj && (!Cmdline_no_screenshake || Game_mode & GM_MULTIPLAYER)) {
+	bool do_hud_shudder = (Viewer_obj == Player_obj);
+
+	if ((Viewer_mode & VM_CHASE) && Apply_shudder_to_chase_view)
+		do_hud_shudder = true;
+
+	// do shakes that only affect the HUD (unless disabled by some combination of game type and settings)
+	if (do_hud_shudder && is_screenshake_enabled()) {
 		physics_info *pi = &Player_obj->phys_info;
 
 		// Make eye shake due to afterburner
@@ -2973,7 +3070,7 @@ void apply_view_shake(matrix *eye_orient)
 
 		// Make eye shake due to engine wash
 		if (Player_obj->type == OBJ_SHIP && (Ships[Player_obj->instance].wash_intensity > 0) && Wash_on ) {
-			float wash_intensity = Ships[Player_obj->instance].wash_intensity;
+			float wash_intensity = Ships[Player_obj->instance].wash_intensity * Ship_info[Ships[Player_obj->instance].ship_info_index].ship_shudder_modifier;
 	
 			tangles.p += get_shake(0.07f * wash_intensity, -1, 0);
 			tangles.h += get_shake(0.07f * wash_intensity, -1, 0);
@@ -3049,21 +3146,20 @@ camid game_render_frame_setup()
 		return camid();
 	}
 
-	vec3d	eye_pos;
+	vec3d	eye_pos, eye_fvec;
 	matrix	eye_orient = vmd_identity_matrix;
-	vec3d	eye_vec;
 
 	static int last_Viewer_mode = 0;
 	static int last_Game_mode = 0;
-	static float last_FOV = Sexp_fov;
+	static fov_t last_FOV = Sexp_fov;
 
-	bool fov_changed = ((last_FOV != Sexp_fov) && (Sexp_fov > 0.0f));
+	bool fov_changed = ((Sexp_fov > 0.0f) && (!std::holds_alternative<float>(last_FOV) || std::get<float>(last_FOV) != Sexp_fov));
 
 	//First, make sure we take into account 2D Missions.
 	//These replace the normal player in-cockpit view with a topdown view.
 	if(The_mission.flags[Mission::Mission_Flags::Mission_2d])
 	{
-		if(!Viewer_mode)
+		if(!(Viewer_mode & ~VM_CAMERA_LOCKED))
 		{
 			Viewer_mode = VM_TOPDOWN;
 		}
@@ -3104,11 +3200,8 @@ camid game_render_frame_setup()
 			if (Viewer_mode & VM_OTHER_SHIP) {
 				//	View from target.
 				Viewer_obj = &Objects[Player_ai->target_objnum];
-
-				if ( Viewer_obj->type == OBJ_SHIP ) {
-					ship_get_eye( &eye_pos, &eye_orient, Viewer_obj );
-					view_from_player = 0;
-				}
+				object_get_eye( &eye_pos, &eye_orient, Viewer_obj );
+				view_from_player = 0;
 			}
 
 			if(Viewer_obj)
@@ -3120,8 +3213,8 @@ camid game_render_frame_setup()
 				//	View target from player ship.
 				Viewer_obj = nullptr;
 				eye_pos = Player_obj->pos;
-				vm_vec_normalized_dir(&eye_vec, &Objects[Player_ai->target_objnum].pos, &eye_pos);
-				vm_vector_2_matrix(&eye_orient, &eye_vec, nullptr, nullptr);
+				vm_vec_normalized_dir(&eye_fvec, &Objects[Player_ai->target_objnum].pos, &eye_pos);
+				vm_vector_2_matrix_norm(&eye_orient, &eye_fvec, nullptr, nullptr);
 				//rtn_cid = ship_get_followtarget_eye( Player_obj );
 			}
 		} else {
@@ -3152,9 +3245,8 @@ camid game_render_frame_setup()
 
 			eye_pos = Dead_camera_pos;
 
-			vm_vec_normalized_dir(&eye_vec, &Player_obj->pos, &eye_pos);
-
-			vm_vector_2_matrix(&eye_orient, &eye_vec, nullptr, nullptr);
+			vm_vec_normalized_dir(&eye_fvec, &Player_obj->pos, &eye_pos);
+			vm_vector_2_matrix_norm(&eye_orient, &eye_fvec, nullptr, nullptr);
 			Viewer_obj = nullptr;
 		}
 	} 
@@ -3188,6 +3280,12 @@ camid game_render_frame_setup()
 
 			if(Viewer_mode & VM_FREECAMERA) {
 				Viewer_obj = nullptr;
+
+				if (scripting::hooks::OnCameraSetUpHook->isActive()) {
+					scripting::hooks::OnCameraSetUpHook->run(scripting::hook_param_list(
+						scripting::hook_param("Camera", 'o', scripting::api::l_Camera.Set(cam_get_current()))));
+				}
+
 				return cam_get_current();
 			} else if (Viewer_mode & VM_EXTERNAL) {
 				matrix	tm, tm2;
@@ -3199,74 +3297,76 @@ camid game_render_frame_setup()
 
 				vm_vec_scale_add(&eye_pos, &Viewer_obj->pos, &tm.vec.fvec, Viewer_external_info.current_distance);
 
-				vm_vec_sub(&eye_vec, &Viewer_obj->pos, &eye_pos);
-				vm_vec_normalize(&eye_vec);
-				vm_vector_2_matrix(&eye_orient, &eye_vec, &Viewer_obj->orient.vec.uvec, nullptr);
+				vm_vec_normalized_dir(&eye_fvec, &Viewer_obj->pos, &eye_pos);
+				vm_vector_2_matrix_norm(&eye_orient, &eye_fvec, &Viewer_obj->orient.vec.uvec, nullptr);
 				Viewer_obj = nullptr;
 
 				//	Modify the orientation based on head orientation.
 				compute_slew_matrix(&eye_orient, &Viewer_slew_angles);
 
 			} else if ( Viewer_mode & VM_CHASE ) {
-				vec3d aim_pt;
+				if (Viewer_obj->type != OBJ_SHIP)
+					object_get_eye(&eye_pos, &eye_orient, Viewer_obj);
+				else {
+					vec3d aim_pt;
 
-				vec3d tmp_up;
-				matrix eyemat;
-				ship_get_eye(&tmp_up, &eyemat, Viewer_obj, false, false);
+					vec3d tmp_up;
+					matrix eyemat;
+					object_get_eye(&tmp_up, &eyemat, Viewer_obj, false);	// slew is computed at the bottom of the block
 
-				eye_pos = Viewer_obj->pos;
+					eye_pos = Viewer_obj->pos;
 
-				//get a point far in front of the ship to point the camera at
-				vm_vec_copy_scale(&aim_pt,&Viewer_obj->orient.vec.fvec, Viewer_obj->radius * 100.0f);
-				vm_vec_add2(&aim_pt,&Viewer_obj->pos);
+					// get a point far in front of the ship to point the camera at
+					vm_vec_copy_scale(&aim_pt, &Viewer_obj->orient.vec.fvec, Viewer_obj->radius * 100.0f);
+					vm_vec_add2(&aim_pt, &Viewer_obj->pos);
 
-				vec3d chase_view_offset = Ship_info[Ships[Viewer_obj->instance].ship_info_index].chase_view_offset;
-				if (IS_VEC_NULL(&chase_view_offset)) {
-					if (Viewer_obj == Player_obj)
-						chase_view_offset = vm_vec_new(0.0f, 0.625f * Viewer_obj->radius, -2.125f * Viewer_obj->radius);
-					else
-						chase_view_offset = vm_vec_new(0.0f, 0.75f * Viewer_obj->radius, -2.5f * Viewer_obj->radius);
+					vec3d chase_view_offset = Ship_info[Ships[Viewer_obj->instance].ship_info_index].chase_view_offset;
+					if (IS_VEC_NULL(&chase_view_offset)) {
+						if (Viewer_obj == Player_obj)
+							chase_view_offset = vm_vec_new(0.0f, 0.625f * Viewer_obj->radius, -2.125f * Viewer_obj->radius);
+						else
+							chase_view_offset = vm_vec_new(0.0f, 0.75f * Viewer_obj->radius, -2.5f * Viewer_obj->radius);
+					}
+
+					// position the camera based on the offset and external camera distance
+					vec3d rotated_chase_view_offset;
+					vm_vec_unrotate(&rotated_chase_view_offset, &chase_view_offset, &Viewer_obj->orient);
+					vm_vec_add2(&eye_pos, &rotated_chase_view_offset);
+					vm_vec_scale_add2(&eye_pos, &eyemat.vec.fvec, -Viewer_chase_info.distance);
+					vm_vec_scale_add2(&eye_pos, &eyemat.vec.uvec, 0.35f * Viewer_chase_info.distance);
+
+					vec3d old_pos;
+					main_cam->get_info(&old_pos, nullptr);
+					bool hyperspace = (Player_ship->flags[Ship::Ship_Flags::Depart_warp] && Warp_params[Player_ship->warpout_params_index].warp_type == WT_HYPERSPACE);
+					if (camera_cut || hyperspace)
+						old_pos = eye_pos;
+
+					// "push" the camera backwards in the direction of its old position based on acceleration to to make it
+					// feel like the camera is trying to keep up with the ship (based on the rigidity value)
+					vec3d velocity_comp = Viewer_obj->phys_info.vel;
+					vm_vec_scale_add2(&velocity_comp, &Viewer_obj->phys_info.acceleration, (-5.0f / (vm_vec_mag(&Viewer_obj->phys_info.rotvel) * 2.0f + 1)) * flFrametime);
+					vm_vec_scale_add2(&old_pos, &velocity_comp, flFrametime);
+					vec3d eye_mov = eye_pos - old_pos;
+					eye_mov *= exp(-Ship_info[Ships[Viewer_obj->instance].ship_info_index].chase_view_rigidity * flFrametime);
+					eye_pos -= eye_mov;
+
+					vm_vec_normalized_dir(&eye_fvec, &aim_pt, &eye_pos);
+
+					// JAS: I added the following code because if you slew up using
+					// Descent-style physics, tmp_dir and Viewer_obj->orient.vec.uvec are
+					// equal, which causes a zero-length vector in the vm_vector_2_matrix
+					// call because the up and the forward vector are the same.   I fixed
+					// it by adding in a fraction of the right vector all the time to the
+					// up vector.
+					tmp_up = eyemat.vec.uvec;
+					vm_vec_scale_add2(&tmp_up, &eyemat.vec.rvec, 0.00001f);
+
+					vm_vector_2_matrix(&eye_orient, &eye_fvec, &tmp_up, nullptr);
+					Viewer_obj = nullptr;
+
+					//	Modify the orientation based on head orientation.
+					compute_slew_matrix(&eye_orient, &Viewer_slew_angles);
 				}
-
-				//position the camera based on the offset and external camera distance
-				vec3d rotated_chase_view_offset;
-				vm_vec_unrotate(&rotated_chase_view_offset, &chase_view_offset, &Viewer_obj->orient);
-				vm_vec_add2(&eye_pos, &rotated_chase_view_offset);
-				vm_vec_scale_add2(&eye_pos, &eyemat.vec.fvec, -Viewer_chase_info.distance);
-				vm_vec_scale_add2(&eye_pos, &eyemat.vec.uvec, 0.35f * Viewer_chase_info.distance);
-
-				vec3d old_pos;
-				main_cam->get_info(&old_pos, nullptr);
-				bool hyperspace = (Player_ship->flags[Ship::Ship_Flags::Depart_warp] && Warp_params[Player_ship->warpout_params_index].warp_type == WT_HYPERSPACE);
-				if (camera_cut || hyperspace)
-					old_pos = eye_pos;
-
-				// "push" the camera backwards in the direction of its old position based on acceleration to to make it 
-				// feel like the camera is trying to keep up with the ship (based on the rigidity value)
-				vec3d velocity_comp = Viewer_obj->phys_info.vel;
-				vm_vec_scale_add2(&velocity_comp, &Viewer_obj->phys_info.acceleration, (-5.0f / (vm_vec_mag(&Viewer_obj->phys_info.rotvel) * 2.0f + 1)) * flFrametime);
-				vm_vec_scale_add2(&old_pos, &velocity_comp, flFrametime);
-				vec3d eye_mov = eye_pos - old_pos;
-				eye_mov *= exp(-Ship_info[Ships[Viewer_obj->instance].ship_info_index].chase_view_rigidity * flFrametime);
-				eye_pos -= eye_mov;
-
-				vm_vec_sub(&eye_vec, &aim_pt, &eye_pos);
-				vm_vec_normalize(&eye_vec);
-					
-				// JAS: I added the following code because if you slew up using
-				// Descent-style physics, tmp_dir and Viewer_obj->orient.vec.uvec are
-				// equal, which causes a zero-length vector in the vm_vector_2_matrix
-				// call because the up and the forward vector are the same.   I fixed
-				// it by adding in a fraction of the right vector all the time to the
-				// up vector.
-				tmp_up = eyemat.vec.uvec;
-				vm_vec_scale_add2( &tmp_up, &eyemat.vec.rvec, 0.00001f );
-
-				vm_vector_2_matrix(&eye_orient, &eye_vec, &tmp_up, nullptr);
-				Viewer_obj = nullptr;
-
-				//	Modify the orientation based on head orientation.
-				compute_slew_matrix(&eye_orient, &Viewer_slew_angles);
 			} else if ( Viewer_mode & VM_WARP_CHASE ) {
 					Warp_camera.get_info(&eye_pos, nullptr);
 
@@ -3274,9 +3374,8 @@ camid game_render_frame_setup()
 
 					vec3d warp_pos = Player_obj->pos;
 					shipp->warpout_effect->getWarpPosition(&warp_pos);
-					vm_vec_sub(&eye_vec, &warp_pos, &eye_pos);
-					vm_vec_normalize(&eye_vec);
-					vm_vector_2_matrix(&eye_orient, &eye_vec, &Player_obj->orient.vec.uvec, nullptr);
+					vm_vec_normalized_dir(&eye_fvec, &warp_pos, &eye_pos);
+					vm_vector_2_matrix_norm(&eye_orient, &eye_fvec, &Player_obj->orient.vec.uvec, nullptr);
 					Viewer_obj = nullptr;
 			} else if (Viewer_mode & VM_TOPDOWN) {
 					angles rot_angles = { PI_2, 0.0f, 0.0f };
@@ -3298,25 +3397,19 @@ camid game_render_frame_setup()
 					vm_angles_2_matrix(&eye_orient, &rot_angles);
 					Viewer_obj = nullptr;
 			} else {
-				// get an eye position based upon the correct type of object
-				switch(Viewer_obj->type){
-				case OBJ_SHIP:
-					// make a call to get the eye point for the player object
-					ship_get_eye( &eye_pos, &eye_orient, Viewer_obj );
-					break;
-				case OBJ_OBSERVER:
-					// make a call to get the eye point for the player object
-					observer_get_eye( &eye_pos, &eye_orient, Viewer_obj );					
-					break;
-				default :
-					Error(LOCATION, "Invalid Value for Viewer_obj->type. Expected values are OBJ_SHIP (1) and OBJ_OBSERVER (12), we encountered %d. Please tell a coder.\n", Viewer_obj->type);
-				}
+				// get an eye position for the player object
+				object_get_eye( &eye_pos, &eye_orient, Viewer_obj );
 			}
 		}
 	}
 
 	main_cam->set_position(&eye_pos);
 	main_cam->set_rotation(&eye_orient);
+
+	if (scripting::hooks::OnCameraSetUpHook->isActive())	{
+		scripting::hooks::OnCameraSetUpHook->run(scripting::hook_param_list(
+			scripting::hook_param("Camera", 'o', scripting::api::l_Camera.Set(Main_camera))));
+	}
 
 	// setup neb2 rendering
 	neb2_render_setup(Main_camera);
@@ -3336,7 +3429,7 @@ void clip_frame_view();
 // Does everything needed to render a frame
 extern SCP_vector<object*> effect_ships;
 extern SCP_vector<object*> transparent_objects;
-void game_render_frame( camid cid )
+void game_render_frame( camid cid, const vec3d* offset, const matrix* rot_offset, const fov_t* fov_override)
 {
 	GR_DEBUG_SCOPE("Main Frame");
 	TRACE_SCOPE(tracing::RenderMainFrame);
@@ -3344,7 +3437,7 @@ void game_render_frame( camid cid )
 	g3_start_frame(game_zbuffer);
 
 	camera *cam = cid.getCamera();
-	matrix eye_no_jitter = vmd_identity_matrix;
+
 	if(cam != nullptr)
 	{
 		vec3d eye_pos;
@@ -3352,29 +3445,40 @@ void game_render_frame( camid cid )
 
 		//Get current camera info
 		cam->get_info(&eye_pos, &eye_orient);
+		if (offset != nullptr) {
+			vec3d offset_local;
+			vm_vec_unrotate(&offset_local, offset, &eye_orient);
+			eye_pos += offset_local;
+		}
+		if (rot_offset != nullptr) {
+			//matrix m;
+			//vm_copy_transpose(&m, rot_offset);
+			eye_orient = *rot_offset * eye_orient;
+		}
 
 		//Handle jitter if not cutscene camera
-		eye_no_jitter = eye_orient;
 		if( !(Viewer_mode & VM_FREECAMERA) ) {
 			apply_view_shake(&eye_orient);
-			cam->set_rotation(&eye_orient);
+			cam->set_rotation(&eye_orient);		// this was added in 57fbb21c; see Mantis 1743; needed to make the target indicator shake
+		}
+		//If cutscene camera, handle jitter differently
+		else if ( Game_shudder_everywhere ) {
+			apply_view_shake(&eye_orient);		// the camera rotation shouldn't be modified for cutscenes or it will produce feedback
 		}
 
 		//Maybe override FOV from SEXP
 		if(Sexp_fov <= 0.0f)
-			g3_set_view_matrix(&eye_pos, &eye_orient, cam->get_fov());
+			g3_set_view_matrix(&eye_pos, &eye_orient, fov_override ? *fov_override : cam->get_fov());
 		else
-			g3_set_view_matrix(&eye_pos, &eye_orient, Sexp_fov);
+			g3_set_view_matrix(&eye_pos, &eye_orient, fov_override ? *fov_override : Sexp_fov);
 	}
 	else
 	{
-		g3_set_view_matrix(&vmd_zero_vector, &vmd_identity_matrix, VIEWER_ZOOM_DEFAULT);
+		g3_set_view_matrix(&vmd_zero_vector, &vmd_identity_matrix, fov_override ? *fov_override : VIEWER_ZOOM_DEFAULT);
 	}
 
 	if (!(Game_mode & GM_LAB)) {
-		// maybe offset the HUD (jitter stuff) and measure the 2D displacement between the player's view and ship vector
-		int dont_offset = ((Game_mode & GM_MULTIPLAYER) && (Net_player->flags & NETINFO_FLAG_OBSERVER));
-		HUD_set_offsets(Viewer_obj, !dont_offset, &eye_no_jitter);
+		HUD_set_offsets();
 	}
 
 	// for multiplayer clients, call code in Shield.cpp to set up the Shield_hit array.  Have to
@@ -3443,8 +3547,10 @@ void game_render_frame( camid cid )
 		gr_end_proj_matrix();
 		gr_end_view_matrix();
 
+		gr_override_fog(true);
 		GR_DEBUG_SCOPE("Render Cockpit");
-		ship_render_player_ship(Viewer_obj);
+		ship_render_player_ship(Viewer_obj, offset, rot_offset, fov_override);
+		gr_override_fog(false);
 
 		gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
 		gr_set_view_matrix(&Eye_position, &Eye_matrix);
@@ -3523,25 +3629,23 @@ void game_simulation_frame()
 	// blow ships up in multiplayer dogfight
 	if( MULTIPLAYER_MASTER && (Net_player != nullptr) && (Netgame.type_flags & NG_TYPE_DOGFIGHT) && (f2fl(Missiontime) >= 2.0f) && !dogfight_blown){
 		// blow up all non-player ships
-		ship_obj *moveup = GET_FIRST(&Ship_obj_list);
-		ship *shipp;
-		ship_info *sip;
-		while((moveup != END_OF_LIST(&Ship_obj_list)) && (moveup != nullptr)){
+		for (auto moveup: list_range(&Ship_obj_list)){
+			if (Objects[moveup->objnum].flags[Object::Object_Flags::Should_be_dead])
+				continue;
+
 			// bogus
 			if((moveup->objnum < 0) || (moveup->objnum >= MAX_OBJECTS) || (Objects[moveup->objnum].type != OBJ_SHIP) || (Objects[moveup->objnum].instance < 0) || (Objects[moveup->objnum].instance >= MAX_SHIPS) || (Ships[Objects[moveup->objnum].instance].ship_info_index < 0) || (Ships[Objects[moveup->objnum].instance].ship_info_index >= ship_info_size())){
-				moveup = GET_NEXT(moveup);
 				continue;
 			}
-			shipp = &Ships[Objects[moveup->objnum].instance];
-			sip = &Ship_info[shipp->ship_info_index];
+
+			auto shipp = &Ships[Objects[moveup->objnum].instance];
+			auto sip = &Ship_info[shipp->ship_info_index];
 
 			// only blow up small ships			
 			if((sip->is_small_ship()) && (multi_find_player_by_object(&Objects[moveup->objnum]) < 0) && (shipp->team == Iff_traitor) && (Objects[moveup->objnum].net_signature != STANDALONE_SHIP_SIG) ){							
 				// function to simply explode a ship where it is currently at
 				ship_self_destruct( &Objects[moveup->objnum] );					
 			}
-
-			moveup = GET_NEXT(moveup);
 		}
 
 		dogfight_blown = 1;
@@ -3609,7 +3713,7 @@ void game_simulation_frame()
 			mission_parse_eval_stuff();
 		}
 
-		// if we're an observer, move ourselves seperately from the standard physics
+		// if we're an observer, move ourselves separately from the standard physics
 		if((Game_mode & GM_MULTIPLAYER) && (Net_player->flags & NETINFO_FLAG_OBSERVER)){
 			obj_observer_move(flFrametime);
 		}
@@ -3687,7 +3791,7 @@ void game_simulation_frame()
 
 	// Kick off externally injected operations after the simulation step has finished
 	executor::OnSimulationExecutor->process();
-	Script_system.RunCondition(CHA_SIMULATION);
+	scripting::hooks::OnSimulation->run();
 }
 
 // Maybe render and process the dead-popup
@@ -3763,32 +3867,35 @@ void game_maybe_do_dead_popup(float frametime)
 }
 
 // returns true if player is actually in a game_play stats
-int game_actually_playing()
+bool game_actually_playing()
 {
 	int state;
 
 	state = gameseq_get_state();
-	if ( (state != GS_STATE_GAME_PLAY) && (state != GS_STATE_DEATH_DIED) && (state != GS_STATE_DEATH_BLEW_UP) )
-		return 0;
-	else
-		return 1;
+	return (state == GS_STATE_GAME_PLAY) || (state == GS_STATE_DEATH_DIED) || (state == GS_STATE_DEATH_BLEW_UP);
 }
 
-void game_render_hud(camid cid)
+void game_render_hud(camid cid, const fov_t* fov_override = nullptr)
 {
 	gr_reset_clip();
+
+	//Since we render things twice in VR mode, frametime needs to be halved for HUD, as the HUD uses the frametime to advance ANI's and crucially, the missile lock...
+	float frametime = openxr_enabled() ? flFrametime * 0.5f : flFrametime;
 
 	if(cid.isValid()) {
 		g3_start_frame(0);		// 0 = turn zbuffering off
 		g3_set_view( cid.getCamera() );
 
-		hud_render_preprocess(flFrametime);
+		if (fov_override)
+			g3_set_fov(*fov_override);
+
+		hud_render_preprocess(frametime);
 
 		g3_end_frame();
 	}
 
 	// main HUD rendering function
-	hud_render_all();
+	hud_render_all(frametime);
 
 	// Diminish the palette effect
 	game_flash_diminish(flFrametime);
@@ -3797,7 +3904,7 @@ void game_render_hud(camid cid)
 //100% blackness
 void game_reset_shade_frame()
 {
-	Fade_type = FI_NONE;
+	Fade_type = FadeType::FI_NONE;
 	gr_create_shader(&Viewer_shader, 0, 0, 0, 0);
 }
 
@@ -3810,33 +3917,33 @@ void game_shade_frame(float  /*frametime*/)
 
 	GR_DEBUG_SCOPE("Shade frame");
 
-	if (Fade_type != FI_NONE) {
-		Assert(Fade_start_timestamp > 0);
-		Assert(Fade_end_timestamp > 0);
-		Assert(Fade_end_timestamp > Fade_start_timestamp);
+	if (Fade_type != FadeType::FI_NONE) {
+		Assertion(Fade_start_timestamp.isValid(), "When Fade_type is set, Fade_start_timestamp must be valid!");
+		Assertion(Fade_end_timestamp.isValid(), "When Fade_type is set, Fade_end_timestamp must be valid!");
+		Assertion(timestamp_compare(Fade_end_timestamp, Fade_start_timestamp) > 0, "Fade_end_timestamp must be after Fade_start_timestamp!");
 
-		if( timestamp() >= Fade_start_timestamp ) {
+		if (timestamp_elapsed(Fade_start_timestamp)) {
 			int startAlpha = 0;
 			int endAlpha = 0;
 
-			if (Fade_type == FI_FADEOUT) {
+			if (Fade_type == FadeType::FI_FADEOUT) {
 				endAlpha = 255;
-			} else if (Fade_type == FI_FADEIN) {
+			} else if (Fade_type == FadeType::FI_FADEIN) {
 				startAlpha = 255;
 			}
 
 			int alpha = 0;
 
-			if( timestamp() < Fade_end_timestamp ) {
-				int duration = (Fade_end_timestamp - Fade_start_timestamp);
-				int elapsed = (timestamp() - Fade_start_timestamp);
+			if (!timestamp_elapsed(Fade_end_timestamp)) {
+				int duration = timestamp_get_delta(Fade_start_timestamp, Fade_end_timestamp);
+				int elapsed = timestamp_since(Fade_start_timestamp);
 
 				alpha = fl2i( (float)startAlpha + (((float)endAlpha - (float)startAlpha) / (float)duration) * (float)elapsed );
 			} else {
 				//Fade finished
-				Fade_type = FI_NONE;
-				Fade_start_timestamp = 0;
-				Fade_end_timestamp = 0;
+				Fade_type = FadeType::FI_NONE;
+				Fade_start_timestamp = TIMESTAMP::invalid();
+				Fade_end_timestamp = TIMESTAMP::invalid();
 
 				alpha = endAlpha;
 			}
@@ -3932,9 +4039,124 @@ void game_render_post_frame()
 
 #ifndef NDEBUG
 #define DEBUG_GET_TIME(x)	{ x = timer_get_fixed_seconds(); }
+#define DEBUG_TIMER_SIG fix& clear_time2, fix& render3_time1, fix& render3_time2, fix& render2_time1, fix& render2_time2, fix& flip_time1, fix& flip_time2,
+#define DEBUG_TIMER_CALL_CLEAN clear_time2, render3_time1, render3_time2, render2_time1, render2_time2, flip_time1, flip_time2
+#define DEBUG_TIMER_CALL DEBUG_TIMER_CALL_CLEAN ,
 #else
 #define DEBUG_GET_TIME(x)
+#define DEBUG_TIMER_SIG
+#define DEBUG_TIMER_CALL_CLEAN
+#define DEBUG_TIMER_CALL
 #endif
+
+void game_do_full_frame(DEBUG_TIMER_SIG const vec3d* offset = nullptr, const matrix* rot_offset = nullptr, const fov_t* fov_override = nullptr) {
+	// clear the screen to black
+	gr_reset_clip();
+	if ((Game_detail_flags & DETAIL_FLAG_CLEAR)) {
+		gr_clear();
+	}
+
+	DEBUG_GET_TIME(clear_time2)
+	DEBUG_GET_TIME(render3_time1)
+
+	camid cid = game_render_frame_setup();
+
+	game_render_frame(cid, offset, rot_offset, fov_override);
+
+	//Cutscene bars
+	clip_frame_view();
+
+	// save the eye position and orientation
+	if (Game_mode & GM_MULTIPLAYER) {
+		cid.getCamera()->get_info(&Net_player->s_info.eye_pos, &Net_player->s_info.eye_orient);
+	}
+
+	Scripting_didnt_draw_hud = 1;
+	auto scripting_param_list = scripting::hook_param_list(
+		scripting::hook_param("Self", 'o', Viewer_obj),
+		scripting::hook_param("Player", 'o', Player_obj)
+	);
+
+	if (scripting::hooks::OnHudDraw->isActive()) {
+		Scripting_didnt_draw_hud = scripting::hooks::OnHudDraw->isOverride(scripting::hooks::ObjectDrawConditions{ Viewer_obj }, scripting_param_list) ? 0 : 1;
+	}
+
+	if (Scripting_didnt_draw_hud) {
+		GR_DEBUG_SCOPE("Render HUD");
+		TRACE_SCOPE(tracing::RenderHUD);
+
+		game_render_hud(cid, fov_override);
+	}
+	HUD_reset_clip();
+
+	if ((Game_detail_flags & DETAIL_FLAG_HUD) && (!(Game_mode & GM_MULTIPLAYER) || ((Game_mode & GM_MULTIPLAYER) && !(Net_player->flags & NETINFO_FLAG_OBSERVER)))) {
+		anim_render_all(0, flFrametime);
+	}
+
+	if (!(Viewer_mode & (VM_EXTERNAL | VM_DEAD_VIEW | VM_WARP_CHASE | VM_PADLOCK_ANY)))
+	{
+		TRACE_SCOPE(tracing::RenderHUDHook);
+
+		// see also hu.isOnHudDrawCalled()
+		if (scripting::hooks::OnHudDraw->isActive()) {
+			if (fov_override)
+				g3_set_fov(*fov_override);
+
+			scripting::hooks::OnHudDraw->run(scripting::hooks::ObjectDrawConditions{ Viewer_obj }, scripting_param_list);
+		}
+	}
+
+	// check to see if we should display the death died popup
+	if (Game_mode & GM_DEAD_BLEW_UP) {
+		if (Game_mode & GM_MULTIPLAYER) {
+			// catch the situation where we're supposed to be warping out on this transition
+			if (Net_player->flags & NETINFO_FLAG_WARPING_OUT) {
+				multi_handle_sudden_mission_end();
+				send_debrief_event();
+			}
+			else if (Player_died_popup_wait.isValid() && ui_timestamp_elapsed(Player_died_popup_wait)) {
+				Player_died_popup_wait = UI_TIMESTAMP::invalid();
+				popupdead_start();
+			}
+		}
+		else {
+			if (Player_died_popup_wait.isValid() && ui_timestamp_elapsed(Player_died_popup_wait)) {
+				Player_died_popup_wait = UI_TIMESTAMP::invalid();
+				popupdead_start();
+			}
+		}
+	}
+
+	DEBUG_GET_TIME(render3_time2)
+	DEBUG_GET_TIME(render2_time1)
+
+	gr_reset_clip();
+	game_get_framerate();
+	game_show_framerate();
+	game_show_eye_pos(cid);
+
+	game_show_time_left();
+
+	gr_reset_clip();
+	game_render_post_frame();
+
+	game_tst_frame();
+
+	DEBUG_GET_TIME(render2_time2)
+
+	// maybe render and process the dead popup
+	game_maybe_do_dead_popup(flFrametime);
+
+	// If a regular popup is active, don't flip (popup code flips)
+	if (!popup_running_state()) {
+		if (fov_override)
+			g3_set_fov(*fov_override);
+
+		DEBUG_GET_TIME(flip_time1)
+		game_flip_page_and_time_it();
+		DEBUG_GET_TIME(flip_time2)
+	}
+}
 
 void game_frame(bool paused)
 {
@@ -3945,7 +4167,6 @@ void game_frame(bool paused)
 	fix flip_time1=0, flip_time2=0;
 	fix clear_time1=0, clear_time2=0;
 #endif
-	int actually_playing;
 
 #ifndef NDEBUG
 	if (Framerate_delay) {
@@ -3972,7 +4193,7 @@ void game_frame(bool paused)
 	else
 	{
 		// var to hold which state we are in
-		actually_playing = game_actually_playing();
+		bool actually_playing = game_actually_playing();
 
 		if ((!(Game_mode & GM_MULTIPLAYER)) || ((Game_mode & GM_MULTIPLAYER) && !(Net_player->flags & NETINFO_FLAG_OBSERVER))) {
 			if (!(Game_mode & GM_STANDALONE_SERVER)){
@@ -3981,7 +4202,7 @@ void game_frame(bool paused)
 		}
 	
 		if (Pre_player_entry && Missiontime > Entry_delay_time) {
-			Pre_player_entry = 0;
+			Pre_player_entry = false;
 			event_music_set_start_delay();
 		}
 
@@ -4032,101 +4253,32 @@ void game_frame(bool paused)
 	if (!Pre_player_entry) {
 		if (! (Game_mode & GM_STANDALONE_SERVER)) {
 			DEBUG_GET_TIME( clear_time1 )
-			// clear the screen to black
-			gr_reset_clip();
-			if ( (Game_detail_flags & DETAIL_FLAG_CLEAR) ) {
-				gr_clear();
+			if (!openxr_enabled()) {
+				game_do_full_frame(DEBUG_TIMER_CALL_CLEAN);
 			}
+			else {
+				// This is a VR frame. Essentially like a normal frame, but we need some additional cleanup
+				// 1. Make sure both eyes have identical random for stuff like screenshakes
+				// 2. Save and restore anything that makes a visual delta to the last frame (currently only retail stars)
+				// 3. Make sure we don't allow the rendering to mess up the lighting data
+				extern std::unique_ptr<star[]> Stars, Stars_XRBuffer;
+				int random = util::Random::next();
 
-			DEBUG_GET_TIME( clear_time2 )
-			DEBUG_GET_TIME( render3_time1 )
-			
-			camid cid = game_render_frame_setup();
+				SCP_vector<light> Lights_copy = Lights, Static_light_copy = Static_light;
 
-			game_render_frame( cid );
-			
-			//Cutscene bars
-			clip_frame_view();
+				const auto& pose = openxr_start_stereo_frame();
 
-			// save the eye position and orientation
-			if ( Game_mode & GM_MULTIPLAYER ) {
-				cid.getCamera()->get_info(&Net_player->s_info.eye_pos, &Net_player->s_info.eye_orient);
+				util::Random::seed(random);
+				game_do_full_frame(DEBUG_TIMER_CALL &pose.eyes[0].offset, &pose.eyes[0].orientation, &pose.eyes[0].zoom);
+				std::swap(Stars, Stars_XRBuffer);
+
+				Lights = std::move(Lights_copy);
+				Static_light = std::move(Static_light_copy);
+
+				util::Random::seed(random);
+				game_do_full_frame(DEBUG_TIMER_CALL &pose.eyes[1].offset, &pose.eyes[1].orientation, &pose.eyes[1].zoom);
+				std::swap(Stars, Stars_XRBuffer);
 			}
-
-			Scripting_didnt_draw_hud = 1;
-			Script_system.SetHookObject("Self", Viewer_obj);
-			Script_system.SetHookObject("Player", Player_obj);
-			if(Script_system.IsConditionOverride(CHA_HUDDRAW, Viewer_obj)) {
-				Scripting_didnt_draw_hud = 0;
-			}
-
-			if(Scripting_didnt_draw_hud) {
-				GR_DEBUG_SCOPE("Render HUD");
-				TRACE_SCOPE(tracing::RenderHUD);
-
-				game_render_hud(cid);
-			}
-			HUD_reset_clip();
-
-			if( (Game_detail_flags & DETAIL_FLAG_HUD) && (!(Game_mode & GM_MULTIPLAYER) || ((Game_mode & GM_MULTIPLAYER) && !(Net_player->flags & NETINFO_FLAG_OBSERVER))) ) {
-				anim_render_all(0, flFrametime);
-			}
-
-			if (!(Viewer_mode & (VM_EXTERNAL | VM_DEAD_VIEW | VM_WARP_CHASE | VM_PADLOCK_ANY))) 
-			{
-				TRACE_SCOPE(tracing::RenderHUDHook);
-
-				Script_system.RunCondition(CHA_HUDDRAW, Viewer_obj);
-			}
-			Script_system.RemHookVar("Self");
-			Script_system.RemHookVar("Player");
-			
-			// check to see if we should display the death died popup
-			if(Game_mode & GM_DEAD_BLEW_UP){				
-				if(Game_mode & GM_MULTIPLAYER){
-					// catch the situation where we're supposed to be warping out on this transition
-					if(Net_player->flags & NETINFO_FLAG_WARPING_OUT){
-						multi_handle_sudden_mission_end();
-						send_debrief_event();
-					} else if (Player_died_popup_wait.isValid() && ui_timestamp_elapsed(Player_died_popup_wait)) {
-						Player_died_popup_wait = UI_TIMESTAMP::invalid();
-						popupdead_start();
-					}
-				} else {
-					if (Player_died_popup_wait.isValid() && ui_timestamp_elapsed(Player_died_popup_wait)) {
-						Player_died_popup_wait = UI_TIMESTAMP::invalid();
-						popupdead_start();
-					}
-				}
-			}
-
-			DEBUG_GET_TIME( render3_time2 )
-			DEBUG_GET_TIME( render2_time1 )
-
-			gr_reset_clip();
-			game_get_framerate();
-			game_show_framerate();
-			game_show_eye_pos(cid);
-
-			game_show_time_left();
-
-			gr_reset_clip();
-			game_render_post_frame();
-
-			game_tst_frame();
-
-			DEBUG_GET_TIME( render2_time2 )
-
-			// maybe render and process the dead popup
-			game_maybe_do_dead_popup(flFrametime);
-			
-			// If a regular popup is active, don't flip (popup code flips)
-			if( !popup_running_state() ){
-				DEBUG_GET_TIME( flip_time1 )
-				game_flip_page_and_time_it();
-				DEBUG_GET_TIME( flip_time2 )
-			}
-
 		} else {
 			game_show_standalone_framerate();
 		}
@@ -4231,26 +4383,20 @@ void lock_time_compression(bool is_locked)
 
 void change_time_compression(float multiplier)
 {
-	fix modified = fl2f( f2fl(Game_time_compression) * multiplier );
-
-	Desired_time_compression = Game_time_compression = modified;
+	Desired_time_compression = fl2f( f2fl(Game_time_compression) * multiplier );
 	Time_compression_change_rate = 0;
-
-	timestamp_update_time_compression();
 }
 
-void set_time_compression(float multiplier, float change_time)
+void set_time_compression(float compression, float change_time)
 {
+	Desired_time_compression = fl2f(compression);
+
 	if(change_time <= 0.0f)
 	{
-		Game_time_compression = Desired_time_compression = fl2f(multiplier);
 		Time_compression_change_rate = 0;
-
-		timestamp_update_time_compression();
 		return;
 	}
 
-	Desired_time_compression = fl2f(multiplier);
 	Time_compression_change_rate = fl2f( f2fl(Desired_time_compression - Game_time_compression) / change_time );
 }
 
@@ -4259,6 +4405,9 @@ void game_set_frametime(int state)
 	fix thistime;
 	float frame_cap_diff;
 	bool do_pre_player_skip = false;
+
+	// sync all timestamps across the entire frame
+	timer_start_frame();
 
 	thistime = timer_get_fixed_seconds();
 
@@ -4317,18 +4466,24 @@ void game_set_frametime(int state)
 	//Handle changes in time compression
 	if(Game_time_compression != Desired_time_compression)
 	{
-		bool ascending = Desired_time_compression > Game_time_compression;
-		if(Time_compression_change_rate)
-		{
-			Game_time_compression += fixmul(Time_compression_change_rate, Frametime);
-			timestamp_update_time_compression();
-		}
-		if((ascending && Game_time_compression > Desired_time_compression)
-			|| (!ascending && Game_time_compression < Desired_time_compression))
+		if (Time_compression_change_rate == 0)
 		{
 			Game_time_compression = Desired_time_compression;
-			timestamp_update_time_compression();
 		}
+		else
+		{
+			bool ascending = Desired_time_compression > Game_time_compression;
+
+			Game_time_compression += fixmul(Time_compression_change_rate, Frametime);
+
+			if((ascending && Game_time_compression > Desired_time_compression)
+				|| (!ascending && Game_time_compression < Desired_time_compression))
+			{
+				Game_time_compression = Desired_time_compression;
+			}
+		}
+
+		timestamp_update_time_compression();
 	}
 
 	Frametime = fixmul(Frametime, Game_time_compression);
@@ -4439,13 +4594,22 @@ int game_check_key()
 	return k;
 }
 
+bool pause_if_unfocused()
+{
+	if (Using_in_game_options) {
+		return UnfocusedPauseOption->getValue();
+	} else {
+		return !Cmdline_no_unfocus_pause;
+	}
+}
+
 // same as game_check_key(), except this is used while actually in the game.  Since there
 // generally are differences between game control keys and general UI keys, makes sense to
 // have seperate functions for each case.  If you are not checking a game control while in a
 // mission, you should probably be using game_check_key() instead.
 int game_poll()
 {
-	if (!Cmdline_no_unfocus_pause)
+	if (pause_if_unfocused())
 	{
 		// If we're in a single player game, pause it.  
 		// Cyborg17 - Multiplayer *must not* have its time affected by being in the background.
@@ -4733,16 +4897,14 @@ void game_process_event( int current_state, int event )
 			memset(&Multi_ship_status_bi, 0, sizeof(button_info));
 
 			// Make hv.Player available in "On Gameplay Start" hook -zookeeper
-			if(Player_obj)
-				Script_system.SetHookObject("Player", Player_obj);
-
-			Script_system.RunCondition(CHA_GAMEPLAYSTART);
-
-			if (Player_obj)
-				Script_system.RemHookVar("Player");
+			scripting::hooks::OnGameplayStart->run(scripting::hook_param_list(
+				scripting::hook_param("Player", 'o', Player_obj, Player_obj != nullptr)
+			));
 
 			Start_time = f2fl(timer_get_approx_seconds());
 			mprintf(("Entering game at time = %7.3f\n", Start_time));
+
+			openxr_start_mission();
 			break;
 
 		case GS_EVENT_END_GAME:
@@ -5017,6 +5179,14 @@ void game_process_event( int current_state, int event )
 			gameseq_set_state(GS_STATE_SCRIPTING);
 			break;
 
+		case GS_EVENT_SCRIPTING_MISSION:
+			gameseq_push_state(GS_STATE_SCRIPTING_MISSION);
+			break;
+
+		case GS_EVENT_INGAME_OPTIONS:
+			gameseq_push_state(GS_STATE_INGAME_OPTIONS);
+			break;
+
 		default:
 			Error(LOCATION, "FSO does not have a valid game state to set. It tried to set %d", event);
 			break;
@@ -5083,22 +5253,32 @@ void game_leave_state( int old_state, int new_state )
 		case GS_STATE_EVENT_DEBUG:				
 		case GS_STATE_GAMEPLAY_HELP:
 		case GS_STATE_LAB:
+		case GS_STATE_SCRIPTING_MISSION:
+		case GS_STATE_INGAME_OPTIONS:
 			end_mission = 0;  // these events shouldn't end a mission
 			break;
 	}
 
-	if (OnStateAboutToEndHook->isActive() || OnStateEndHook->isActive())
+	// This is kind of a hack but it ensures options are logged even if scripting calls for a state change with an override active
+	if (old_state == GS_STATE_OPTIONS_MENU) {
+			if (new_state != GS_STATE_CONTROL_CONFIG && new_state != GS_STATE_HUD_CONFIG) {
+				// print the options settings again to log any player-made changes
+				options::OptionsManager::instance()->printValues();
+			}
+	}
+
+	if (scripting::hooks::OnStateAboutToEndHook->isActive() || scripting::hooks::OnStateEndHook->isActive())
 	{
 		auto script_param_list = scripting::hook_param_list(
 			scripting::hook_param("OldState", 'o', scripting::api::l_GameState.Set(scripting::api::gamestate_h(old_state))),
 			scripting::hook_param("NewState", 'o', scripting::api::l_GameState.Set(scripting::api::gamestate_h(new_state))));
 
-		if (OnStateAboutToEndHook->isActive())
-			OnStateAboutToEndHook->run(script_param_list);
+		if (scripting::hooks::OnStateAboutToEndHook->isActive())
+			scripting::hooks::OnStateAboutToEndHook->run(script_param_list);
 
-		if (OnStateEndHook->isActive() && OnStateEndHook->isOverride(script_param_list))
+		if (scripting::hooks::OnStateEndHook->isActive() && scripting::hooks::OnStateEndHook->isOverride(script_param_list))
 		{
-			OnStateEndHook->run(script_param_list);
+			scripting::hooks::OnStateEndHook->run(std::move(script_param_list));
 			return;
 		}
 	}
@@ -5230,6 +5410,7 @@ void game_leave_state( int old_state, int new_state )
 				if (Game_mode & GM_IN_MISSION) {
 					weapon_unpause_sounds();
 					audiostream_unpause_all();
+					message_resume_all();
 
 					// multi doesn't pause here so time keeps going
 					if ( !(Game_mode & GM_MULTIPLAYER) ) {
@@ -5506,9 +5687,17 @@ void game_leave_state( int old_state, int new_state )
 
 		case GS_STATE_LAB:
 			lab_close();
+			// restore default cursor and enable it --wookieejedi
+			if (!Is_standalone) {
+				io::mouse::Cursor* cursor = io::mouse::CursorManager::get()->loadCursor("cursor", true);
+				if (cursor) {
+					io::mouse::CursorManager::get()->setCurrentCursor(cursor);
+				}
+			}
 			break;
 
 		case GS_STATE_SCRIPTING:
+		case GS_STATE_SCRIPTING_MISSION:
 			// this can happen because scripting can be done in odd places.
 			if ( !going_to_briefing_state(new_state) ) {
 				common_select_close();
@@ -5519,16 +5708,27 @@ void game_leave_state( int old_state, int new_state )
 			}
 			scripting_state_close();
 			break;
+
+		case GS_STATE_INGAME_OPTIONS:
+			ingame_options_close();
+			// restore default cursor and enable it --wookieejedi
+			if (!Is_standalone) {
+				io::mouse::Cursor* cursor = io::mouse::CursorManager::get()->loadCursor("cursor", true);
+				if (cursor) {
+					io::mouse::CursorManager::get()->setCurrentCursor(cursor);
+				}
+			}
+			break;
 	}
 
 	//WMC - Now run scripting stuff
-	if (OnStateEndHook->isActive())
+	if (scripting::hooks::OnStateEndHook->isActive())
 	{
 		auto script_param_list = scripting::hook_param_list(
 			scripting::hook_param("OldState", 'o', scripting::api::l_GameState.Set(scripting::api::gamestate_h(old_state))),
 			scripting::hook_param("NewState", 'o', scripting::api::l_GameState.Set(scripting::api::gamestate_h(new_state))));
 
-		OnStateEndHook->run(script_param_list);
+		scripting::hooks::OnStateEndHook->run(std::move(script_param_list));
 	}
 }
 
@@ -5548,17 +5748,19 @@ void game_enter_state( int old_state, int new_state )
 
 	using namespace scripting::api;
 
-	Script_system.SetHookVar("OldState", 'o', l_GameState.Set(gamestate_h(old_state)));
-	Script_system.SetHookVar("NewState", 'o', l_GameState.Set(gamestate_h(new_state)));
+	auto script_param_list = scripting::hook_param_list(
+		scripting::hook_param("OldState", 'o', l_GameState.Set(gamestate_h(old_state))),
+		scripting::hook_param("NewState", 'o', l_GameState.Set(gamestate_h(new_state))));
 
-	if(Script_system.IsConditionOverride(CHA_ONSTATESTART, nullptr, nullptr, old_state)) {
-		Script_system.RunCondition(CHA_ONSTATESTART, nullptr, nullptr, old_state);
-		Script_system.RemHookVars({"OldState", "NewState"});
-		return;
+	if(scripting::hooks::OnStateStart->isActive()) {
+		if (scripting::hooks::OnStateStart->isOverride(script_param_list)) {
+			scripting::hooks::OnStateStart->run(script_param_list);
+			return;
+		}
 	}
 
 	switch (new_state) {
-		case GS_STATE_MAIN_MENU:				
+		case GS_STATE_MAIN_MENU: {
 			// in multiplayer mode, be sure that we are not doing networking anymore.
 			if ( Game_mode & GM_MULTIPLAYER ) {
 				Assert( Net_player != nullptr );
@@ -5578,13 +5780,19 @@ void game_enter_state( int old_state, int new_state )
 			}
 
 			// determine which ship this guy is currently based on
-			mission_load_up_campaign(Player);
+			// if we are seeing the main hall for the first time, allow falling back when the current campaign isn't available
+			const auto result = mission_load_up_campaign(old_state == GS_STATE_INITIAL_PLAYER_SELECT);
 
+			// if there was a problem, pass an empty main hall which will set up appropriate defaults
+			if (result != 0) {
+				main_hall_init("");
+			}
 			// if we're coming from the end of a campaign, we want to load the first mainhall of the campaign
-			// otherwise load the mainhall for the mission the player's up to
-			if (Campaign.next_mission == -1) {
+			else if (Campaign.next_mission == -1) {
 				main_hall_init(Campaign.missions[0].main_hall);
-			} else {
+			}
+			// otherwise load the mainhall for the mission the player's up to
+			else {
 				main_hall_init(Campaign.missions[Campaign.next_mission].main_hall);
 			}
 
@@ -5612,6 +5820,7 @@ void game_enter_state( int old_state, int new_state )
 				Cmdline_start_mission = nullptr;
 			}
 			break;
+		}
 
 		case GS_STATE_START_GAME:
 			main_hall_stop_music(true);
@@ -5738,6 +5947,7 @@ void game_enter_state( int old_state, int new_state )
 				if (Game_mode & GM_IN_MISSION) {
 					weapon_pause_sounds();
 					audiostream_pause_all();
+					message_pause_all();
 
 					// multi doesn't pause here so time needs to keep going
 					if ( !(Game_mode & GM_MULTIPLAYER) ) {
@@ -6075,13 +6285,18 @@ void mouse_force_pos(int x, int y);
 			break;
 
 		case GS_STATE_SCRIPTING:
+		case GS_STATE_SCRIPTING_MISSION:
 			scripting_state_init();
 			break;
+
+		case GS_STATE_INGAME_OPTIONS:
+			ingame_options_init();
 	} // end switch
 
 	//WMC - now do user scripting stuff
-	Script_system.RunCondition(CHA_ONSTATESTART, nullptr, nullptr, old_state);
-	Script_system.RemHookVars({"OldState", "NewState"});
+	if (scripting::hooks::OnStateStart->isActive()) {
+		scripting::hooks::OnStateStart->run(std::move(script_param_list));
+	}
 }
 
 // do stuff that may need to be done regardless of state
@@ -6099,7 +6314,6 @@ void game_do_state_common(int state,int no_networking)
 	}
 #endif
 	Last_frame_ui_timestamp = ui_timestamp();
-
 
 	io::mouse::CursorManager::doFrame();		// determine if to draw the mouse this frame
 	snd_do_frame();								// update sound system
@@ -6416,8 +6630,17 @@ void game_do_state(int state)
 
 		case GS_STATE_SCRIPTING:
 			game_set_frametime(GS_STATE_SCRIPTING);
-			scripting_state_do_frame(flFrametime);
+			scripting_state_do_frame(flFrametime, true);
 			break;
+
+		case GS_STATE_SCRIPTING_MISSION:
+			game_set_frametime(GS_STATE_SCRIPTING_MISSION);
+			scripting_state_do_frame(flFrametime, false);
+			break;
+
+		case GS_STATE_INGAME_OPTIONS:
+			game_set_frametime(GS_STATE_INGAME_OPTIONS);
+			ingame_options_do_frame();
 
    } // end switch(gs_current_state)
 
@@ -6503,14 +6726,14 @@ void game_spew_pof_info()
 	}
 
 	// go
-	CFILE* out = cfopen("pofspew.txt", "wt", CFILE_NORMAL, CF_TYPE_DATA);
+	CFILE* out = cfopen("pofspew.txt", "wt", CF_TYPE_DATA);
 	if(out == nullptr){
 		BAIL();
 	}	
 	int counted = 0;
 	for(int idx=0; idx<num_files; idx++, counted++){
 		sprintf(str, "%s.pof", pof_list[idx]);
-		int model_num = model_load(str, 0, nullptr);
+		int model_num = model_load(str);
 		if(model_num >= 0){
 			polymodel *pm = model_get(model_num);
 
@@ -6646,7 +6869,18 @@ int game_main(int argc, char *argv[])
 		return 0;
 	}
 
-	if (!Is_standalone) {
+	// This needs to be done after the dynamic SEXP init so that our documentation contains the dynamic sexps
+	if (Cmdline_output_sexp_info) {
+		output_sexps("sexps.html");
+	}
+
+	bool skip_intro = Disable_intro_movie;
+	if (scripting::hooks::OnIntroAboutToPlay->isActive()) {
+		skip_intro = scripting::hooks::OnIntroAboutToPlay->isOverride();
+		scripting::hooks::OnIntroAboutToPlay->run();
+	}
+
+	if (!Is_standalone && !skip_intro) {
 		movie::play("intro.mve");
 	}
 
@@ -6720,14 +6954,12 @@ void game_shutdown(void)
 	particle::close();			// close out the particle system
 	weapon_close();					// free any memory that was allocated for the weapons
 	ship_close();					// free any memory that was allocated for the ships
-	hud_free_scrollback_list();// free space allocated to store hud messages in hud scrollback
 
 	decals::shutdown();
 
 	io::mouse::CursorManager::shutdown();
 
 	mission_campaign_clear();	// clear out the campaign stuff
-	message_mission_close();	// clear loaded table data from message.tbl
 	mission_parse_close();		// clear out any extra memory that may be in use by mission parsing
 	multi_voice_close();			// close down multiplayer voice (including freeing buffers, etc)
 	multi_log_close();
@@ -6744,10 +6976,6 @@ void game_shutdown(void)
 	main_hall_close();
 	training_menu_close();
 
-	// free left over memory from table parsing
-	player_tips_close();
-
-
 	// more fundamental shutdowns begin here ----------
 
 	sexp_shutdown();				// Free SEXP resources
@@ -6758,7 +6986,6 @@ void game_shutdown(void)
 									// By this point, all things that hold Lua References must be destroyed (such as Lua SEXPs)
 
 	scpui::shutdown();				// Deinitialize the new UI system, needs to be done after scripting shutdown to make sure the resources were released properly
-
 
 	control_config_common_close();
 	io::joystick::shutdown();
@@ -6786,6 +7013,8 @@ void game_shutdown(void)
 		std_deinit_standalone();
 	}
 
+	ImGui::DestroyContext();
+
 	os_cleanup();
 
 	cfile_close();
@@ -6798,6 +7027,8 @@ void game_shutdown(void)
 	}
 
 	lcl_xstr_close();
+
+	threading::shut_down_task_pool();
 }
 
 // game_stop_looped_sounds()
@@ -6833,7 +7064,7 @@ void game_do_training_checks()
 		if ((s >= Training_context_speed_min) && (s <= Training_context_speed_max)) {
 			if (!Training_context_speed_set) {
 				Training_context_speed_set = 1;
-				Training_context_speed_timestamp = timestamp();
+				Training_context_speed_timestamp = _timestamp();
 			}
 
 		} else
@@ -6841,7 +7072,7 @@ void game_do_training_checks()
 	}
 
 	if (Training_context & TRAINING_CONTEXT_FLY_PATH) {
-		wplp = Training_context_path;
+		wplp = find_waypoint_list_at_index(Training_context_waypoint_path);
 		if (wplp->get_waypoints().size() > (uint) Training_context_goal_waypoint) {
 			i = Training_context_goal_waypoint;
 			do {
@@ -6869,12 +7100,12 @@ void game_do_training_checks()
 	if ((Players_target == UNINITIALIZED) || (Player_ai->target_objnum != Players_target) || (Player_ai->targeted_subsys != Players_targeted_subsys)) {
 		Players_target = Player_ai->target_objnum;
 		Players_targeted_subsys = Player_ai->targeted_subsys;
-		Players_target_timestamp = timestamp();
+		Players_target_timestamp = _timestamp();
 	}
 	// following added by Sesquipedalian for is_missile_locked
 	if ((Players_mlocked == UNINITIALIZED) || (Player_ai->current_target_is_locked != Players_mlocked)) {
 		Players_mlocked = Player_ai->current_target_is_locked;
-		Players_mlocked_timestamp = timestamp();
+		Players_mlocked_timestamp = _timestamp();
 	}
 
 }
@@ -6918,7 +7149,7 @@ void game_event_debug_init()
 	int e;
 
 	ED_count = 0;
-	for (e=0; e<Num_mission_events; e++) {
+	for (e=0; e<(int)Mission_events.size(); e++) {
 		game_add_event_debug_index(e | EVENT_DEBUG_EVENT, 0);
 		game_add_event_debug_sexp(Mission_events[e].formula, 1);
 	}
@@ -6985,7 +7216,7 @@ void game_show_event_debug(float  /*frametime*/)
 		if (z & EVENT_DEBUG_EVENT) {
 			z &= 0x7fff;
 			sprintf(buf, NOX("%s%s (%s) %s%d %d"), (Mission_events[z].flags & MEF_CURRENT) ? NOX("* ") : "",
-				Mission_events[z].name, Mission_events[z].result ? NOX("True") : NOX("False"),
+				Mission_events[z].name.c_str(), Mission_events[z].result ? NOX("True") : NOX("False"),
 				(Mission_events[z].chain_delay < 0) ? "" : NOX("x "),
 				Mission_events[z].repeat_count, Mission_events[z].interval);
 
@@ -7067,9 +7298,9 @@ void Time_model( int modelnum )
 		ubyte pal[768];
 		texture_map *tmap = &pm->maps[i];
 
-		for(int j = 0; j < TM_NUM_TYPES; j++)
+		for (auto &texture : tmap->textures)
 		{
-			int bmp_num = tmap->textures[j].GetOriginalTexture();
+			int bmp_num = texture.GetOriginalTexture();
 			if ( bmp_num > -1 )	{
 				bm_get_palette(bmp_num, pal, filename );		
 				int w,h;
@@ -7095,8 +7326,8 @@ void Time_model( int modelnum )
 
 	vec3d eye_to_model;
 
-	vm_vec_sub( &eye_to_model, &model_pos, &eye_pos );
-	vm_vector_2_matrix( &eye_orient, &eye_to_model, nullptr, nullptr );
+	vm_vec_normalized_dir( &eye_to_model, &model_pos, &eye_pos );
+	vm_vector_2_matrix_norm( &eye_orient, &eye_to_model, nullptr, nullptr );
 
 	fix t1 = timer_get_fixed_seconds();
 
@@ -7148,11 +7379,13 @@ void Time_model( int modelnum )
 
 	bm_get_frame_usage(&bitmaps_used_this_frame,&bitmaps_new_this_frame);
 
-	modelstats_num_polys /= framecount;
-	modelstats_num_verts /= framecount;
+	// safety check
+	if (framecount > 0) { 
+		modelstats_num_polys /= framecount;
+		modelstats_num_verts /= framecount;
 
-	Tmap_npixels /=framecount;
-
+		Tmap_npixels /=framecount;
+	}
 
 	mprintf(( "'%s' is %.2f FPS\n", pof_file, i2fl(framecount)/f2fl(t2-t1) ));
 	fprintf( Time_fp, "\"%s\"\t%.0f\t%d\t%d\t%d\t%d\n", pof_file, i2fl(framecount)/f2fl(t2-t1), bitmaps_used_this_frame, modelstats_num_polys, modelstats_num_verts, Tmap_npixels );
@@ -7172,7 +7405,7 @@ void Do_model_timings_test()
 
 	// Load them all
 	for (auto & sip : Ship_info) {
-		sip.model_num = model_load(sip.pof_file, 0, nullptr);
+		sip.model_num = model_load(sip.pof_file);
 
 		model_used[sip.model_num % MAX_POLYGON_MODELS]++;
 		model_id[sip.model_num % MAX_POLYGON_MODELS] = sip.model_num;
@@ -7460,52 +7693,158 @@ int game_hacked_data()
     return 0;
 }
 
-void game_title_screen_display()
+void game_title_screen_draw(float alpha)
 {
-	bool condhook_override = Script_system.IsConditionOverride(CHA_SPLASHSCREEN);
-	mprintf(("SCRIPTING: Splash screen overrides checked\n"));
-	if(!condhook_override)
-	{
-		Game_title_logo = bm_load(Game_logo_screen_fname[gr_screen.res]);
-		Game_title_bitmap = bm_load(Game_title_screen_fname[gr_screen.res]);
+	game_set_frametime(-1); //Set the frame time
+	
+	// clamp alpha to avoid any funny business because this is a splash screen not a comedy sketch
+	CLAMP(alpha, 0.0f, 1.0f);
 
-		if (Game_title_bitmap != -1)
-		{
-			// set
-			gr_set_bitmap(Game_title_bitmap);
+	gr_clear();
+	if (Game_title_bitmap != -1) {
+		// set
+		gr_set_bitmap(Game_title_bitmap, GR_ALPHABLEND_FILTER, GR_BITBLT_MODE_NORMAL, alpha);
 
-			// get bitmap's width and height
-			int width, height;
-			bm_get_info(Game_title_bitmap, &width, &height);
+		// get bitmap's width and height
+		int width, height;
+		bm_get_info(Game_title_bitmap, &width, &height);
 
-			// set the screen scale to the bitmap's dimensions
-			gr_set_screen_scale(width, height);
+		// set the screen scale to the bitmap's dimensions
+		gr_set_screen_scale(width, height);
 
-			// draw it in the center of the screen
-			gr_bitmap((gr_screen.max_w_unscaled - width)/2, (gr_screen.max_h_unscaled - height)/2, GR_RESIZE_MENU);
+		// draw it in the center of the screen
+		gr_bitmap((gr_screen.max_w_unscaled - width) / 2, (gr_screen.max_h_unscaled - height) / 2, GR_RESIZE_MENU);
+	}
 
-			if (Game_title_logo != -1)
-			{
-				gr_set_bitmap(Game_title_logo);
+	if (Game_title_logo != -1) {
+		gr_set_bitmap(Game_title_logo, GR_ALPHABLEND_FILTER, GR_BITBLT_MODE_NORMAL, alpha);
+			
+		// get bitmap's width and height
+		int width, height;
+		bm_get_info(Game_title_logo, &width, &height);
 
-				gr_bitmap(0, 0, GR_RESIZE_MENU);
+		// set the screen scale to the screen's dimensions
+		gr_set_screen_scale(gr_screen.max_w, gr_screen.max_h);
 
-			}
-
-			gr_reset_screen_scale();
+		if (Splash_logo_center){
+			gr_bitmap((gr_screen.max_w_unscaled - width) / 2, (gr_screen.max_h_unscaled - height) / 2, GR_RESIZE_MENU);
+		} else {
+			gr_bitmap(0, 0, GR_RESIZE_MENU);
 		}
 	}
 
-	Script_system.RunCondition(CHA_SPLASHSCREEN);
-
-	mprintf(("SCRIPTING: Splash screen conditional hook has been run\n"));
+		gr_reset_screen_scale();
 
 	// flip
 	gr_flip();
+	os_poll();
+}
+
+void game_title_screen_display()
+{
+	// anything that shares code between standalone and normal cannot make
+	// gr_* calls in standalone mode because all gr_ calls are NULL pointers
+	if (Is_standalone) {
+		return;
+	}
+	
+	//As the script system isn't available here (it needs tables loaded and stuff), the on Splash Screen hook is removed from here.
+	//It is deprecated as of 23.0 (where it was nonfunctional anyways), and will only be called for compatibility once the init has occurred after the splash screen -Lafiel
+	
+	Game_title_logo = bm_load(Game_logo_screen_fname[gr_screen.res]);
+
+	// Search splash screens for matches
+	bool any_exact_match = false;
+	bool any_range_match = false;
+	for (auto &ss : Splash_screens) {
+		if (ss.aspect_ratio_exact != 0.0f) {
+			ss.match_exact = fl_equal(ss.aspect_ratio_exact, gr_screen.clip_aspect, 0.01f);
+		}
+		if (ss.aspect_ratio_min != 0.0f || ss.aspect_ratio_max != 0.0f) {
+			bool match = true;
+			if (ss.aspect_ratio_min != 0.0f && ss.aspect_ratio_min > gr_screen.clip_aspect) {
+				match = false;
+			}
+			if (ss.aspect_ratio_max != 0.0f && ss.aspect_ratio_max < gr_screen.clip_aspect) {
+				match = false;
+			}
+			ss.match_range = match;
+		}
+		if (ss.match_exact) {
+			any_exact_match = true;
+		}
+		if (ss.match_range) {
+			any_range_match = true;
+		}
+	}
+
+	// Filter splash screens
+	Splash_screens.erase(
+		std::remove_if(Splash_screens.begin(), Splash_screens.end(), [any_exact_match, any_range_match](const splash_screen& ss) {
+			if (any_exact_match) {
+				return !ss.match_exact;
+			} else if (any_range_match) {
+				return !ss.match_range;
+			} else {
+				return !ss.is_default;
+			}
+		}), Splash_screens.end()
+	);
+
+	const char* filename;
+	if (Splash_screens.size() == 1) {
+		filename = Splash_screens[0].filename.c_str();
+	} else if (!Splash_screens.empty()) {
+		filename = Splash_screens[Random::next((int)Splash_screens.size())].filename.c_str();
+	} else {
+		filename = Game_title_screen_fname[gr_screen.res];
+	}
+	mprintf(("Loading %s as splash screen\n", filename));
+	Game_title_bitmap = bm_load(filename);
+
+	if (Splash_fade_in_time > 0) {
+		float alpha = 0.0f;
+		int timer = timer_get_milliseconds() + Splash_fade_in_time;
+
+		while (timer_get_milliseconds() < timer) {
+			game_title_screen_draw(alpha); // draw the splash image
+
+			// increment alpha to the next value
+			float a_inc = 1.0f / ((Splash_fade_in_time / 1000) / flFrametime);
+			alpha += a_inc;
+		}
+	} else {
+		game_title_screen_draw(1.0f);
+	}
+
 }
 
 void game_title_screen_close()
 {
+	// anything that shares code between standalone and normal cannot make
+	// gr_* calls in standalone mode because all gr_ calls are NULL pointers
+	if (Is_standalone) {
+		return;
+	}
+
+	if (Splash_fade_out_time > 0) {
+		//draw a starting splash image. This also reset the frametime
+		//after asset loading messed with it. Helps to keep the fade out
+		//nice and smooooooooth, baby.
+		game_title_screen_draw(1.0f);
+
+		float alpha = 1.0f;
+		int timer = timer_get_milliseconds() + Splash_fade_out_time;
+
+		while (timer_get_milliseconds() < timer) {
+			game_title_screen_draw(alpha); // draw the splash image
+
+			// decrement alpha to the next value
+			float a_inc = 1.0f / ((Splash_fade_out_time / 1000) / flFrametime);
+			alpha -= a_inc;
+		}
+	}
+
 	if (Game_title_bitmap != -1) {
 		bm_release(Game_title_bitmap);
 		Game_title_bitmap = -1;
@@ -7533,6 +7872,9 @@ void game_pause()
 {
 	// Protection against flipping out -- Kazan
 	if (!GameState_Stack_Valid())
+		return;
+
+	if (!pause_if_unfocused())
 		return;
 
 	if (!(Game_mode & GM_MULTIPLAYER)){
@@ -7599,6 +7941,9 @@ void game_pause()
 void game_unpause()
 {
 	if (!GameState_Stack_Valid())
+		return;
+
+	if (!pause_if_unfocused())
 		return;
 
 	// automatically recover from everything but an in-mission pause

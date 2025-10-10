@@ -27,6 +27,7 @@ class ship;
 struct server_item;
 class ship_info;
 class p_object;
+class ship_subsys;
 
 // two types of signatures that we can request,  permanent signatures are all below 5000.  non-permanent are above 5000
 #define MULTI_SIG_SHIP					1
@@ -44,7 +45,7 @@ extern int find_player(net_addr* addr);
 extern int find_player_no_port(net_addr *addr);
 extern int find_player_index(short player_id);
 extern int find_player_socket(PSNET_SOCKET_RELIABLE sock);	// note this is only valid to do on a server!
-extern int multi_find_player_by_object( object *obj );
+extern int multi_find_player_by_object( const object *obj );
 extern int multi_find_player_by_signature( int signature );
 extern int multi_find_player_by_callsign(const char *callsign);
 extern int multi_find_player_by_net_signature(ushort net_signature);
@@ -125,7 +126,6 @@ int multi_message_should_broadcast(int type);
 // the active game list manager functions
 active_game *multi_new_active_game( void );
 active_game *multi_update_active_games(active_game *ag);
-void multi_free_active_games();
 
 server_item *multi_new_server_item( void );
 void multi_free_server_list();
@@ -202,6 +202,12 @@ int multi_pack_unpack_rotvel(int write, ubyte *data, physics_info *pi);
 
 // Cyborg17 - Packs/unpacks desired velocity and rotational velocity.
 int multi_pack_unpack_desired_vel_and_desired_rotvel(int write, bool full_physics, ubyte* data, physics_info* pi, vec3d* local_desired_vel);
+
+// pack cur_angle data from turrets
+int multi_pack_turret_angles(ubyte* data, ship_subsys* ssp);
+
+// unpack cur_angle data from turrets
+int multi_unpack_turret_angles(ubyte* data, std::pair<bool, float>& angle1, std::pair<bool, float>& angle2);
 
 // Cyborg17 - Compresses the list of subsystems, so that we don't have to mark each one with a ubyte
 int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>* flags, SCP_vector<float>* subsys_data);

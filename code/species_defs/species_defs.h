@@ -64,10 +64,14 @@ public:
 	thrust_pair_bitmap thruster_tertiary_glow_info;
 	thrust_pair_bitmap thruster_distortion_info;
 
+	int warpin_params_index;
+	int warpout_params_index;
+
 	// the members below this comment are not parsed in species_defs.tbl
 
 	game_snd snd_flyby_fighter;
 	game_snd snd_flyby_bomber;
+	int borrows_flyby_sounds_species;
 
 	int bii_indices[MIN_BRIEF_ICONS];
 	int borrows_bii_index_species;   // species that this species borrows all of its briefing icons from, -1 if none
@@ -82,6 +86,9 @@ public:
 
 	species_info()
 	{
+		warpin_params_index = -1;
+		warpout_params_index = -1;
+
 		for (int i = 0; i < MIN_BRIEF_ICONS; i++)
 			bii_indices[i] = -1;
 
@@ -90,6 +97,7 @@ public:
 		support_ship_name[0] = '\0';
 		support_ship_index = -1;
 		borrows_bii_index_species = -1;
+		borrows_flyby_sounds_species = -1;
 	}
 };
 

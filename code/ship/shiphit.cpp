@@ -21,6 +21,8 @@
 #include "gamesnd/gamesnd.h"
 #include "globalincs/linklist.h"
 #include "hud/hud.h"
+#include "hud/hudartillery.h"
+#include "hud/hudets.h"
 #include "hud/hudmessage.h"
 #include "hud/hudtarget.h"
 #include "iff_defs/iff_defs.h"
@@ -57,15 +59,12 @@
 //#pragma optimize("", off)
 //#pragma auto_inline(off)
 
-struct ssm_firing_info;
-extern void ssm_create(object *target, vec3d *start, size_t ssm_index, ssm_firing_info *override, int team);
-
 typedef struct spark_pair {
 	int index1, index2;
 	float dist;
 } spark_pair;
 
-#define MAX_SPARK_PAIRS		((MAX_SHIP_HITS * MAX_SHIP_HITS - MAX_SHIP_HITS) / 2)
+#define MAX_SPARK_PAIRS		((MAX_SHIP_SPARKS * MAX_SHIP_SPARKS - MAX_SHIP_SPARKS) / 2)
 
 #define	BIG_SHIP_MIN_RADIUS	80.0f	//	ship radius above which death rolls can't be shortened by excessive damage
 
@@ -74,7 +73,7 @@ vec3d	Original_vec_to_deader;
 
 static bool global_damage = false;
 
-const std::shared_ptr<scripting::Hook> OnPainFlashHook = scripting::Hook::Factory(
+const std::shared_ptr<scripting::Hook<>> OnPainFlashHook = scripting::Hook<>::Factory(
 	"On Pain Flash", "Called when a pain flash is displayed.",
 	{ 		
 		{"Pain_Type", "number", "The type of pain flash displayed: shield = 0 and hull = 1."},
@@ -119,7 +118,7 @@ static bool is_subsys_destroyed(ship *shipp, int submodel)
 // cool things like blowing off the model (if applicable, writing the logs, etc)
 // NOTE: if this function is used with ship_recalc_subsys_strength, it MUST be called first. If
 // a child subsystem needs to be destroyed, the strength calculation needs to take it into account.
-void do_subobj_destroyed_stuff( ship *ship_p, ship_subsys *subsys, vec3d* hitpos, bool no_explosion )
+void do_subobj_destroyed_stuff( ship *ship_p, ship_subsys *subsys, const vec3d* hitpos, bool no_explosion )
 {
 	ship_info *sip;
 	object *ship_objp;
@@ -158,7 +157,34 @@ void do_subobj_destroyed_stuff( ship *ship_p, ship_subsys *subsys, vec3d* hitpos
 
 	// create fireballs when subsys destroy for large ships.
 	if (!(subsys->flags[Ship::Subsystem_Flags::Vanished, Ship::Subsystem_Flags::No_disappear]) && !no_explosion) {
-		if (ship_objp->radius > 100.0f) {
+		vec3d center_to_subsys;
+		vm_vec_sub(&center_to_subsys, &g_subobj_pos, &ship_objp->pos);
+
+		particle::ParticleEffectHandle death_effect;
+
+		if (psub->death_effect.isValid()) {
+			death_effect = psub->death_effect;
+		} else {
+			death_effect = sip->default_subsys_death_effect;
+		}
+
+		if (death_effect.isValid()) {
+			vec3d subsys_local_pos;
+			if (psub->subobj_num >= 0) {
+				// the vmd_zero_vector here should probably be psub->pnt instead, but this matches the behavior of get_subsystem_world_pos
+				model_instance_local_to_global_point(&subsys_local_pos, &vmd_zero_vector, ship_p->model_instance_num, psub->subobj_num);
+			} else {
+				subsys_local_pos = psub->pnt;
+			}
+			vec3d normalized_center_to_subsys = center_to_subsys;
+			vm_vec_normalize(&normalized_center_to_subsys);
+			// spawn particle effect
+			auto source = particle::ParticleManager::get()->createSource(death_effect);
+			source->setHost(make_unique<EffectHostObject>(ship_objp, subsys_local_pos, vmd_identity_matrix));
+			source->setTriggerRadius(psub->radius);
+			source->setNormal(normalized_center_to_subsys);
+			source->finishCreation();
+		} else if (ship_objp->radius > 100.0f) {
 			// number of fireballs determined by radius of subsys
 			int num_fireballs;
 			if ( psub->radius < 3 ) {
@@ -167,8 +193,7 @@ void do_subobj_destroyed_stuff( ship *ship_p, ship_subsys *subsys, vec3d* hitpos
 				 num_fireballs = 5;
 			}
 
-			vec3d temp_vec, center_to_subsys, rand_vec;
-			vm_vec_sub(&center_to_subsys, &g_subobj_pos, &ship_objp->pos);
+			vec3d temp_vec, rand_vec;
 			for (i=0; i<num_fireballs; i++) {
 				if (i==0) {
 					// make first fireball at hitpos
@@ -301,16 +326,19 @@ void do_subobj_destroyed_stuff( ship *ship_p, ship_subsys *subsys, vec3d* hitpos
 	}
 
 	// call a scripting hook for the subsystem (regardless of whether it's added to the mission log)
-	if (Script_system.IsActiveAction(CHA_ONSUBSYSDEATH)) {
-		Script_system.SetHookObject("Ship", ship_objp);
-		Script_system.SetHookVar("Subsystem", 'o', scripting::api::l_Subsystem.Set(scripting::api::ship_subsys_h(ship_objp, subsys)));
-		Script_system.RunCondition(CHA_ONSUBSYSDEATH, ship_objp);
-		Script_system.RemHookVars({"Ship", "Subsystem"});
+	if (scripting::hooks::OnSubsystemDestroyed->isActive()) {
+		scripting::hooks::OnSubsystemDestroyed->run(scripting::hooks::SubsystemDeathConditions{ ship_p, subsys },
+			scripting::hook_param_list(
+				scripting::hook_param("Ship", 'o', ship_objp),
+				scripting::hook_param("Subsystem", 'o', scripting::api::l_Subsystem.Set(scripting::api::ship_subsys_h(ship_objp, subsys)))
+			));
 	}
+
+	bool no_fireballs = psub->death_effect.isValid() || sip->default_subsys_death_effect.isValid();
 
 	if (!(subsys->flags[Ship::Subsystem_Flags::No_disappear])) {
 		if (psub->subobj_num > -1) {
-			shipfx_blow_off_subsystem(ship_objp, ship_p, subsys, &g_subobj_pos, no_explosion);
+			shipfx_blow_off_subsystem(ship_objp, ship_p, subsys, &g_subobj_pos, no_explosion, no_fireballs);
 			subsys->submodel_instance_1->blown_off = true;
 		}
 
@@ -364,7 +392,7 @@ void do_subobj_destroyed_stuff( ship *ship_p, ship_subsys *subsys, vec3d* hitpos
 // input:	damaging_objp		=>	object pointer responsible for damage
 //	exit:		-1		=>	no weapon type is associated with damage object
 //				>=0	=>	weapon type associated with damage object
-static int shiphit_get_damage_weapon(object *damaging_objp)
+static int shiphit_get_damage_weapon(const object *damaging_objp)
 {
 	int weapon_info_index = -1;
 
@@ -377,9 +405,7 @@ static int shiphit_get_damage_weapon(object *damaging_objp)
 			weapon_info_index = shockwave_get_weapon_index(damaging_objp->instance);
 			break;
 		case OBJ_BEAM:
-			if (Beams_use_damage_factors) {
-				weapon_info_index = beam_get_weapon_info_index(damaging_objp);
-			}
+			weapon_info_index = beam_get_weapon_info_index(damaging_objp);
 			break;
 		default:
 			weapon_info_index = -1;
@@ -392,7 +418,7 @@ static int shiphit_get_damage_weapon(object *damaging_objp)
 
 //	Return range at which this object can apply damage.
 //	Based on object type and subsystem type.
-static float subsys_get_range(object *other_obj, ship_subsys *subsys)
+static float subsys_get_range(const object *other_obj, const ship_subsys *subsys)
 {
 	float	range;
 
@@ -420,7 +446,7 @@ typedef struct {
 // fundamentally similar to do_subobj_hit_stuff, but without many checks inherent to damaging instead of healing
 // most notably this does NOT return "remaining healing" (healing always carries), this is will NOT subtract from hull healing
 
-void do_subobj_heal_stuff(object* ship_objp, object* other_obj, vec3d* hitpos, int submodel_num, float healing)
+std::pair<std::optional<ConditionData>, float> do_subobj_heal_stuff(const object* ship_objp, const object* other_obj, const vec3d* hitpos, int submodel_num, float healing)
 {
 	vec3d			g_subobj_pos;
 	float			healing_left;
@@ -435,6 +461,8 @@ void do_subobj_heal_stuff(object* ship_objp, object* other_obj, vec3d* hitpos, i
 	Assertion(other_obj, "do_subobj_heal_stuff wasn't given a healing object! (weapon/beam/shockwave)");
 
 	ship_p = &Ships[ship_objp->instance];
+
+	std::optional<ConditionData> subsys_impact = std::nullopt;
 
 	if (other_obj->type == OBJ_SHOCKWAVE)
 	{
@@ -531,22 +559,23 @@ void do_subobj_heal_stuff(object* ship_objp, object* other_obj, vec3d* hitpos, i
 		ship_subsys* subsystem;
 
 		int	min_index = -1;
-
-		if (Damage_impacted_subsystem_first && subsys_hit_first > -1) {
-			min_index = subsys_hit_first;
-
-			subsys_hit_first = -1;
-		}
-		else {
+		{
 			float	min_dist = 9999999.9f;
 
-			for (i = 0; i < count; i++) {
+			// find the closest subsystem
+			for (i=0; i<count; i++) {
 				if (subsys_list[i].dist < min_dist) {
 					min_dist = subsys_list[i].dist;
 					min_index = i;
 				}
 			}
 			Assert(min_index != -1);
+		}
+
+		// if the closest system does *not* override a submodel impact, and we have a submodel impact, use it instead
+		if (Damage_impacted_subsystem_first && subsys_hit_first >= 0 && !subsys_list[min_index].ptr->system_info->flags[Model::Subsystem_Flags::Override_submodel_impact]) {
+			min_index = subsys_hit_first;
+			subsys_hit_first = -1;	// prevent the submodel impact from taking priority on the next loop iteration
 		}
 
 		subsystem = subsys_list[min_index].ptr;
@@ -565,7 +594,7 @@ void do_subobj_heal_stuff(object* ship_objp, object* other_obj, vec3d* hitpos, i
 		if ((j == 0) && (!(parent_armor_flags & SAF_IGNORE_SS_ARMOR))) {
 			if (subsystem->armor_type_idx > -1)
 			{
-				healing_left = Armor_types[subsystem->armor_type_idx].GetDamage(healing_left, dmg_type_idx, 1.0f); 
+				healing_left = Armor_types[subsystem->armor_type_idx].GetDamage(healing_left, dmg_type_idx, 1.0f, other_obj->type == OBJ_BEAM);
 			}
 		}
 
@@ -596,13 +625,22 @@ void do_subobj_heal_stuff(object* ship_objp, object* other_obj, vec3d* hitpos, i
 		// if we're not in CLIENT_NODAMAGE multiplayer mode (which is a the NEW way of doing things)
 		if ((heal_to_apply > 0.1f) && !(MULTIPLAYER_CLIENT))
 		{
-			
 			healing_left -= (heal_to_apply);
 
 			//Apply armor to healing
 			if (subsystem->armor_type_idx >= 0)
 				// Nuke: this will finally factor it in to heal_to_apply and i wont need to factor it in anywhere after this
-				heal_to_apply = Armor_types[subsystem->armor_type_idx].GetDamage(heal_to_apply, dmg_type_idx, 1.0f);
+				heal_to_apply = Armor_types[subsystem->armor_type_idx].GetDamage(heal_to_apply, dmg_type_idx, 1.0f, other_obj->type == OBJ_BEAM);
+
+			if (j == 0) {
+				subsys_impact = ConditionData {
+					ImpactCondition(subsystem->armor_type_idx),
+					HitType::SUBSYS,
+					heal_to_apply,
+					subsystem->current_hits,
+					subsystem->max_hits,
+				};
+			}
 
 			subsystem->current_hits += heal_to_apply;
 
@@ -628,6 +666,7 @@ void do_subobj_heal_stuff(object* ship_objp, object* other_obj, vec3d* hitpos, i
 				break;
 		}
 	}
+	return std::make_pair(subsys_impact, healing);
 }
 
 // do_subobj_hit_stuff() is called when a collision is detected between a ship and something
@@ -664,7 +703,7 @@ void do_subobj_heal_stuff(object* ship_objp, object* other_obj, vec3d* hitpos, i
 //
 //WMC - hull_should_apply armor means that the initial subsystem had no armor, so the hull should apply armor instead.
 
-float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, int submodel_num, float damage, bool *hull_should_apply_armor)
+std::pair<std::optional<ConditionData>, float> do_subobj_hit_stuff(object *ship_objp, const object *other_obj, const vec3d *hitpos, int submodel_num, float damage, bool *hull_should_apply_armor, float hit_dot, bool shield_hit)
 {
 	vec3d			g_subobj_pos;
 	float				damage_left, damage_if_hull;
@@ -674,6 +713,10 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 	int				subsys_hit_first = -1; // the subsys which should be hit first and take most of the damage; index into subsys_list
 	vec3d			hitpos2;
 	float			ss_dif_scale = 1.0f; // Nuke: Set a base dificulty scale for compatibility
+	
+	const bool other_obj_is_weapon = other_obj && other_obj->type == OBJ_WEAPON;
+	const bool other_obj_is_shockwave = other_obj && other_obj->type == OBJ_SHOCKWAVE;
+	const bool other_obj_is_beam = other_obj && other_obj->type == OBJ_BEAM;
 
 	//WMC - first, set this to damage if it isn't NULL, in case we want to return with no damage to subsystems
 	if(hull_should_apply_armor != NULL) {
@@ -685,20 +728,22 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 
 	ship_p = &Ships[ship_objp->instance];
 
+	std::optional<ConditionData> subsys_impact = std::nullopt;
+
 	//	Don't damage player subsystems in a training mission.
 	if ( The_mission.game_type & MISSION_TYPE_TRAINING ) {
 		if (ship_objp == Player_obj){
-			return damage;
+			return std::make_pair(subsys_impact, damage);
 		}
 	}
 
 	//	Shockwave damage is applied like weapon damage.  It gets consumed.
-	if ((other_obj != NULL) && (other_obj->type == OBJ_SHOCKWAVE))	// Goober5000 check for NULL
+	if (other_obj_is_shockwave)
 	{
 		//	MK, 9/2/99.  Shockwaves do zero subsystem damage on small ships.
 		// Goober5000 - added back in via flag
 		if ((Ship_info[ship_p->ship_info_index].is_small_ship()) && !(The_mission.ai_profile->flags[AI::Profile_Flags::Shockwaves_damage_small_ship_subsystems]))
-			return damage;
+			return std::make_pair(subsys_impact, damage);
 		else {
 			damage_left = shockwave_get_damage(other_obj->instance) / 4.0f;
 			damage_if_hull = damage_left;
@@ -712,13 +757,32 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 
 	// scale subsystem damage if appropriate
 	weapon_info_index = shiphit_get_damage_weapon(other_obj);	// Goober5000 - a NULL other_obj returns -1
-	if ((weapon_info_index >= 0) && ((other_obj->type == OBJ_WEAPON) ||
-				(Beams_use_damage_factors && (other_obj->type == OBJ_BEAM)))) {
-		if ( Weapon_info[weapon_info_index].wi_flags[Weapon::Info_Flags::Training] ) {
-			return damage_left;
+	if ((weapon_info_index >= 0) && other_obj_is_weapon) {
+		weapon* wp = &Weapons[other_obj->instance];
+		weapon_info* wip = &Weapon_info[weapon_info_index];
+
+		if ( wip->wi_flags[Weapon::Info_Flags::Training] ) {
+			return std::make_pair(subsys_impact, damage_left);
 		}
-		damage_left *= Weapon_info[weapon_info_index].subsystem_factor;
-		damage_if_hull *= Weapon_info[weapon_info_index].armor_factor;
+
+		damage_left *= wip->subsystem_factor;
+		damage_left *= wip->weapon_hit_curves.get_output(weapon_info::WeaponHitCurveOutputs::SUBSYS_DAMAGE_MULT, std::forward_as_tuple(*wp, *ship_objp, hit_dot), &wp->modular_curves_instance);
+		damage_if_hull *= wip->armor_factor;
+		damage_if_hull *= wip->weapon_hit_curves.get_output(weapon_info::WeaponHitCurveOutputs::HULL_DAMAGE_MULT, std::forward_as_tuple(*wp, *ship_objp, hit_dot), &wp->modular_curves_instance);
+	} else if ((weapon_info_index >= 0) && other_obj_is_beam) {
+		weapon_info* wip = &Weapon_info[weapon_info_index];
+
+		if (Beams_use_damage_factors) {
+			if ( wip->wi_flags[Weapon::Info_Flags::Training] ) {
+				return std::make_pair(subsys_impact, damage_left);
+			}
+			damage_left *= wip->subsystem_factor;
+			damage_if_hull *= wip->armor_factor;
+		}
+
+		beam* b = &Beams[other_obj->instance];
+		damage_left *= wip->beam_hit_curves.get_output(weapon_info::BeamHitCurveOutputs::SUBSYS_DAMAGE_MULT, std::forward_as_tuple(*b, *other_obj), &b->modular_curves_instance);
+		damage_if_hull *= wip->beam_hit_curves.get_output(weapon_info::BeamHitCurveOutputs::HULL_DAMAGE_MULT, std::forward_as_tuple(*b, *other_obj), &b->modular_curves_instance);
 	}
 
 
@@ -733,8 +797,8 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 	if (!global_damage) {
 		auto subsys = ship_get_subsys_for_submodel(ship_p, submodel_num);
 
-		if ( !(Ship_info[ship_p->ship_info_index].flags[Ship::Info_Flags::No_impact_debris]) && 
-			( subsys == nullptr || !(subsys->system_info->flags[Model::Subsystem_Flags::No_impact_debris]) ) ) {
+		if ( !(Ship_info[ship_p->ship_info_index].flags[Ship::Info_Flags::Disable_all_generic_impact_debris]) && 
+			( subsys == nullptr || !(subsys->system_info->flags[Model::Subsystem_Flags::Disable_all_generic_impact_debris]) ) ) {
 			create_generic_debris(ship_objp, hitpos, 1.0f, 5.0f, 1.0f, false);
 		}
 	}
@@ -763,7 +827,7 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 					}
 				}
 				subsys->current_hits = 0.0f;
-				do_subobj_destroyed_stuff( ship_p, subsys, hitpos );
+				do_subobj_destroyed_stuff( ship_p, subsys, global_damage ? nullptr : hitpos );
 				continue;
 			} else {
 				continue;
@@ -856,14 +920,10 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 		ship_subsys	*subsystem;
 
 		int	min_index = -1;
-
-		if (Damage_impacted_subsystem_first && subsys_hit_first > -1) {
-			min_index = subsys_hit_first;
-
-			subsys_hit_first = -1;
-		} else {
+		{
 			float	min_dist = 9999999.9f;
 
+			// find the closest subsystem
 			for (i=0; i<count; i++) {
 				if (subsys_list[i].dist < min_dist) {
 					min_dist = subsys_list[i].dist;
@@ -871,6 +931,12 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 				}
 			}
 			Assert(min_index != -1);
+		}
+
+		// if the closest system does *not* override a submodel impact, and we have a submodel impact, use it instead
+		if (Damage_impacted_subsystem_first && subsys_hit_first >= 0 && !subsys_list[min_index].ptr->system_info->flags[Model::Subsystem_Flags::Override_submodel_impact]) {
+			min_index = subsys_hit_first;
+			subsys_hit_first = -1;	// prevent the submodel impact from taking priority on the next loop iteration
 		}
 
 		float	damage_to_apply = 0.0f;
@@ -890,19 +956,20 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 		if ( (j == 0) && (!(parent_armor_flags & SAF_IGNORE_SS_ARMOR))) {
 			if(subsystem->armor_type_idx > -1)
 			{
-				damage = Armor_types[subsystem->armor_type_idx].GetDamage(damage, dmg_type_idx, 1.0f); // Nuke: I don't think we need to apply damage sacaling to this one, using 1.0f
+				damage = Armor_types[subsystem->armor_type_idx].GetDamage(damage, dmg_type_idx, 1.0f, other_obj_is_beam); // Nuke: I don't think we need to apply damage sacaling to this one, using 1.0f
 				if(hull_should_apply_armor) {
 					*hull_should_apply_armor = false;
 				}
 			}
 		}
+
 		//	HORRIBLE HACK!
 		//	MK, 9/4/99
 		//	When Helios bombs are dual fired against the Juggernaut in sm3-01 (FS2), they often
 		//	miss their target.  There is code dating to FS1 in the collision code to detect that a bomb or
 		//	missile has somehow missed its target.  It gets its lifeleft set to 0.1 and then it detonates.
 		//	Unfortunately, the shockwave damage was cut by 4 above.  So boost it back up here.
-		if ((weapon_info_index >= 0) && (dist < 10.0f) && ((other_obj) && (other_obj->type == OBJ_SHOCKWAVE))) {	// Goober5000 check for NULL
+		if ((weapon_info_index >= 0) && (dist < 10.0f) && other_obj_is_shockwave) {	// Goober5000 check for NULL
 			damage_left *= 4.0f * Weapon_info[weapon_info_index].subsystem_factor;
 			damage_if_hull *= 4.0f * Weapon_info[weapon_info_index].armor_factor;			
 		}
@@ -926,6 +993,12 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 			if (ship_objp->flags[Object::Object_Flags::Player_ship]){
 				ss_dif_scale = The_mission.ai_profile->subsys_damage_scale[Game_skill_level];
 			}
+
+			// maybe modify damage FROM player ships
+			if (other_obj && other_obj->parent >= 0 && Objects[other_obj->parent].signature == other_obj->parent_sig) {
+				if (Objects[other_obj->parent].flags[Object::Object_Flags::Player_ship])
+					ss_dif_scale *= The_mission.ai_profile->player_damage_inflicted_scale[Game_skill_level];
+			}
 		
 			// Goober5000 - subsys guardian
 			if (subsystem->subsys_guardian_threshold > 0)
@@ -936,7 +1009,7 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 					damage_to_apply = subsystem->current_hits - min_subsys_strength;
 
 					// make sure damage is positive
-					damage_to_apply = MAX(0, damage_to_apply);
+					damage_to_apply = MAX(0.0f, damage_to_apply);
 				}
 			}
 
@@ -946,9 +1019,9 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 
 			// if this subsystem doesn't carry damage then subtract it off of our total return
 			if (subsystem->system_info->flags[Model::Subsystem_Flags::Carry_no_damage]) {
-				if ((other_obj->type != OBJ_SHOCKWAVE) || (!(subsystem->system_info->flags[Model::Subsystem_Flags::Carry_shockwave]))) {
+				if (!other_obj_is_shockwave || !(subsystem->system_info->flags[Model::Subsystem_Flags::Carry_shockwave])) {
 					float subsystem_factor = 0.0f;
-					if ((weapon_info_index >= 0) && ((other_obj->type == OBJ_WEAPON) || (other_obj->type == OBJ_SHOCKWAVE))) {
+					if ((weapon_info_index >= 0) && (other_obj_is_weapon || other_obj_is_shockwave)) {
 						if (subsystem->flags[Ship::Subsystem_Flags::Damage_as_hull]) {
 							subsystem_factor = Weapon_info[weapon_info_index].armor_factor;
 						} else {
@@ -966,9 +1039,19 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 			//Apply armor to damage
 			if (subsystem->armor_type_idx >= 0) {
 				// Nuke: this will finally factor it in to damage_to_apply and i wont need to factor it in anywhere after this
-				damage_to_apply = Armor_types[subsystem->armor_type_idx].GetDamage(damage_to_apply, dmg_type_idx, ss_dif_scale);
+				damage_to_apply = Armor_types[subsystem->armor_type_idx].GetDamage(damage_to_apply, dmg_type_idx, ss_dif_scale, other_obj_is_beam);
 			} else { // Nuke: no get damage call to apply difficulty scaling, so factor it in now
 				damage_to_apply *= ss_dif_scale;
+			}
+
+			if (j == 0 && !shield_hit) {
+				subsys_impact = ConditionData {
+					ImpactCondition(subsystem->armor_type_idx),
+					HitType::SUBSYS,
+					damage_to_apply,
+					subsystem->current_hits,
+					subsystem->max_hits,
+				};
 			}
 
 			subsystem->current_hits -= damage_to_apply;
@@ -990,7 +1073,7 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 
 			// multiplayer clients never blow up subobj stuff on their own
 			if ( (subsystem->current_hits <= 0.0f) && !MULTIPLAYER_CLIENT) {
-				do_subobj_destroyed_stuff( ship_p, subsystem, hitpos );
+				do_subobj_destroyed_stuff( ship_p, subsystem, global_damage ? nullptr : hitpos );
 			}
 
 			if (damage_left <= 0)	{ // no more damage to distribute, so stop checking
@@ -1008,11 +1091,11 @@ float do_subobj_hit_stuff(object *ship_objp, object *other_obj, vec3d *hitpos, i
 	//	It had taken a few MX-50s to destory an Anubis (with 40% hull), then it took maybe ten.
 	//	So, I left it alone. -- MK, 4/15/98
 
-	return damage;
+	return std::make_pair(subsys_impact, damage);
 }
 
 // Store who/what killed the player, so we can tell the player how he died
-static void shiphit_record_player_killer(object *killer_objp, player *p)
+static void shiphit_record_player_killer(const object *killer_objp, player *p)
 {
 	switch (killer_objp->type) {
 
@@ -1042,7 +1125,7 @@ static void shiphit_record_player_killer(object *killer_objp, player *p)
 					nprintf(("Network", "Couldn't find player object of weapon for killer of %s\n", p->callsign));
 				}
 			} else {
-				strcpy_s(p->killer_parent_name, Ships[Objects[killer_objp->parent].instance].get_display_name());
+				strcpy_s(p->killer_parent_name, Ships[Objects[killer_objp->parent].instance].ship_name);
 			}
 		} else {
 			p->killer_species = -1;
@@ -1070,7 +1153,7 @@ static void shiphit_record_player_killer(object *killer_objp, player *p)
 				nprintf(("Network", "Couldn't find player object of shockwave for killer of %s\n", p->callsign));
 			}
 		} else {
-			strcpy_s(p->killer_parent_name, Ships[Objects[killer_objp->parent].instance].get_display_name());
+			strcpy_s(p->killer_parent_name, Ships[Objects[killer_objp->parent].instance].ship_name);
 		}
 		break;
 
@@ -1098,7 +1181,7 @@ static void shiphit_record_player_killer(object *killer_objp, player *p)
 				nprintf(("Network", "Couldn't find player object for killer of %s\n", p->callsign));
 			}
 		} else {
-			strcpy_s(p->killer_parent_name, Ships[killer_objp->instance].get_display_name());
+			strcpy_s(p->killer_parent_name, Ships[killer_objp->instance].ship_name);
 		}
 		break;
 	
@@ -1121,7 +1204,7 @@ static void shiphit_record_player_killer(object *killer_objp, player *p)
 		p->killer_objtype = OBJ_BEAM;
 		if(beam_obj != -1){			
 			if((Objects[beam_obj].type == OBJ_SHIP) && (Objects[beam_obj].instance >= 0)){
-				strcpy_s(p->killer_parent_name, Ships[Objects[beam_obj].instance].get_display_name());
+				strcpy_s(p->killer_parent_name, Ships[Objects[beam_obj].instance].ship_name);
 			}
 			p->killer_species = Ship_info[Ships[Objects[beam_obj].instance].ship_info_index].species;
 		} else {			
@@ -1146,7 +1229,7 @@ static void shiphit_record_player_killer(object *killer_objp, player *p)
 }
 
 //	Say dead stuff.
-static void show_dead_message(object *ship_objp, object *other_obj)
+static void show_dead_message(const object *ship_objp, const object *other_obj)
 {
 	player *player_p;
 
@@ -1268,11 +1351,11 @@ void ship_hit_sparks_no_rotate(object *ship_objp, vec3d *hitpos)
 {
 	ship		*ship_p = &Ships[ship_objp->instance];
 
-	int n = ship_p->num_hits;
-	if (n >= MAX_SHIP_HITS)	{
-		n = Random::next(MAX_SHIP_HITS);
+	int n = ship_p->num_sparks;
+	if (n >= MAX_SHIP_SPARKS)	{
+		n = Random::next(MAX_SHIP_SPARKS);
 	} else {
-		ship_p->num_hits++;
+		ship_p->num_sparks++;
 	}
 
 	// No rotation.  Just make the spark
@@ -1288,7 +1371,7 @@ void ship_hit_sparks_no_rotate(object *ship_objp, vec3d *hitpos)
 
 // find the max number of sparks allowed for ship
 // limited for fighter by hull % others by radius.
-int get_max_sparks(object* ship_objp)
+int get_max_sparks(const object* ship_objp)
 {
 	Assert(ship_objp->type == OBJ_SHIP);
 	Assert((ship_objp->instance >= 0) && (ship_objp->instance < MAX_SHIPS));
@@ -1312,11 +1395,11 @@ int get_max_sparks(object* ship_objp)
 			return 3;
 		}
 	} else {
-		int num_sparks = (int) (ship_objp->radius * 0.08f);
-		if (num_sparks < 3) {
+		int num_sparks = fl2i(ship_objp->radius * 0.08f);
+		if (num_sparks > MAX_SHIP_SPARKS) {
+			return MAX_SHIP_SPARKS;
+		} else if (num_sparks < 3) {
 			return 3;
-		} else if (num_sparks > MAX_SHIP_HITS) {
-			return MAX_SHIP_HITS;
 		} else {
 			return num_sparks;
 		}
@@ -1334,23 +1417,23 @@ static int spark_compare(const spark_pair &pair1, const spark_pair &pair2)
 }
 
 // for big ships, when all spark slots are filled, make intelligent choice of one to be recycled
-static int choose_next_spark(object *ship_objp, vec3d *hitpos)
+static int choose_next_spark(const object *ship_objp, const vec3d *hitpos)
 {
 	int i, j, count, num_sparks, num_spark_pairs, spark_num;
-	vec3d world_hitpos[MAX_SHIP_HITS];
+	vec3d world_hitpos[MAX_SHIP_SPARKS];
 	spark_pair spark_pairs[MAX_SPARK_PAIRS];
 	ship *shipp = &Ships[ship_objp->instance];
 	auto pmi = model_get_instance(shipp->model_instance_num);
 	auto pm = model_get(pmi->model_num);
 
 	// only choose next spark when all slots are full
-	Assert(get_max_sparks(ship_objp) == Ships[ship_objp->instance].num_hits);
+	Assert(get_max_sparks(ship_objp) == Ships[ship_objp->instance].num_sparks);
 
 	// get num_sparks
-	num_sparks = shipp->num_hits;
-	Assert(num_sparks <= MAX_SHIP_HITS);
+	num_sparks = shipp->num_sparks;
+	Assert(num_sparks <= MAX_SHIP_SPARKS);
 
-	// get num_spark_paris -- only sort these
+	// get num_spark_pairs -- only sort these
 	num_spark_pairs = (num_sparks * num_sparks - num_sparks) / 2;
 
 	// get the world hitpos for all sparks
@@ -1378,7 +1461,8 @@ static int choose_next_spark(object *ship_objp, vec3d *hitpos)
 	}
 
 	// initialize spark pairs
-	for (i=0; i<num_spark_pairs; i++) {
+	// (we must always initialize at least one, because the default is the pair at index 0)
+	for (i=0; i<std::max(1,num_spark_pairs); i++) {
 		spark_pairs[i].index1 = 0;
 		spark_pairs[i].index2 = 0;
 		spark_pairs[i].dist = FLT_MAX;
@@ -1405,7 +1489,7 @@ static int choose_next_spark(object *ship_objp, vec3d *hitpos)
 	int count1 = 0;
 	int count2 = 0;
 
-	for (i=1; i<6; i++) {
+	for (i=1; i<num_spark_pairs; i++) {
 		if (spark_pairs[i].index1 == index1) {
 			count1++;
 		}
@@ -1430,7 +1514,7 @@ static int choose_next_spark(object *ship_objp, vec3d *hitpos)
 
 
 //	Make sparks fly off a ship.
-static void ship_hit_create_sparks(object *ship_objp, vec3d *hitpos, int submodel_num)
+static void ship_hit_create_sparks(const object *ship_objp, const vec3d *hitpos, int submodel_num)
 {
 	vec3d	tempv;
 	ship	*shipp = &Ships[ship_objp->instance];
@@ -1440,7 +1524,7 @@ static void ship_hit_create_sparks(object *ship_objp, vec3d *hitpos, int submode
 
 	int n, max_sparks;
 
-	n = shipp->num_hits;
+	n = shipp->num_sparks;
 	max_sparks = get_max_sparks(ship_objp);
 
 	if (n >= max_sparks)	{
@@ -1452,7 +1536,7 @@ static void ship_hit_create_sparks(object *ship_objp, vec3d *hitpos, int submode
 			n = Random::next(max_sparks);
 		}
 	} else {
-		shipp->num_hits++;
+		shipp->num_sparks++;
 	}
 
 	bool instancing = false;
@@ -1507,7 +1591,7 @@ static void ship_hit_create_sparks(object *ship_objp, vec3d *hitpos, int submode
 }
 
 //	Called from ship_hit_kill() when we detect the player has been killed.
-static void player_died_start(object *killer_objp)
+static void player_died_start(const object *killer_objp)
 {
 	nprintf(("Network", "starting my player death\n"));
 	gameseq_post_event(GS_EVENT_DEATH_DIED);	
@@ -1518,7 +1602,7 @@ static void player_died_start(object *killer_objp)
 */
 
 	//	Create a good vector for the camera to move along during death sequence.
-	object	*other_objp = NULL;
+	const object	*other_objp = nullptr;
 
 	// on multiplayer clients, there have been occasions where we haven't been able to determine
 	// the killer of a ship (due to bogus/mismatched/timed-out signatures on the client side).  If
@@ -1547,7 +1631,7 @@ static void player_died_start(object *killer_objp)
 			break;
 
 		default:
-			Int3();		//	Killed by an object of a peculiar type.  What is it?
+			UNREACHABLE("Unhandled object type %d in player_died_start()", killer_objp->type);		//	Killed by an object of a peculiar type.  What is it?
 			other_objp = killer_objp;	//	Enable to continue, just in case we shipped it with this bug...
 		}
 	} else {
@@ -1563,7 +1647,7 @@ static void player_died_start(object *killer_objp)
 	vec3d	*side_vec;
 	float		dist;
 
-	Assert(other_objp != NULL);
+	Assert(other_objp != nullptr);
 
 	if (Player_obj == other_objp) {
 		dist = 50.0f;
@@ -1629,6 +1713,7 @@ void ship_generic_kill_stuff( object *objp, float percent_killed )
 
     sp->flags.set(Ship::Ship_Flags::Dying);
     objp->phys_info.flags |= (PF_DEAD_DAMP | PF_REDUCED_DAMP);
+	objp->phys_info.gravity_const = sip->dying_gravity_const;
 	delta_time = (int) (sip->death_roll_base_time);
 
 	//	For smaller ships, subtract off time proportional to excess damage delivered.
@@ -1681,15 +1766,19 @@ void ship_generic_kill_stuff( object *objp, float percent_killed )
 
 	sp->death_time = sp->final_death_time = timestamp(delta_time);	// Give him 3 secs to explode
 
-	//SUSHI: What are the chances of an instant vaporization? Check the ship type first (objecttypes.tbl), then the ship (ships.tbl)
-	ship_type_info *stp = &Ship_types[sip->class_type];
-	float vapChance = stp->vaporize_chance;
-	if (sip->vaporize_chance > 0.0f)
-		vapChance = sip->vaporize_chance;
+	//SUSHI: What are the chances of an instant explosion? Check the ship type (objecttypes.tbl) as well as the ship (ships.tbl)
+	float skipChance;
+	if (sp->flags[Ship::Ship_Flags::Vaporize])
+		skipChance = 1.0f;
+	else if (sip->skip_deathroll_chance > 0.0f)
+		skipChance = sip->skip_deathroll_chance;
+	else if (sip->class_type >= 0)
+		skipChance = Ship_types[sip->class_type].skip_deathroll_chance;
+	else
+		skipChance = 0.0f;
 
-	if (sp->flags[Ship::Ship_Flags::Vaporize] || frand() < vapChance) {
-		// Assert(Ship_info[sp->ship_info_index].flags & SIF_SMALL_SHIP);
-
+	if (frand() < skipChance)
+	{
 		// LIVE FOR 100 MS
 		sp->final_death_time = timestamp(100);
 	}
@@ -1766,32 +1855,40 @@ static void ship_vaporize(ship *shipp)
 	object *ship_objp;
 
 	// sanity
-	Assert(shipp != NULL);
-	if(shipp == NULL){
+	Assert(shipp != nullptr);
+	if (shipp == nullptr) {
 		return;
 	}
 	Assert((shipp->objnum >= 0) && (shipp->objnum < MAX_OBJECTS));
-	if((shipp->objnum < 0) || (shipp->objnum >= MAX_OBJECTS)){
+	if ( (shipp->objnum < 0) || (shipp->objnum >= MAX_OBJECTS) ) {
 		return;
 	}
 	ship_objp = &Objects[shipp->objnum];
 	ship_info* sip = &Ship_info[shipp->ship_info_index];
 
 	// create debris shards
-	create_generic_debris(ship_objp, &ship_objp->pos, (float)sip->generic_debris_spew_num, sip->generic_debris_spew_num * 2.0f, 1.4f, true);
+	if ( !(sip->flags[Ship::Info_Flags::Disable_all_generic_explosion_debris]) ) {
+		create_generic_debris(ship_objp, &ship_objp->pos, (float)sip->generic_debris_spew_num, sip->generic_debris_spew_num * 2.0f, 1.4f, true);
+	}
 }
 
 //	*ship_objp was hit and we've determined he's been killed!  By *other_obj!
-void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float percent_killed, bool self_destruct, bool always_log_other_obj)
+void ship_hit_kill(object *ship_objp, object *other_obj, const vec3d *hitpos, float percent_killed, bool self_destruct, bool always_log_other_obj)
 {
 	Assert(ship_objp);	// Goober5000 - but not other_obj, not only for sexp but also for self-destruct
+	ship *sp = &Ships[ship_objp->instance];
+
+	// don't kill the ship if it's already dying
+	if (sp->flags[Ship::Ship_Flags::Dying])
+		return;
 
 	if (scripting::hooks::OnShipDeathStarted->isActive())
 	{
 		// add scripting hook for 'On Ship Death Started' -- Goober5000
 		// hook is placed at the beginning of this function to allow the scripter to
 		// actually have access to the ship before any death routines (such as mission logging) are executed
-		scripting::hooks::OnShipDeathStarted->run(scripting::hook_param_list(
+		scripting::hooks::OnShipDeathStarted->run(scripting::hooks::ShipDeathConditions{ sp },
+			scripting::hook_param_list(
 			scripting::hook_param("Ship", 'o', ship_objp),
 			scripting::hook_param("Killer", 'o', other_obj),
 			scripting::hook_param("Hitpos",
@@ -1811,8 +1908,8 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 				scripting::api::l_Vector.Set(hitpos ? *hitpos : vmd_zero_vector),
 				hitpos != nullptr));
 
-		if (scripting::hooks::OnDeath->isOverride(onDeathParamList, ship_objp)) {
-			scripting::hooks::OnDeath->run(onDeathParamList, ship_objp);
+		if (scripting::hooks::OnDeath->isOverride(scripting::hooks::ObjectDeathConditions{ ship_objp }, onDeathParamList)) {
+			scripting::hooks::OnDeath->run(scripting::hooks::ObjectDeathConditions{ ship_objp }, std::move(onDeathParamList));
 			return;
 		}
 	}
@@ -1828,19 +1925,17 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 				scripting::api::l_Vector.Set(hitpos ? *hitpos : vmd_zero_vector),
 				hitpos != nullptr));
 
-		if (scripting::hooks::OnShipDeath->isOverride(onDeathParamList, ship_objp)) {
-			scripting::hooks::OnShipDeath->run(onDeathParamList, ship_objp);
+		if (scripting::hooks::OnShipDeath->isOverride(scripting::hooks::ShipDeathConditions{ sp }, onDeathParamList)) {
+			scripting::hooks::OnShipDeath->run(scripting::hooks::ShipDeathConditions{ sp }, onDeathParamList);
 			return;
 		}
 	}
 
-	ship *sp;
 	char *killer_ship_name;
 	int killer_damage_percent = 0;
 	int killer_index = -1;
 	object *killer_objp = NULL;
 
-	sp = &Ships[ship_objp->instance];
 	show_dead_message(ship_objp, other_obj);
 
 	if (ship_objp == Player_obj) {
@@ -1853,7 +1948,7 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 	}
 
 	// hehe
-	extern void game_tst_mark(object *objp, ship *shipp);
+	extern void game_tst_mark(const object *objp, const ship *shipp);
 	game_tst_mark(ship_objp, sp);
 
 	// single player and multiplayer masters evaluate the scoring and kill stuff
@@ -1871,6 +1966,7 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 
 			sig = sp->damage_ship_id[killer_index];
 			for ( objp = GET_FIRST(&obj_used_list); objp != END_OF_LIST(&obj_used_list); objp = GET_NEXT(objp) ) {
+				// don't skip should-be-dead objects here
 				if ( objp->signature == sig ){
 					break;
 				}
@@ -1894,7 +1990,7 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 
 		// are we going to insist that other_obj was the killer?
 		if (always_log_other_obj && other_obj) {
-			object *named_objp = other_obj;
+			auto named_objp = other_obj;
 
 			if (named_objp->type != OBJ_SHIP && named_objp->parent >= 0) {
 				named_objp = &Objects[other_obj->parent];
@@ -1906,7 +2002,19 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 			}
 		}
 
-		if(!self_destruct){
+		if (self_destruct) {
+			// try and find a player
+			if(Game_mode & GM_MULTIPLAYER){
+				int np_index = multi_find_player_by_object(ship_objp);
+				if((np_index >= 0) && (np_index < MAX_PLAYERS) && (Net_players[np_index].m_player != NULL)){
+					mission_log_add_entry(LOG_SELF_DESTRUCTED, Net_players[np_index].m_player->callsign, NULL );
+				} else {
+					mission_log_add_entry(LOG_SELF_DESTRUCTED, Ships[ship_objp->instance].ship_name, NULL );
+				}
+			} else {
+				mission_log_add_entry(LOG_SELF_DESTRUCTED, Ships[ship_objp->instance].ship_name, NULL );
+			}
+		} else {
 			// multiplayer
 			if(Game_mode & GM_MULTIPLAYER){
 				char name1[256] = "";
@@ -1958,7 +2066,7 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 
 	// Goober5000 - since we added a mission log entry above, immediately set the status.  For destruction, ship_cleanup isn't called until a little bit later
 	auto entry = &Ship_registry[Ship_registry_map[sp->ship_name]];
-	entry->status = ShipStatus::EXITED;
+	entry->status = ShipStatus::DEATH_ROLL;
 
 	ship_generic_kill_stuff( ship_objp, percent_killed );
 
@@ -1992,7 +2100,7 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 				scripting::api::l_Vector.Set(hitpos ? *hitpos : vmd_zero_vector),
 				hitpos != nullptr));
 
-		scripting::hooks::OnDeath->run(onDeathParamList, ship_objp);
+		scripting::hooks::OnDeath->run(scripting::hooks::ObjectDeathConditions{ ship_objp }, onDeathParamList);
 	}
 	if (scripting::hooks::OnShipDeath->isActive()) {
 		auto onDeathParamList = scripting::hook_param_list(
@@ -2003,7 +2111,7 @@ void ship_hit_kill(object *ship_objp, object *other_obj, vec3d *hitpos, float pe
 				scripting::api::l_Vector.Set(hitpos ? *hitpos : vmd_zero_vector),
 				hitpos != nullptr));
 
-		scripting::hooks::OnShipDeath->run(onDeathParamList, ship_objp);
+		scripting::hooks::OnShipDeath->run(scripting::hooks::ShipDeathConditions{ sp }, onDeathParamList);
 	}
 }
 
@@ -2012,18 +2120,10 @@ void ship_self_destruct( object *objp )
 {	
 	Assert ( objp->type == OBJ_SHIP );
 
-	// try and find a player
-	if((Game_mode & GM_MULTIPLAYER) && (multi_find_player_by_object(objp) >= 0)){
-		int np_index = multi_find_player_by_object(objp);
-		if((np_index >= 0) && (np_index < MAX_PLAYERS) && (Net_players[np_index].m_player != NULL)){
-			mission_log_add_entry(LOG_SELF_DESTRUCTED, Net_players[np_index].m_player->callsign, NULL );
-		} else {
-			mission_log_add_entry(LOG_SELF_DESTRUCTED, Ships[objp->instance].ship_name, NULL );
-		}
-	} else {
-		mission_log_add_entry(LOG_SELF_DESTRUCTED, Ships[objp->instance].ship_name, NULL );
-	}
-	
+	// don't self-destruct if this ship is already dying
+	if (Ships[objp->instance].flags[Ship::Ship_Flags::Dying])
+		return;
+
 	// check to see if this ship needs to be respawned
 	if(MULTIPLAYER_MASTER){
 		// player ship?
@@ -2046,12 +2146,10 @@ void ship_self_destruct( object *objp )
 	ship_hit_kill(objp, nullptr, nullptr, 1.0f, true);
 }
 
-extern int Homing_hits, Homing_misses;
-
 // Call this instead of physics_apply_whack directly to 
 // deal with two docked ships properly.
 // Goober5000 - note... hit_pos is in *world* coordinates
-void ship_apply_whack(vec3d *force, vec3d *hit_pos, object *objp)
+void ship_apply_whack(const vec3d *force, const vec3d *hit_pos, object *objp)
 {
 	Assertion((objp != nullptr) && (force != nullptr) && (hit_pos != nullptr), "ship_apply_whack invalid argument(s)");
 
@@ -2132,7 +2230,7 @@ static void shiphit_hit_after_death(object *ship_objp, float damage)
 MONITOR( ShipHits )
 MONITOR( ShipNumDied )
 
-static int maybe_shockwave_damage_adjust(object *ship_objp, object *other_obj, float *damage)
+static int maybe_shockwave_damage_adjust(const object *ship_objp, const object *other_obj, float *damage)
 {
 	ship_subsys *subsys;
 	ship *shipp;
@@ -2249,13 +2347,12 @@ static int maybe_shockwave_damage_adjust(object *ship_objp, object *other_obj, f
 //				wash_damage	=>		1 if damage is done by engine wash
 // Goober5000 - sanity checked this whole function in the case that other_obj is NULL, which
 // will happen with the explosion-effect sexp
-void ai_update_lethality(object *ship_objp, object *weapon_obj, float damage);
-static void ship_do_damage(object *ship_objp, object *other_obj, vec3d *hitpos, float damage, int quadrant, int submodel_num, int damage_type_idx = -1, bool wash_damage = false)
+void ai_update_lethality(const object *ship_objp, const object *weapon_obj, float damage);
+static void ship_do_damage(object *ship_objp, object *other_obj, const vec3d *hitpos, float damage, int quadrant, int submodel_num, int damage_type_idx = -1, bool wash_damage = false, float hit_dot = 1.f, const vec3d* hit_normal = nullptr, const vec3d* local_hitpos = nullptr)
 {
 //	mprintf(("doing damage\n"));
 
 	ship *shipp;	
-	float subsystem_damage = damage;			// damage to be applied to subsystems
 	bool other_obj_is_weapon;
 	bool other_obj_is_beam;
 	bool other_obj_is_shockwave;
@@ -2289,15 +2386,32 @@ static void ship_do_damage(object *ship_objp, object *other_obj, vec3d *hitpos, 
 		ai_update_lethality(ship_objp, other_obj, damage);
 	}
 
+	// damage scaling due to big damage, supercap, etc
+	float damage_scale = 1.0f; 
 	// if this is a weapon
-	if (other_obj_is_weapon)
-		damage *= weapon_get_damage_scale(&Weapon_info[Weapons[other_obj->instance].weapon_info_index], other_obj, ship_objp);
+	if (other_obj_is_weapon){
+		// Cyborg - Coverity 1523515, this was the only place in ship_do_damage that we weren't checking weapon_info_index
+		Assertion(Weapons[other_obj->instance].weapon_info_index > -1, "Weapon info index in ship_do_damage was found to be a negative value of %d.  Please report this to an SCP coder!", Weapons[other_obj->instance].weapon_info_index);
+		if (Weapons[other_obj->instance].weapon_info_index > -1){
+			damage_scale = weapon_get_damage_scale(&Weapon_info[Weapons[other_obj->instance].weapon_info_index], other_obj, ship_objp);
+		}
+	}
+
+	if (other_obj && other_obj->parent >= 0 && Objects[other_obj->parent].signature == other_obj->parent_sig) {
+		if(Objects[other_obj->parent].flags[Object::Object_Flags::Player_ship])
+			difficulty_scale_factor *= The_mission.ai_profile->player_damage_inflicted_scale[Game_skill_level];
+	}
 
 	MONITOR_INC( ShipHits, 1 );
+
+	std::array<std::optional<ConditionData>, NumHitTypes> impact_data = {};
 
 	//	Don't damage player ship in the process of warping out.
 	if ( Player->control_mode >= PCM_WARPOUT_STAGE2 )	{
 		if ( ship_objp == Player_obj ){
+			if (!global_damage) {
+				maybe_play_conditional_impacts(impact_data, other_obj, ship_objp, true, submodel_num, hitpos, local_hitpos, hit_normal);
+			}
 			return;
 		}
 	}
@@ -2347,116 +2461,141 @@ static void ship_do_damage(object *ship_objp, object *other_obj, vec3d *hitpos, 
 
 	// If the ship is invulnerable, do nothing
 	if (ship_objp->flags[Object::Object_Flags::Invulnerable])	{
+		if (!global_damage) {
+			maybe_play_conditional_impacts(impact_data, other_obj, ship_objp, true, submodel_num, hitpos, local_hitpos, hit_normal);
+		}
 		return;
 	}
 
 	//	if ship is already dying, shorten deathroll.
 	if (shipp->flags[Ship::Ship_Flags::Dying]) {
+		if (quadrant >= 0 && !(ship_objp->flags[Object::Object_Flags::No_shields])) {
+			impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::SHIELD)] = ConditionData {
+				ImpactCondition(shipp->shield_armor_type_idx),
+				HitType::SHIELD,
+				0.0f,
+				// we have to do this annoying thing where we reduce the shield health a bit because it turns out the last X percent of a shield doesn't matter
+				MAX(0.0f, ship_objp->shield_quadrant[quadrant] - ship_shield_hitpoint_threshold(ship_objp)),
+				shield_get_max_quad(ship_objp) - ship_shield_hitpoint_threshold(ship_objp),
+			};
+		} else {
+			impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+				ImpactCondition(shipp->armor_type_idx),
+				HitType::HULL,
+				0.0f,
+				ship_objp->hull_strength,
+				shipp->ship_max_hull_strength,
+			};
+		}
+		if (!global_damage) {
+			maybe_play_conditional_impacts(impact_data, other_obj, ship_objp, true, submodel_num, hitpos, local_hitpos, hit_normal);
+		}
+
 		shiphit_hit_after_death(ship_objp, (damage * difficulty_scale_factor));
 		return;
 	}
-	
+
+	int weapon_info_index = shiphit_get_damage_weapon(other_obj);
+
 	//	If we hit the shield, reduce it's strength and found
 	// out how much damage is left over.
 	if ( quadrant >= 0 && !(ship_objp->flags[Object::Object_Flags::No_shields]) )	{
 //		mprintf(("applying damage ge to shield\n"));
-		float shield_factor = -1.0f;
-		int	weapon_info_index;
+		float shield_damage = damage * damage_scale;
 
-		weapon_info_index = shiphit_get_damage_weapon(other_obj);
-		if ( weapon_info_index >= 0 ) {
-			shield_factor = Weapon_info[weapon_info_index].shield_factor;
-		}
-
-		if ( shield_factor >= 0.0f ) {
-			damage *= shield_factor;
-			subsystem_damage *= shield_factor;
-		}
+		auto shield_impact = ConditionData {
+			ImpactCondition(shipp->shield_armor_type_idx),
+			HitType::SHIELD,
+			0.0f,
+			// we have to do this annoying thing where we reduce the shield health a bit because it turns out the last X percent of a shield doesn't matter
+			MAX(0.0f, ship_objp->shield_quadrant[quadrant] - ship_shield_hitpoint_threshold(ship_objp)),
+			shield_get_max_quad(ship_objp) - ship_shield_hitpoint_threshold(ship_objp),
+		};
 
 		if ( damage > 0.0f ) {
-
 			float piercing_pct = 0.0f;
 
-			//Do armor stuff				
-			if(shipp->shield_armor_type_idx != -1)
-			{
+			// apply any armor types and the difficulty scaling
+			if(shipp->shield_armor_type_idx != -1) {
 				piercing_pct = Armor_types[shipp->shield_armor_type_idx].GetShieldPiercePCT(damage_type_idx);
-			}
-			
-			float pre_shield = damage; // Nuke: don't use the difficulty scaling in here, since its also applied in Armor_type.GetDamage. Don't want it to apply twice
-			float pre_shield_ss = subsystem_damage; // Nuke - same here
+				// reduce shield damage by the piercing percent
+				shield_damage = shield_damage * (1.0f - piercing_pct);
 
-			if (piercing_pct > 0.0f) {
-				damage = pre_shield * (1.0f - piercing_pct);
-			}
-
-			// Nuke: apply pre_shield difficulty scaling here, since it was meant to be applied through damage
-			pre_shield *= difficulty_scale_factor;
-
-			if(shipp->shield_armor_type_idx != -1)
-			{
 				// Nuke: this call will decide when to use the damage factor, but it will get used, unless the modder is dumb (like setting +Difficulty Scale Type: to 'manual' and not manually applying it in their calculations)
-				damage = Armor_types[shipp->shield_armor_type_idx].GetDamage(damage, damage_type_idx, difficulty_scale_factor, other_obj_is_beam);
-
-			} else { // Nuke: if that didn't get called, difficulty would not be applied to damage so apply it here
-				damage *= difficulty_scale_factor;
-			}
-
-			damage = shield_apply_damage(ship_objp, quadrant, damage);
-
-			if (damage > 0.0f) {
-				subsystem_damage *= (damage / pre_shield);
+				shield_damage = Armor_types[shipp->shield_armor_type_idx].GetDamage(shield_damage, damage_type_idx, difficulty_scale_factor, other_obj_is_beam);
 			} else {
-				subsystem_damage = 0.0f;
+				shield_damage *= difficulty_scale_factor;
 			}
 
-			if (piercing_pct > 0.0f) {
-				damage += (piercing_pct * pre_shield);
-				subsystem_damage += (piercing_pct * pre_shield_ss);
-			}
+			float shield_factor = 1.0f;
+			if (weapon_info_index >= 0 && (!other_obj_is_beam || Beams_use_damage_factors))
+				shield_factor = Weapon_info[weapon_info_index].shield_factor;
+			
+			shield_impact.damage = shield_damage * shield_factor;
+			// apply shield damage
+			float remaining_damage = shield_apply_damage(ship_objp, quadrant, shield_damage * shield_factor);
+			// remove the shield factor, since the overflow will no longer be thrown at shields
+			remaining_damage /= shield_factor;
+			
+			// Unless the backwards compatible flag is on, remove difficulty scaling as well
+			// The hull/subsystem code below will re-add it where necessary
+			if (!The_mission.ai_profile->flags[AI::Profile_Flags::Carry_shield_difficulty_scaling_bug])
+			remaining_damage /= difficulty_scale_factor;
+			
+			// the rest of the damage is what overflowed from the shield damage and pierced
+			damage = remaining_damage + (damage * piercing_pct);
 		}
 
-		// if shield damage was increased, don't carry over leftover damage at scaled level
-		if ( shield_factor > 1.0f ) {
-			damage /= shield_factor;
-
-			subsystem_damage /= shield_factor;
-		}
+		impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::SHIELD)] = shield_impact;
 	}
 			
 	// Apply leftover damage to the ship's subsystem and hull.
-	if ( (damage > 0.0f) || (subsystem_damage > 0.0f) )	{
-		int	weapon_info_index;
-		float pre_subsys = subsystem_damage; // Nuke: should be the last time we need to do this in this function
+	if ( (damage > 0.0f) )	{
 		bool apply_hull_armor = true;
-		bool apply_diff_scale = true;
 
-		subsystem_damage = do_subobj_hit_stuff(ship_objp, other_obj, hitpos, submodel_num, subsystem_damage, &apply_hull_armor);
+		bool shield_hit = quadrant >= 0;
 
-		if (subsystem_damage > 0.0f) {
-			damage *= (subsystem_damage / pre_subsys);
+		// apply damage to subsystems, and get back any remaining damage that needs to go to the hull
+		auto damage_pair = do_subobj_hit_stuff(ship_objp, other_obj, hitpos, submodel_num, damage, &apply_hull_armor, hit_dot, shield_hit);
+
+		damage = damage_pair.second;
+
+		impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::SUBSYS)] = damage_pair.first;
+
+		// damage scaling doesn't apply to subsystems, but it does to the hull
+		damage *= damage_scale;
+		
+		// Do armor stuff
+		if (apply_hull_armor && shipp->armor_type_idx != -1)		{			
+			damage = Armor_types[shipp->armor_type_idx].GetDamage(damage, damage_type_idx, difficulty_scale_factor, other_obj_is_beam);
 		} else {
-			damage = 0.0f;
+			damage *= difficulty_scale_factor;
 		}
 
-		//Do armor stuff
-		if (apply_hull_armor)
-		{			
-			if(shipp->armor_type_idx != -1)
-			{
-				damage = Armor_types[shipp->armor_type_idx].GetDamage(damage, damage_type_idx, difficulty_scale_factor, other_obj_is_beam);
-				apply_diff_scale = false;
+		// if weapon is vampiric, slap healing on shooter instead of target
+		if (weapon_info_index >= 0) {
+			weapon_info* wip = &Weapon_info[weapon_info_index];
+
+			if ((wip->wi_flags[Weapon::Info_Flags::Vampiric]) && (other_obj->parent > 0)) {
+				object* parent = &Objects[other_obj->parent];
+
+				if ((parent->type == OBJ_SHIP) && (parent->signature == other_obj->parent_sig)) {
+					ship* shipp_parent = &Ships[parent->instance];
+
+					if (!parent->flags[Object::Object_Flags::Should_be_dead]) {
+						parent->hull_strength += damage * wip->vamp_regen;
+
+						if (parent->hull_strength > shipp_parent->ship_max_hull_strength) {
+							parent->hull_strength = shipp_parent->ship_max_hull_strength;
+						}
+					}
+				}
 			}
-		}
-		// Nuke: this is done incase difficulty scaling is not applied into damage by getDamage() above
-		if (apply_diff_scale) {
-			damage *= difficulty_scale_factor; // Nuke: we can finally stop doing this now
 		}
 
 		// continue with damage?
 		if (damage > 0.0f) {
-			weapon_info_index = shiphit_get_damage_weapon(other_obj);	// Goober5000 - a NULL other_obj returns -1
-			if ( weapon_info_index >= 0 ) {
+			if ( weapon_info_index >= 0 && (!other_obj_is_beam || Beams_use_damage_factors)) {
 				if (Weapon_info[weapon_info_index].wi_flags[Weapon::Info_Flags::Puncture]) {
 					damage /= 4;
 				}
@@ -2472,20 +2611,29 @@ static void ship_do_damage(object *ship_objp, object *other_obj, vec3d *hitpos, 
 					damage = ship_objp->hull_strength - min_hull_strength;
 
 					// make sure damage is positive
-					damage = MAX(0, damage);
+					damage = MAX(0.0f, damage);
 				}
+			}
+
+			if (!shield_hit) {
+				impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+					ImpactCondition(shipp->armor_type_idx),
+					HitType::HULL,
+					damage,
+					ship_objp->hull_strength,
+					shipp->ship_max_hull_strength,
+				};
 			}
 
 			// multiplayer clients don't do damage
 			if (((Game_mode & GM_MULTIPLAYER) && MULTIPLAYER_CLIENT)) {
 			} else {
 				// Check if this is simulated damage.
-				weapon_info_index = shiphit_get_damage_weapon(other_obj);
 				if ( weapon_info_index >= 0 ) {
 					if (Weapon_info[weapon_info_index].wi_flags[Weapon::Info_Flags::Training]) {
 //						diag_printf2("Simulated Hull for Ship %s hit, dropping from %.32f to %d.\n", shipp->ship_name, (int) ( ship_objp->sim_hull_strength * 100 ), (int) ( ( ship_objp->sim_hull_strength - damage ) * 100 ) );
 						ship_objp->sim_hull_strength -= damage;
-						ship_objp->sim_hull_strength = MAX( 0, ship_objp->sim_hull_strength );
+						ship_objp->sim_hull_strength = MAX(0.0f, ship_objp->sim_hull_strength);
 						return;
 					}
 				}
@@ -2577,7 +2725,7 @@ static void ship_do_damage(object *ship_objp, object *other_obj, vec3d *hitpos, 
 					shipp->wash_killed = 1;
 				}
 
-				float percent_killed = -get_hull_pct(ship_objp);
+				float percent_killed = -get_hull_pct(ship_objp, true);
 				if (percent_killed > 1.0f){
 					percent_killed = 1.0f;
 				}
@@ -2589,34 +2737,33 @@ static void ship_do_damage(object *ship_objp, object *other_obj, vec3d *hitpos, 
 		}
 	}
 
-	// if the hitting object is a weapon, maybe do some fun stuff here
-	if(other_obj_is_weapon)
-	{
-		weapon_info *wip;
-		Assert(other_obj->instance >= 0);
-		if (other_obj->instance < 0) {
-			return;
-		}
-		Assert(Weapons[other_obj->instance].weapon_info_index >= 0);
-		if (Weapons[other_obj->instance].weapon_info_index < 0) {
-			return;
-		}
-		wip = &Weapon_info[Weapons[other_obj->instance].weapon_info_index];
+	if (!global_damage) {
+		maybe_play_conditional_impacts(impact_data, other_obj, ship_objp, true, submodel_num, hitpos, local_hitpos, hit_normal);
+	}
+
+	// handle weapon and afterburner leeching here
+	if(other_obj_is_weapon || other_obj_is_beam) {		
+		Assert(weapon_info_index >= 0);
+		weapon_info* wip = &Weapon_info[weapon_info_index];
+
+		float mult = 1.0f;
+		if (other_obj_is_beam)
+			mult = flFrametime;
 
 		// if its a leech weapon - NOTE - unknownplayer: Perhaps we should do something interesting like direct the leeched energy into the attacker ?
 		if (wip->wi_flags[Weapon::Info_Flags::Energy_suck]) {
 			// reduce afterburner fuel
-			shipp->afterburner_fuel -= wip->afterburner_reduce;
+			shipp->afterburner_fuel -= wip->afterburner_reduce * mult;
 			shipp->afterburner_fuel = (shipp->afterburner_fuel < 0.0f) ? 0.0f : shipp->afterburner_fuel;
 
 			// reduce weapon energy
-			shipp->weapon_energy -= wip->weapon_reduce;
+			shipp->weapon_energy -= wip->weapon_reduce * mult;
 			shipp->weapon_energy = (shipp->weapon_energy < 0.0f) ? 0.0f : shipp->weapon_energy;
 		}
 	}
 }
 
-static void ship_do_healing(object* ship_objp, object* other_obj, vec3d* hitpos, float healing, int submodel_num, int damage_type_idx = -1)
+static void ship_do_healing(object* ship_objp, const object* other_obj, const vec3d* hitpos, float healing, int quadrant, int submodel_num, int damage_type_idx = -1, const vec3d* hit_normal = nullptr, const vec3d* local_hitpos = nullptr)
 {
 	// multiplayer clients dont do healing
 	if (MULTIPLAYER_CLIENT)
@@ -2643,8 +2790,13 @@ static void ship_do_healing(object* ship_objp, object* other_obj, vec3d* hitpos,
 	
 	MONITOR_INC(ShipHits, 1);
 
+	std::array<std::optional<ConditionData>, NumHitTypes> impact_data = {};
+
 	//	Don't heal player ship in the process of warping out.
 	if ((Player->control_mode >= PCM_WARPOUT_STAGE2) && (ship_objp == Player_obj)) {
+		if (!global_damage) {
+			maybe_play_conditional_impacts(impact_data, other_obj, ship_objp, true, submodel_num, hitpos, local_hitpos, hit_normal);
+		}
 		return;
 	}
 
@@ -2660,22 +2812,44 @@ static void ship_do_healing(object* ship_objp, object* other_obj, vec3d* hitpos,
 		return;
 	weapon_info* wip = &Weapon_info[wip_index];
 
+	float shield_health;
+	if (quadrant >= 0) {
+		shield_health = MAX(0.0f, ship_objp->shield_quadrant[quadrant] - ship_shield_hitpoint_threshold(ship_objp, false));
+	} else {
+		//if we haven't hit a shield, assume the shield is fully depleted, because we have no way of knowing what the relevant quadrant would be
+		shield_health = 0.f;
+	}
+
 	// handle shield healing
 	if (!(ship_objp->flags[Object::Object_Flags::No_shields])) {
+		auto shield_impact = ConditionData {
+			ImpactCondition(shipp->shield_armor_type_idx),
+			HitType::SHIELD,
+			0.0f,
+			shield_health,
+			shield_get_max_quad(ship_objp) - ship_shield_hitpoint_threshold(ship_objp, false),
+		};
+
 		float shield_healing = healing * wip->shield_factor;
 
 		if (shield_healing > 0.0f) {
 			if (shipp->shield_armor_type_idx != -1)
 				shield_healing = Armor_types[shipp->shield_armor_type_idx].GetDamage(shield_healing, damage_type_idx, 1.0f, other_obj_is_beam);
 
+			shield_impact.damage = shield_healing;
 			shield_apply_healing(ship_objp, shield_healing);
 		}
+		impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::SHIELD)] = shield_impact;
 	}
 
 	// now for subsystems and hull
 	if ((healing > 0.0f)) {
 
-		do_subobj_heal_stuff(ship_objp, other_obj, hitpos, submodel_num, healing);
+		auto healing_pair = do_subobj_heal_stuff(ship_objp, other_obj, hitpos, submodel_num, healing);
+
+		healing = healing_pair.second;
+
+		impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::SUBSYS)] = healing_pair.first;
 
 		//Do armor stuff
 		if (shipp->armor_type_idx != -1)
@@ -2686,15 +2860,25 @@ static void ship_do_healing(object* ship_objp, object* other_obj, vec3d* hitpos,
 
 		healing *= wip->armor_factor;
 
+		impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+			ImpactCondition(shipp->armor_type_idx),
+			HitType::HULL,
+			healing,
+			ship_objp->hull_strength,
+			shipp->ship_max_hull_strength,
+		};
+
 		ship_objp->hull_strength += healing;
 		if (ship_objp->hull_strength > shipp->ship_max_hull_strength)
 			ship_objp->hull_strength = shipp->ship_max_hull_strength;
 	}
 
+	maybe_play_conditional_impacts(impact_data, other_obj, ship_objp, true, submodel_num, hitpos, local_hitpos, hit_normal);
+
 	// fix up the ship's sparks :)
 	// turn off a random spark, if its a beam, do this on average twice a second
 	if(!other_obj_is_beam || frand() > flFrametime * 2.0f )
-		shipp->sparks[Random::next(MAX_SHIP_HITS)].end_time = timestamp(0);
+		shipp->sparks[Random::next(MAX_SHIP_SPARKS)].end_time = timestamp(0);
 
 	// if we brought it to full health, fix ALL sparks
 	if (ship_objp->hull_strength == shipp->ship_max_hull_strength) {
@@ -2702,24 +2886,28 @@ static void ship_do_healing(object* ship_objp, object* other_obj, vec3d* hitpos,
 			spark.end_time = timestamp(0);
 	}
 
-	// if the hitting object is a weapon, maybe do some fun stuff here
-	if (other_obj_is_weapon)
-	{
+	// handle weapon and afterburner leeching here
+	if (other_obj_is_weapon || other_obj_is_beam) {
+		float mult = 1.0f;
+		if (other_obj_is_beam)
+			mult = flFrametime;
+
 		// if its a leech weapon - NOTE - unknownplayer: Perhaps we should do something interesting like direct the leeched energy into the attacker ?
 		if (wip->wi_flags[Weapon::Info_Flags::Energy_suck]) {
 			// reduce afterburner fuel
-			shipp->afterburner_fuel -= wip->afterburner_reduce;
+			shipp->afterburner_fuel -= wip->afterburner_reduce * mult;
 			shipp->afterburner_fuel = (shipp->afterburner_fuel < 0.0f) ? 0.0f : shipp->afterburner_fuel;
 
 			// reduce weapon energy
-			shipp->weapon_energy -= wip->weapon_reduce;
+			shipp->weapon_energy -= wip->weapon_reduce * mult;
 			shipp->weapon_energy = (shipp->weapon_energy < 0.0f) ? 0.0f : shipp->weapon_energy;
 		}
 	}
 }
 
 // Goober5000
-void ship_apply_tag(ship *shipp, int tag_level, float tag_time, object *target, vec3d *start, int ssm_index, int ssm_team)
+// (it might be possible to make `target` const, but that would set off another const-cascade)
+void ship_apply_tag(ship *shipp, int tag_level, float tag_time, object *target, const vec3d *start, int ssm_index, int ssm_team)
 {
 	// set time first tagged
 	if (shipp->time_first_tagged == 0)
@@ -2754,7 +2942,8 @@ void ship_apply_tag(ship *shipp, int tag_level, float tag_time, object *target, 
 // This assumes that whoever called this knows if the shield got hit or not.
 // hitpos is in world coordinates.
 // if quadrant is not -1, then that part of the shield takes damage properly.
-void ship_apply_local_damage(object *ship_objp, object *other_obj, vec3d *hitpos, float damage, int damage_type_idx, int quadrant, bool create_spark, int submodel_num, vec3d *hit_normal)
+// (it might be possible to make `other_obj` const, but that would set off another const-cascade)
+void ship_apply_local_damage(object *ship_objp, object *other_obj, const vec3d *hitpos, float damage, int damage_type_idx, int quadrant, bool create_spark, int submodel_num, const vec3d *hit_normal, float hit_dot, const vec3d* local_hitpos)
 {
 	Assert(ship_objp);	// Goober5000
 	Assert(other_obj);	// Goober5000
@@ -2771,6 +2960,28 @@ void ship_apply_local_damage(object *ship_objp, object *other_obj, vec3d *hitpos
 		//	Ie, player can always do damage.  AI can only damage team if that ship is targeted.
 		if (wp->target_num != OBJ_INDEX(ship_objp)) {
 			if ((ship_p->team == wp->team) && !(Objects[other_obj->parent].flags[Object::Object_Flags::Player_ship]) ) {
+				// need to play the impact effect(s) for the weapon if we have one, since we won't get the chance to do it later
+				// we won't account for subsystems; that's a lot of extra logic for little benefit in this edge case
+				std::array<std::optional<ConditionData>, NumHitTypes> impact_data = {};
+				if (quadrant >= 0 && !(ship_objp->flags[Object::Object_Flags::No_shields])) {
+					impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::SHIELD)] = ConditionData {
+						ImpactCondition(ship_p->shield_armor_type_idx),
+						HitType::SHIELD,
+						0.0f,
+						// we have to do this annoying thing where we reduce the shield health a bit because it turns out the last X percent of a shield doesn't matter
+						MAX(0.0f, ship_objp->shield_quadrant[quadrant] - ship_shield_hitpoint_threshold(ship_objp)),
+						shield_get_max_quad(ship_objp) - ship_shield_hitpoint_threshold(ship_objp),
+					};
+				} else {
+					impact_data[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+						ImpactCondition(ship_p->armor_type_idx),
+						HitType::HULL,
+						0.0f,
+						ship_objp->hull_strength,
+						ship_p->ship_max_hull_strength,
+					};
+				}
+				maybe_play_conditional_impacts(impact_data, other_obj, ship_objp, true, submodel_num, hitpos, local_hitpos, hit_normal);
 				return;
 			}
 		}
@@ -2801,28 +3012,13 @@ void ship_apply_local_damage(object *ship_objp, object *other_obj, vec3d *hitpos
 		Assert(wip != NULL);
 
 		if (wip->wi_flags[Weapon::Info_Flags::Tag]) {
-			// ssm stuff
-			vec3d *start = hitpos;
-			int ssm_index = wip->SSM_index;
-
-			ship_apply_tag(ship_p, wip->tag_level, wip->tag_time, ship_objp, start, ssm_index, wp->team);
+			ship_apply_tag(ship_p, wip->tag_level, wip->tag_time, ship_objp, hitpos, wip->SSM_index, wp->team);
 		}
 	}
-
-#ifndef NDEBUG
-	if (other_obj->type == OBJ_WEAPON) {
-		weapon_info	*wip = &Weapon_info[Weapons[other_obj->instance].weapon_info_index];
-		if (wip->is_homing()) {
-			Homing_hits++;
-			// nprintf(("AI", " Hit!  Hits = %i/%i\n", Homing_hits, (Homing_hits + Homing_misses)));
-		}
-	}
-#endif
 
 	if ( Event_Music_battle_started == 0 )	{
 		ship_hit_music(ship_objp, other_obj);
 	}
-	
 
 	if (damage < 0.0f){
 		damage = 0.0f;
@@ -2841,11 +3037,11 @@ void ship_apply_local_damage(object *ship_objp, object *other_obj, vec3d *hitpos
 
 	global_damage = false;
 	if (wip_index >= 0 && Weapon_info[wip_index].wi_flags[Weapon::Info_Flags::Heals]) {
-		ship_do_healing(ship_objp, other_obj, hitpos, damage, submodel_num);
+		ship_do_healing(ship_objp, other_obj, hitpos, damage, quadrant, submodel_num, -1, hit_normal, local_hitpos);
 		create_sparks = false;
+	} else {
+		ship_do_damage(ship_objp, other_obj, hitpos, damage, quadrant, submodel_num, damage_type_idx, false, hit_dot, hit_normal, local_hitpos);
 	}
-	else
-		ship_do_damage(ship_objp, other_obj, hitpos, damage, quadrant, submodel_num, damage_type_idx );
 
 	// DA 5/5/98: move ship_hit_create_sparks() after do_damage() since number of sparks depends on hull strength
 	// doesn't hit shield and we want sparks
@@ -2891,7 +3087,7 @@ void ship_apply_local_damage(object *ship_objp, object *other_obj, vec3d *hitpos
 // You can pass force_center==NULL if you the damage doesn't come from anywhere,
 // like for debug keys to damage an object or something.  It will 
 // assume damage is non-directional and will apply it correctly.   
-void ship_apply_global_damage(object *ship_objp, object *other_obj, vec3d *force_center, float damage, int damage_type_idx )
+void ship_apply_global_damage(object *ship_objp, object *other_obj, const vec3d *force_center, float damage, int damage_type_idx)
 {
 	Assert(ship_objp);	// Goober5000 (but not other_obj in case of sexp)
 
@@ -2914,6 +3110,11 @@ void ship_apply_global_damage(object *ship_objp, object *other_obj, vec3d *force
 		// shield_quad = quadrant facing the force_center
 		shield_quad = get_quadrant(&local_hitpos, ship_objp);
 
+		// world_hitpos use force_center for shockwave
+		// Goober5000 check for NULL
+		if (other_obj && (other_obj->type == OBJ_SHOCKWAVE) && (Ship_info[Ships[ship_objp->instance].ship_info_index].is_huge_ship()))
+			world_hitpos = *force_center;
+
 		int wip_index = -1;
 		if(other_obj != nullptr && other_obj->type == OBJ_SHOCKWAVE)
 			wip_index = shockwave_get_weapon_index(other_obj->instance);
@@ -2930,8 +3131,9 @@ void ship_apply_global_damage(object *ship_objp, object *other_obj, vec3d *force
 		// radius of the object.   
 		vm_vec_scale_add( &world_hitpos, &ship_objp->pos, &ship_objp->orient.vec.fvec, ship_objp->radius );
 
-		for (int i=0; i<ship_objp->n_quadrants; i++){
-			ship_do_damage(ship_objp, other_obj, &world_hitpos, damage/ship_objp->n_quadrants, i, -1, damage_type_idx );
+		int n_quadrants = static_cast<int>(ship_objp->shield_quadrant.size());
+		for (int i=0; i<n_quadrants; i++){
+			ship_do_damage(ship_objp, other_obj, &world_hitpos, damage/n_quadrants, i, -1, damage_type_idx);
 		}
 	}
 
@@ -2989,7 +3191,7 @@ void ship_hit_pain(float damage, int quadrant)
 		int pain_type;
 		if (Shield_pain_flash_factor != 0.0f && quadrant >= 0)
 		{
-			float effect = (Shield_pain_flash_factor * Player_obj->shield_quadrant[quadrant] * Player_obj->n_quadrants) / shield_get_max_strength(Player_obj);
+			float effect = (Shield_pain_flash_factor * Player_obj->shield_quadrant[quadrant] * static_cast<int>(Player_obj->shield_quadrant.size())) / shield_get_max_strength(Player_obj);
 
 			if (Shield_pain_flash_factor < 0.0f)
 				effect -= Shield_pain_flash_factor;

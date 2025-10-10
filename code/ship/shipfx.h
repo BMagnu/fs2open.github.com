@@ -32,11 +32,11 @@ struct matrix;
 void shipfx_emit_spark( int n, int sn );
 
 // Does the special effects to blow a subsystem off a ship
-extern void shipfx_blow_off_subsystem(object *ship_obj, ship *ship_p, ship_subsys *subsys, vec3d *exp_center, bool no_explosion = false);
+extern void shipfx_blow_off_subsystem(object *ship_obj, ship *ship_p, const ship_subsys *subsys, const vec3d *exp_center, bool no_explosion = false, bool no_fireballs = false);
 
 // Creates "ndebris" pieces of debris on random verts of the "submodel" in the 
 // ship's model.
-extern void shipfx_blow_up_model(object *obj, int submodel, int ndebris, vec3d *exp_center);
+extern void shipfx_blow_up_model(object *obj, int submodel, int ndebris, const vec3d *exp_center, const ship_subsys *subsys = nullptr);
 
 
 // =================================================
@@ -97,6 +97,7 @@ public:
 	int			time = 0;					// in ms
 	float		accel_exp = 1.0f;
 	int			warp_type = WT_DEFAULT;
+	bool		supercap_warp_physics = false;
 
 	// only valid for warpout
 	int			warpout_engage_time = -1;	// in ms
@@ -112,14 +113,14 @@ extern SCP_vector<WarpParams> Warp_params;
 extern int find_or_add_warp_params(const WarpParams &params);
 
 extern float shipfx_calculate_warp_time(object *objp, WarpDirection warp_dir, float half_length, float warping_dist);
-
+extern float shipfx_calculate_arrival_warp_distance(object *objp);
 
 // =================================================
 //          SHIP SHADOW EFFECT STUFF
 // =================================================
 
 // Given world point see if it is in a shadow.
-bool shipfx_eye_in_shadow( vec3d *eye_pos, object *src_obj, int sun_n);
+bool shipfx_eye_in_shadow( vec3d *eye_pos, object *src_obj, int light_n);
 
 
 // =================================================
@@ -134,7 +135,7 @@ void shipfx_flash_init();
 // accordingly.
 // Set is_primary to non-zero if this is a primary weapon.
 // Gun_pos should be in object's frame of reference, not world!!!
-void shipfx_flash_create(object *objp, int model_num, vec3d *gun_pos, vec3d *gun_dir, int is_primary, int weapon_info_index);
+void shipfx_flash_create(object *objp, int model_num, vec3d *gun_pos, vec3d *gun_dir, int is_primary, int weapon_info_index, int weapon_objnum);
 
 // Does whatever processing needs to be done each frame.
 void shipfx_flash_do_frame(float frametime);
@@ -155,7 +156,7 @@ int shipfx_large_blowup_do_frame(ship *shipp, float frametime);
 
 void shipfx_large_blowup_queue_render(model_draw_list *scene, ship* shipp);
 
-void shipfx_debris_limit_speed(struct debris *db, ship *shipp);
+void shipfx_debris_limit_speed(const struct debris *db, const ship *shipp);
 
 // sound manager fore big ship sub explosions sounds
 void do_sub_expl_sound(float radius, vec3d* sound_pos, sound_handle* sound_handle);
@@ -188,21 +189,20 @@ class WarpEffect
 {
 protected:
 	//core variables
-	object	*objp;
-	WarpDirection	direction;
+	int m_objnum = -1;
+	WarpDirection m_direction = WarpDirection::NONE;
 
 	//variables provided for expediency
-	ship *shipp;
-	ship_info *sip;
-	WarpParams *params;
+	int m_shipnum = -1;
+	int m_ship_info_index = -1;
+	int m_warp_params_index = -1;
 
 public:
-	WarpEffect();
-	WarpEffect(object *n_objp, WarpDirection n_direction);
+	WarpEffect() = default;
+	explicit WarpEffect(int objnum, WarpDirection direction);
 	virtual ~WarpEffect() = default;
 
-	void clear();
-	bool isValid();
+	bool isValid() const;
 
 	virtual void pageIn();
 	virtual void pageOut();
@@ -214,8 +214,8 @@ public:
 	virtual int warpEnd();
 
 	//For VM_WARP_CHASE
-	virtual int getWarpPosition(vec3d *output);
-    virtual int getWarpOrientation(matrix *output);
+	virtual int getWarpPosition(vec3d *output) const;
+    virtual int getWarpOrientation(matrix *output) const;
 };
 
 bool point_is_clipped_by_warp(const vec3d* point, WarpEffect* warp_effect);
@@ -226,7 +226,7 @@ class WE_Default : public WarpEffect
 {
 private:
 	//portal object
-	object *portal_objp;
+	int m_portal_objnum = -1;
 
 	//ship data
 	vec3d actual_local_center;	// center of the ship, not necessarily the model origin
@@ -235,7 +235,7 @@ private:
 	float warping_time;			// time to go through the effect
 	float warping_speed;		// speed to go through the effect
 
-	void compute_warpout_stuff(float *warp_time, vec3d *warp_pos);
+	void compute_warpout_stuff(float *ship_move_time, vec3d *warp_pos);
 
 	//Total data
 	int total_time_start;
@@ -245,23 +245,23 @@ private:
 	int	stage_time_end;			// pops when ship is completely warped out or warped in.  Used for both warp in and out.
 
 	//Data "storage"
-	int stage_duration[WE_DEFAULT_NUM_STAGES+1];
+	int stage_duration[WE_DEFAULT_NUM_STAGES + 1] = { 0 };
 
 	//sweeper polygon and clip effect
-	vec3d	pos;
-	vec3d	fvec;
-	float	radius;
+	vec3d	pos = vmd_zero_vector;
+	vec3d	fvec = vmd_zero_vector;
+	float	radius = 0.0f;
 
 public:
-	WE_Default(object *n_objp, WarpDirection n_direction);
+	explicit WE_Default(int objnum, WarpDirection n_direction);
 
 	int warpStart() override;
 	int warpFrame(float frametime) override;
 	int warpShipClip(model_render_params *render_info) override;
 	int warpShipRender() override;
 
-	int getWarpPosition(vec3d *output) override;
-    int getWarpOrientation(matrix *output) override;
+	int getWarpPosition(vec3d *output) const override;
+    int getWarpOrientation(matrix *output) const override;
 };
 
 //********************-----CLASS: WE_BSG-----********************//
@@ -306,7 +306,7 @@ private:
 	game_snd *snd_end_gs;
 
 public:
-	WE_BSG(object *n_objp, WarpDirection n_direction);
+	explicit WE_BSG(int objnum, WarpDirection n_direction);
 	~WE_BSG() override;
 
 	void pageIn() override;
@@ -317,8 +317,8 @@ public:
 	int warpShipRender() override;
 	int warpEnd() override;
 
-	int getWarpPosition(vec3d *output) override;
-	int getWarpOrientation(matrix *output) override;
+	int getWarpPosition(vec3d *output) const override;
+	int getWarpOrientation(matrix *output) const override;
 };
 
 //********************-----CLASS: WE_Homeworld-----********************//
@@ -357,7 +357,7 @@ private:
 	float	z_offset_min;
 	float	z_offset_max;
 public:
-	WE_Homeworld(object *n_objp, WarpDirection n_direction);
+	explicit WE_Homeworld(int objnum, WarpDirection n_direction);
 	~WE_Homeworld() override;
 
 	int warpStart() override;
@@ -366,8 +366,8 @@ public:
 	int warpShipRender() override;
 	int warpEnd() override;
 
-	int getWarpPosition(vec3d *output) override;
-    int getWarpOrientation(matrix *output) override;
+	int getWarpPosition(vec3d *output) const override;
+    int getWarpOrientation(matrix *output) const override;
 };
 
 //********************-----CLASS: WE_Hyperspace----********************//
@@ -393,7 +393,7 @@ private:
 	game_snd *snd_end_gs;	
 	
 public:
-	WE_Hyperspace(object *n_objp, WarpDirection n_direction);
+	explicit WE_Hyperspace(int objnum, WarpDirection n_direction);
 
 	int warpStart() override;
 	int warpFrame(float frametime) override;

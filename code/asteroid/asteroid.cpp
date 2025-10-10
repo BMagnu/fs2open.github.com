@@ -32,8 +32,9 @@
 #include "object/objcollide.h"
 #include "object/object.h"
 #include "parse/parselo.h"
+#include "particle/ParticleEffect.h"
 #include "scripting/global_hooks.h"
-#include "particle/particle.h"
+#include "particle/hosts/EffectHostVector.h"
 #include "render/3d.h"
 #include "ship/ship.h"
 #include "ship/shipfx.h"
@@ -42,6 +43,7 @@
 #include "weapon/weapon.h"
 
 #include <algorithm>
+#include <random>
 
 #define			ASTEROID_OBJ_USED	(1<<0)				// flag used in asteroid_obj struct
 #define			MAX_ASTEROID_OBJS	MAX_ASTEROIDS		// max number of asteroids tracked in asteroid list
@@ -56,13 +58,13 @@ const float LARGE_DEBRIS_WEIGHT = 1.0f;
 int	Asteroids_enabled = 1;
 int	Num_asteroids = 0;
 
+// Contains information for asteroid and debris objects for use in asteroid fields
 SCP_vector< asteroid_info > Asteroid_info;
 asteroid			Asteroids[MAX_ASTEROIDS];
 asteroid_field	Asteroid_field;
 
 
-static int		Asteroid_impact_explosion_ani;
-static float	Asteroid_impact_explosion_radius;
+static particle::ParticleEffectHandle 		Asteroid_impact_explosion_ani;
 char	Asteroid_icon_closeup_model[NAME_LENGTH];
 vec3d	Asteroid_icon_closeup_position;
 float	Asteroid_icon_closeup_zoom;	
@@ -70,9 +72,6 @@ float	Asteroid_icon_closeup_zoom;
 #define	ASTEROID_CHECK_WRAP_TIMESTAMP			2000	// how often an asteroid gets checked for wrapping
 #define	ASTEROID_UPDATE_COLLIDE_TIMESTAMP	2000	// how often asteroid is checked for impending collisions with escort ships
 #define	ASTEROID_MIN_COLLIDE_TIME				24		// time in seconds to check for asteroid colliding
-
-SCP_vector<SCP_string> Asteroid_target_ships;
-bool Default_asteroid_throwing_behavior = true;
 
 typedef struct asteroid_target {
 	int objnum;
@@ -92,11 +91,15 @@ SCP_vector<asteroid_target> Asteroid_targets;
 static int count_incident_asteroids(int target_objnum)
 {
 	object* asteroid_objp;
-	int		count;
+	int		count = 0;
 
-	count = 0;
+	Assertion(GET_FIRST(&Asteroid_obj_list) != nullptr, "count_incident_asteroids() called before Asteroid_obj_list was initialized; this shouldn't happen. Get a coder!");
 
-	for (asteroid_objp = GET_FIRST(&obj_used_list); asteroid_objp != END_OF_LIST(&obj_used_list); asteroid_objp = GET_NEXT(asteroid_objp)) {
+	for (auto aop: list_range(&Asteroid_obj_list)) {
+		asteroid_objp = &Objects[aop->objnum];
+		if (asteroid_objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
 		if (asteroid_objp->type == OBJ_ASTEROID) {
 			asteroid* asp = &Asteroids[asteroid_objp->instance];
 
@@ -152,6 +155,8 @@ static int asteroid_obj_list_add(int objnum)
 {
 	int index;
 
+	Assertion(GET_FIRST(&Asteroid_obj_list) != nullptr, "asteroid_obj_list_add() called before Asteroid_obj_list was initialized; this shouldn't happen. Get a coder!");
+
 	asteroid *cur_asteroid = &Asteroids[Objects[objnum].instance];
 	index = (int)(cur_asteroid - Asteroids);
 
@@ -173,6 +178,8 @@ static int asteroid_obj_list_add(int objnum)
 static void asteroid_obj_list_remove(object * obj)
 {
 	int index = obj->instance;
+
+	Assertion(GET_FIRST(&Asteroid_obj_list) != nullptr, "asteroid_obj_list_remove() called before Asteroid_obj_list was initialized; this shouldn't happen. Get a coder!");
 
 	Assert(index >= 0 && index < MAX_ASTEROID_OBJS);
 	Assert(Asteroid_objs[index].flags & ASTEROID_OBJ_USED);
@@ -211,22 +218,38 @@ static float asteroid_cap_speed(int asteroid_info_index, float speed)
  */
 static bool asteroid_in_inner_bound(asteroid_field *asfieldp, vec3d *pos, float delta) {
 
-	if (!asfieldp->has_inner_bound)
+	if (!asfieldp->has_inner_bound) {
 		return false;
+	}
 
-	return (pos->xyz.x > asfieldp->inner_min_bound.xyz.x - delta) && (pos->xyz.x < asfieldp->inner_max_bound.xyz.x + delta) &&
-		(pos->xyz.y > asfieldp->inner_min_bound.xyz.y - delta) && (pos->xyz.y < asfieldp->inner_max_bound.xyz.y + delta) &&
-		(pos->xyz.z > asfieldp->inner_min_bound.xyz.z - delta) && (pos->xyz.z < asfieldp->inner_max_bound.xyz.z + delta);
+	if (Fix_asteroid_bounding_box_check) {
+		return (pos->xyz.x > asfieldp->inner_min_bound.xyz.x + delta) && (pos->xyz.x < asfieldp->inner_max_bound.xyz.x - delta) &&
+			(pos->xyz.y > asfieldp->inner_min_bound.xyz.y + delta) && (pos->xyz.y < asfieldp->inner_max_bound.xyz.y - delta) &&
+			(pos->xyz.z > asfieldp->inner_min_bound.xyz.z + delta) && (pos->xyz.z < asfieldp->inner_max_bound.xyz.z - delta);
+	} else {
+		return (pos->xyz.x > asfieldp->inner_min_bound.xyz.x - delta) && (pos->xyz.x < asfieldp->inner_max_bound.xyz.x + delta) &&
+			(pos->xyz.y > asfieldp->inner_min_bound.xyz.y - delta) && (pos->xyz.y < asfieldp->inner_max_bound.xyz.y + delta) &&
+			(pos->xyz.z > asfieldp->inner_min_bound.xyz.z - delta) && (pos->xyz.z < asfieldp->inner_max_bound.xyz.z + delta);
+	}
+
 }
 
 static bool asteroid_is_ship_inside_field(asteroid_field* asfieldp, vec3d* pos, float radius) {
 
 	radius *= 2.0f;
 
-	return pos->xyz.x + radius > Asteroid_field.min_bound.xyz.x && pos->xyz.x - radius < Asteroid_field.max_bound.xyz.x &&
-		   pos->xyz.y + radius > Asteroid_field.min_bound.xyz.y && pos->xyz.y - radius < Asteroid_field.max_bound.xyz.y &&
-	       pos->xyz.z + radius > Asteroid_field.min_bound.xyz.z && pos->xyz.z - radius < Asteroid_field.max_bound.xyz.z &&
-		   !asteroid_in_inner_bound(asfieldp, pos, radius);
+	if (Fix_asteroid_bounding_box_check) {
+		return pos->xyz.x - radius > Asteroid_field.min_bound.xyz.x && pos->xyz.x + radius < Asteroid_field.max_bound.xyz.x &&
+			   pos->xyz.y - radius > Asteroid_field.min_bound.xyz.y && pos->xyz.y + radius < Asteroid_field.max_bound.xyz.y &&
+			   pos->xyz.z - radius > Asteroid_field.min_bound.xyz.z && pos->xyz.z + radius < Asteroid_field.max_bound.xyz.z &&
+			   !asteroid_in_inner_bound(asfieldp, pos, radius);
+	} else {
+		return pos->xyz.x + radius > Asteroid_field.min_bound.xyz.x && pos->xyz.x - radius < Asteroid_field.max_bound.xyz.x &&
+			   pos->xyz.y + radius > Asteroid_field.min_bound.xyz.y && pos->xyz.y - radius < Asteroid_field.max_bound.xyz.y &&
+			   pos->xyz.z + radius > Asteroid_field.min_bound.xyz.z && pos->xyz.z - radius < Asteroid_field.max_bound.xyz.z &&
+			   !asteroid_in_inner_bound(asfieldp, pos, radius);
+	}
+
 }
 
 /**
@@ -257,9 +280,28 @@ static void inner_bound_pos_fixup(asteroid_field *asfieldp, vec3d *pos)
 }
 
 /**
+* Randomly select an asteroid subtype
+*/
+const SCP_string& pick_random_asteroid_type()
+{
+	return Asteroid_field.field_asteroid_type[Random::next(static_cast<int>(Asteroid_field.field_asteroid_type.size()))];
+}
+
+int get_asteroid_subtype_index_by_name(const SCP_string &name, int asteroid_idx) {
+	asteroid_info* this_asteroid = &Asteroid_info[asteroid_idx];
+	for (int i = 0; i < static_cast<int>(this_asteroid->subtypes.size()); i++) {
+		if (this_asteroid->subtypes[i].type_name == name) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+/**
  * Create a single asteroid 
  */
-object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroid_subtype)
+object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroid_subtype, bool check_visibility)
 {
 	int				n, objnum;
 	matrix			orient;
@@ -273,8 +315,8 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 	int				rand_base;
 
 	// bogus
-	if(asfieldp == NULL) {
-		return NULL;
+	if(asfieldp == nullptr) {
+		return nullptr;
 	}
 
 	for (n=0; n<MAX_ASTEROIDS; n++) {
@@ -285,15 +327,11 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 
 	if (n >= MAX_ASTEROIDS) {
 		nprintf(("Warning","Could not create asteroid, no more slots left\n"));
-		return NULL;
+		return nullptr;
 	}
 
-	if((asteroid_type < 0) || (asteroid_type >= (int)Asteroid_info.size())) {
-		return NULL;
-	}
-
-	if((asteroid_subtype < 0) || (asteroid_subtype >= NUM_DEBRIS_POFS)) {
-		return NULL;
+	if (!SCP_vector_inbounds(Asteroid_info, asteroid_type)) {
+		return nullptr;
 	}
 
 	// HACK: multiplayer asteroid subtype always 0 to keep subtype in sync
@@ -303,9 +341,13 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 
 	asip = &Asteroid_info[asteroid_type];
 
-	// bogus
-	if(asip->modelp[asteroid_subtype] == NULL) {
-		return NULL;
+	if (!SCP_vector_inbounds(asip->subtypes, asteroid_subtype)) {
+		return nullptr;
+	}
+
+	// if the model is not loaded then abort
+	if(asip->subtypes[asteroid_subtype].model_number == -1) {
+		return nullptr;
 	}	
 
 	asp = &Asteroids[n];
@@ -320,7 +362,7 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 	asp->collide_objsig = -1;
 	asp->target_objnum = -1;
 
-	radius = model_get_radius(asip->model_num[asteroid_subtype]);
+	radius = model_get_radius(asip->subtypes[asteroid_subtype].model_number);
 
 	vm_vec_sub(&delta_bound, &asfieldp->max_bound, &asfieldp->min_bound);
 
@@ -350,6 +392,13 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 		angs.h = static_randf( rand_base++ ) * PI2;
 	}
 
+	// If the generated asteroid position is within the player view then abort
+	// I'm unsure how Eyepoint is handled for multiplayer, so this may need to move up into the SP
+	// only section - Mjn
+	if (check_visibility && asteroid_is_within_view(&pos, -1.0f, true)) {
+		return nullptr;
+	}
+
 	vm_angles_2_matrix(&orient, &angs);
     flagset<Object::Object_Flags> asteroid_default_flagset;
     asteroid_default_flagset += Object::Object_Flags::Renders;
@@ -366,8 +415,8 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 	asp->objnum = objnum;
 	asp->model_instance_num = -1;
 
-	if (model_get(asip->model_num[asteroid_subtype])->flags & PM_FLAG_HAS_INTRINSIC_MOTION) {
-		asp->model_instance_num = model_create_instance(objnum, asip->model_num[asteroid_subtype]);
+	if (model_get(asip->subtypes[asteroid_subtype].model_number)->flags & PM_FLAG_HAS_INTRINSIC_MOTION) {
+		asp->model_instance_num = model_create_instance(objnum, asip->subtypes[asteroid_subtype].model_number);
 	}
 
 	// Add to Asteroid_used_list
@@ -388,12 +437,12 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 	vec3d rotvel;
 	if ( Game_mode & GM_NORMAL ) {
 		vm_vec_rand_vec_quick(&rotvel);
-		vm_vec_scale(&rotvel, frand()/4.0f + 0.1f);
+		vm_vec_scale(&rotvel, asip->rotational_vel_multiplier * (frand()/4.0f + 0.1f));
 		objp->phys_info.rotvel = rotvel;
 		vm_vec_rand_vec_quick(&objp->phys_info.vel);
 	} else {
 		static_randvec( rand_base++, &rotvel );
-		vm_vec_scale(&rotvel, static_randf(rand_base++)/4.0f + 0.1f);
+		vm_vec_scale(&rotvel, asip->rotational_vel_multiplier * (static_randf(rand_base++)/4.0f + 0.1f));
 		objp->phys_info.rotvel = rotvel;
 		static_randvec( rand_base++, &objp->phys_info.vel );
 	}
@@ -412,8 +461,8 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 
 	// blow out his reverse thrusters. Or drag, same thing.
 	objp->phys_info.rotdamp = 10000.0f;
-	objp->phys_info.side_slip_time_const = 10000.0f;
-	objp->phys_info.flags |= (PF_REDUCED_DAMP | PF_DEAD_DAMP);	// set damping equal for all axis and not changable
+	objp->phys_info.flags |= (PF_DEAD_DAMP | PF_BALLISTIC);
+	objp->phys_info.gravity_const = asip->gravity_const;
 
 	// Fill in the max_vel field, so the collision pair stuff knows
 	// how fast this can move maximum in order to throw out collisions.
@@ -422,14 +471,20 @@ object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int asteroi
 	objp->phys_info.max_vel.xyz.y = 0.0f;
 	objp->phys_info.max_vel.xyz.z = vm_vec_mag(&objp->phys_info.desired_vel);
 	
-	objp->phys_info.mass = asip->modelp[asteroid_subtype]->rad * 700.0f;
-	objp->phys_info.I_body_inv.vec.rvec.xyz.x = 1.0f / (objp->phys_info.mass*asip->modelp[asteroid_subtype]->rad);
+	objp->phys_info.mass = model_get(asip->subtypes[asteroid_subtype].model_number)->rad * 700.0f;
+	objp->phys_info.I_body_inv.vec.rvec.xyz.x = 1.0f / (objp->phys_info.mass*model_get(asip->subtypes[asteroid_subtype].model_number)->rad);
 	objp->phys_info.I_body_inv.vec.uvec.xyz.y = objp->phys_info.I_body_inv.vec.rvec.xyz.x;
 	objp->phys_info.I_body_inv.vec.fvec.xyz.z = objp->phys_info.I_body_inv.vec.rvec.xyz.x;
 	objp->hull_strength = asip->initial_asteroid_strength * (0.8f + (float)Game_skill_level/NUM_SKILL_LEVELS)/2.0f;
 
 	// ensure vel is valid
 	Assert( !vm_is_vec_nan(&objp->phys_info.vel) );	
+
+	if (scripting::hooks::OnAsteroidCreated->isActive()) {
+		scripting::hooks::OnAsteroidCreated->run(
+			scripting::hook_param_list(
+				scripting::hook_param("Asteroid", 'o', objp)));
+	}
 
 	return objp;
 }
@@ -446,7 +501,8 @@ void asteroid_sub_create(object *parent_objp, int asteroid_type, vec3d *relvec)
 	int subtype = Asteroids[parent_objp->instance].asteroid_subtype;
 	new_objp = asteroid_create(&Asteroid_field, asteroid_type, subtype);
 
-	if (new_objp == NULL)
+	// New asteroid size doesn't have this subtype, so abort
+	if (new_objp == nullptr)
 		return;
 
 	if ( MULTIPLAYER_MASTER ){
@@ -478,39 +534,51 @@ void asteroid_sub_create(object *parent_objp, int asteroid_type, vec3d *relvec)
 /**
  * Load in an asteroid model
  */
-static void asteroid_load(int asteroid_info_index, int asteroid_subtype)
+void asteroid_load(int asteroid_info_index, int asteroid_subtype)
 {
 	int i;
 	asteroid_info	*asip;
 
-	Assert( asteroid_info_index < (int)Asteroid_info.size() );
-	Assert( asteroid_subtype < NUM_DEBRIS_POFS );
+	Assertion(asteroid_info_index < static_cast<int>(Asteroid_info.size()),
+		"Command to load asteroid at index %i, but only %i asteroids exist",
+		asteroid_info_index,
+		static_cast<int>(Asteroid_info.size()));
 
-	if ( (asteroid_info_index >= (int)Asteroid_info.size()) || (asteroid_subtype >= NUM_DEBRIS_POFS) ) {
+	// invalid asteroid index
+	if (!SCP_vector_inbounds(Asteroid_info, asteroid_info_index)) {
 		return;
 	}
 
 	asip = &Asteroid_info[asteroid_info_index];
 
-	if ( !VALID_FNAME(asip->pof_files[asteroid_subtype]) )
+	// This asteroid does not have this subtype so just return
+	if (!SCP_vector_inbounds(asip->subtypes, asteroid_subtype)) {
+		return;
+	}
+
+	if ( !VALID_FNAME(asip->subtypes[asteroid_subtype].pof_filename) )
 		return;
 
-	asip->model_num[asteroid_subtype] = model_load( asip->pof_files[asteroid_subtype], 0, NULL );
+	//Check if the model is already loaded
+	if (asip->subtypes[asteroid_subtype].model_number >= 0)
+		return;
 
-	if (asip->model_num[asteroid_subtype] >= 0)
+	asip->subtypes[asteroid_subtype].model_number = model_load( asip->subtypes[asteroid_subtype].pof_filename );
+
+	if (asip->subtypes[asteroid_subtype].model_number >= 0)
 	{
-		polymodel *pm = asip->modelp[asteroid_subtype] = model_get(asip->model_num[asteroid_subtype]);
+		polymodel *pm = model_get(asip->subtypes[asteroid_subtype].model_number);
 		
 		if ( asip->num_detail_levels != pm->n_detail_levels )
 		{
 			if ( !Is_standalone )
 			{
 				// just log to file for standalone servers
-				Warning(LOCATION, "For asteroid '%s', detail level\nmismatch (POF needs %d)", asip->name, pm->n_detail_levels );
+				Warning(LOCATION, "For asteroid '%s', detail level mismatch (POF has %d, table has %d)", asip->name, pm->n_detail_levels, asip->num_detail_levels );
 			}
 			else
 			{
-				nprintf(("Warning",  "For asteroid '%s', detail level mismatch (POF needs %d)\n", asip->name, pm->n_detail_levels));
+				nprintf(("Warning",  "For asteroid '%s', detail level mismatch (POF has %d, table has %d)\n", asip->name, pm->n_detail_levels, asip->num_detail_levels ));
 			}
 		}	
 		// Stuff detail level distances.
@@ -530,10 +598,11 @@ void asteroid_create_all()
 	// each different type (size) of debris piece has a diffenent weight, smaller weighted more heavily than larger.
 	// choose next type from table ship_debris_odds_table by Random::next()%max_weighted_range,
 	// the threshold *below* which the debris type is selected.
-	struct {
+	struct ShipDebrisOdds {
 		float random_threshold;
 		int debris_type;
-	} ship_debris_odds_table[MAX_ACTIVE_DEBRIS_TYPES];
+	};
+	std::vector<ShipDebrisOdds> shipDebrisOddsTable(Asteroid_field.field_debris_type.size());
 
 	float max_weighted_range = 0.0f;
 
@@ -544,54 +613,65 @@ void asteroid_create_all()
 		return;
 	}
 
-	if (Asteroid_field.num_used_field_debris_types <= 0) {
+	if ((Asteroid_field.debris_genre == DG_DEBRIS && Asteroid_field.field_debris_type.empty()) ||
+		(Asteroid_field.debris_genre == DG_ASTEROID && Asteroid_field.field_asteroid_type.empty())) {
 		Warning(LOCATION, "An asteroid field is enabled, but no asteroid types were enabled.");
 		return;
 	}
 
-	int max_asteroids = Asteroid_field.num_initial_asteroids; // * (1.0f - 0.1f*(MAX_DETAIL_LEVEL-Detail.asteroid_density)));
+	//Check that the asteroid field bounds are valid - Mjn
+	if (Asteroid_field.min_bound.xyz.x >= Asteroid_field.max_bound.xyz.x) {
+		Warning(LOCATION, "Asteroid field Outer Bound Min X is greater than or equal to Max X. Aborting asteroid creation!");
+		return;
+	}
+	if (Asteroid_field.min_bound.xyz.y >= Asteroid_field.max_bound.xyz.y) {
+		Warning(LOCATION, "Asteroid field Outer Bound Min Y is greater than or equal to Max Y. Aborting asteroid creation!");
+		return;
+	}
+	if (Asteroid_field.min_bound.xyz.z >= Asteroid_field.max_bound.xyz.z) {
+		Warning(LOCATION, "Asteroid field Outer Bound Min Z is greater than or equal to Max Z. Aborting asteroid creation!");
+		return;
+	}
+	if (Asteroid_field.inner_min_bound.xyz.x >= Asteroid_field.inner_max_bound.xyz.x) {
+		Warning(LOCATION, "Asteroid field Inner Bound Min X is greater than or equal to Max X. Aborting asteroid creation!");
+		return;
+	}
+	if (Asteroid_field.inner_min_bound.xyz.y >= Asteroid_field.inner_max_bound.xyz.y) {
+		Warning(LOCATION, "Asteroid field Inner Bound Min Y is greater than or equal to Max Y. Aborting asteroid creation!");
+		return;
+	}
+	if (Asteroid_field.inner_min_bound.xyz.z >= Asteroid_field.inner_max_bound.xyz.z) {
+		Warning(LOCATION, "Asteroid field Inner Bound Min Z is greater than or equal to Max Z. Aborting asteroid creation!");
+		return;
+	}
+
+	int max_asteroids = Asteroid_field.num_initial_asteroids; // * (1.0f - 0.1f*(MAX_DETAIL_VALUE-Detail.asteroid_density)));
 
 	int num_debris_types = 0;
 
-	// get number of ship debris types
-	if (Asteroid_field.debris_genre == DG_SHIP) {
-		for (idx=0; idx<MAX_ACTIVE_DEBRIS_TYPES; idx++) {
-			if (Asteroid_field.field_debris_type[idx] != -1) {
-				num_debris_types++;
-			}
-		}
+	// get number of debris types
+	if (Asteroid_field.debris_genre == DG_DEBRIS) {
+		num_debris_types = static_cast<int>(Asteroid_field.field_debris_type.size());
 
 		// Calculate the odds table
 		for (idx=0; idx<num_debris_types; idx++) {
 			float debris_weight = Asteroid_info[Asteroid_field.field_debris_type[idx]].spawn_weight;
-			ship_debris_odds_table[idx].random_threshold = max_weighted_range + debris_weight;
-			ship_debris_odds_table[idx].debris_type = Asteroid_field.field_debris_type[idx];
+			shipDebrisOddsTable[idx].random_threshold = max_weighted_range + debris_weight;
+			shipDebrisOddsTable[idx].debris_type = Asteroid_field.field_debris_type[idx];
 			max_weighted_range += debris_weight;
 		}
 	}
 
-	// Load Asteroid/ship models
-	if (Asteroid_field.debris_genre == DG_SHIP) {
+	// Load Asteroid/debris models
+	if (Asteroid_field.debris_genre == DG_DEBRIS) {
 		for (idx=0; idx<num_debris_types; idx++) {
 			asteroid_load(Asteroid_field.field_debris_type[idx], 0);
 		}
 	} else {
-		if (Asteroid_field.field_debris_type[0] != -1) {
-			asteroid_load(ASTEROID_TYPE_SMALL, 0);
-			asteroid_load(ASTEROID_TYPE_MEDIUM, 0);
-			asteroid_load(ASTEROID_TYPE_LARGE, 0);
-		}
-
-		if (Asteroid_field.field_debris_type[1] != -1) {
-			asteroid_load(ASTEROID_TYPE_SMALL, 1);
-			asteroid_load(ASTEROID_TYPE_MEDIUM, 1);
-			asteroid_load(ASTEROID_TYPE_LARGE, 1);
-		}
-
-		if (Asteroid_field.field_debris_type[2] != -1) {
-			asteroid_load(ASTEROID_TYPE_SMALL, 2);
-			asteroid_load(ASTEROID_TYPE_MEDIUM, 2);
-			asteroid_load(ASTEROID_TYPE_LARGE, 2);
+		for (const auto& subtype : Asteroid_field.field_asteroid_type) {
+			asteroid_load(ASTEROID_TYPE_SMALL, get_asteroid_subtype_index_by_name(subtype, ASTEROID_TYPE_SMALL));
+			asteroid_load(ASTEROID_TYPE_MEDIUM, get_asteroid_subtype_index_by_name(subtype, ASTEROID_TYPE_MEDIUM));
+			asteroid_load(ASTEROID_TYPE_LARGE, get_asteroid_subtype_index_by_name(subtype, ASTEROID_TYPE_LARGE));
 		}
 	}
 
@@ -601,17 +681,7 @@ void asteroid_create_all()
 			// For asteroid, load only large asteroids
 
 			// get a valid subtype
-			int counter = Random::next(Asteroid_field.num_used_field_debris_types);
-			int subtype = -1;
-			for (int j = 0; j < NUM_DEBRIS_POFS; j++) {
-				if (Asteroid_field.field_debris_type[j] >= 0) {
-					if (counter == 0) {
-						subtype = j;
-						break;
-					} else
-						counter--;
-				}
-			}
+			int subtype = get_asteroid_subtype_index_by_name(pick_random_asteroid_type(), ASTEROID_TYPE_LARGE);
 
 			if (subtype >= 0)
 				asteroid_create(&Asteroid_field, ASTEROID_TYPE_LARGE, subtype);
@@ -620,14 +690,132 @@ void asteroid_create_all()
 
 			float rand_choice = frand() * max_weighted_range;
 
-			for (idx=0; idx<MAX_ACTIVE_DEBRIS_TYPES; idx++) {
+			for (idx = 0; idx < static_cast<int>(Asteroid_field.field_debris_type.size()); idx++) {
 				// for ship debris, choose type according to odds table
-				if (rand_choice < ship_debris_odds_table[idx].random_threshold) {
-					asteroid_create(&Asteroid_field, ship_debris_odds_table[idx].debris_type, 0);
+				if (rand_choice < shipDebrisOddsTable[idx].random_threshold) {
+					asteroid_create(&Asteroid_field, shipDebrisOddsTable[idx].debris_type, 0);
 					break;
 				}
 			}
 		}
+	}
+}
+
+// instantly deletes all asteroids in a mission before moving on.
+// Uses obj_delete_all_that_should_be_dead() so this method has a side effect
+// of also deleting non-asteroid objects marked as dead in the same frame. Usually this is
+// desired but it's worth knowing ahead of time. -Mjn
+void remove_all_asteroids()
+{
+	for (int i = 0; i < MAX_ASTEROIDS; i++) {
+		if (Asteroids[i].flags & AF_USED) {
+			Asteroids[i].flags &= ~AF_USED;
+			Assert(Asteroids[i].objnum >= 0 && Asteroids[i].objnum < MAX_OBJECTS);
+			Objects[Asteroids[i].objnum].flags.set(Object::Object_Flags::Should_be_dead);
+		}
+	}
+	// This feels hackish, but we need to make sure all the asteroids are actually gone before we continue-Mjn
+	obj_delete_all_that_should_be_dead();
+}
+
+// will replace any existing asteroid or debris field with an asteroid field
+void asteroid_create_asteroid_field(int num_asteroids, int field_type, int asteroid_speed, vec3d o_min, vec3d o_max, bool inner_box, vec3d i_min, vec3d i_max, SCP_vector<SCP_string> asteroid_types)
+{
+	remove_all_asteroids();
+
+	Asteroid_field.num_initial_asteroids = num_asteroids;
+
+	switch (field_type) {
+		case 0:
+			Asteroid_field.field_type = FT_PASSIVE;
+			Asteroid_field.enhanced_visibility_checks = false;
+			break;
+		case 1:
+			Asteroid_field.field_type = FT_ACTIVE;
+			Asteroid_field.enhanced_visibility_checks = false;
+			break;
+		case 2:
+			Asteroid_field.field_type = FT_PASSIVE;
+			Asteroid_field.enhanced_visibility_checks = true;
+			break;
+		case 3:
+			Asteroid_field.field_type = FT_ACTIVE;
+			Asteroid_field.enhanced_visibility_checks = true;
+			break;
+		default: //Any other number will just give default behavior
+			Asteroid_field.field_type = FT_PASSIVE;
+			Asteroid_field.enhanced_visibility_checks = false;
+			break;
+	}
+
+	vm_vec_rand_vec_quick(&Asteroid_field.vel);
+	vm_vec_scale(&Asteroid_field.vel, (float)asteroid_speed);
+	Asteroid_field.speed = (float)asteroid_speed;
+	Asteroid_field.debris_genre = DG_ASTEROID;
+
+	Asteroid_field.field_debris_type.clear();
+
+	Asteroid_field.field_asteroid_type.clear();
+
+	Asteroid_field.field_asteroid_type = std::move(asteroid_types);
+
+	Asteroid_field.min_bound = o_min;
+	Asteroid_field.max_bound = o_max;
+
+	vec3d a_rad;
+	vm_vec_sub(&a_rad, &Asteroid_field.max_bound, &Asteroid_field.min_bound);
+	vm_vec_scale(&a_rad, 0.5f);
+	float b_rad = vm_vec_mag(&a_rad);
+
+	Asteroid_field.bound_rad = MAX(3000.0f, b_rad);
+
+	if (inner_box) {
+		Asteroid_field.has_inner_bound = true;
+		Asteroid_field.inner_min_bound = i_min;
+		Asteroid_field.inner_max_bound = i_max;
+	}
+
+	// Only create asteroids if we have some to create
+	if ((!Asteroid_field.field_asteroid_type.empty()) && (num_asteroids > 0)) {
+		asteroid_create_all();
+	}
+}
+
+// will replace any existing asteroid or debris field with a debris field
+void asteroid_create_debris_field(int num_asteroids, int asteroid_speed, SCP_vector<int> debris_types, vec3d o_min, vec3d o_max, bool enhanced)
+{
+	remove_all_asteroids();
+
+	Asteroid_field.num_initial_asteroids = num_asteroids;
+
+	Asteroid_field.field_type = FT_PASSIVE;
+
+	Asteroid_field.enhanced_visibility_checks = enhanced;
+
+	vm_vec_rand_vec_quick(&Asteroid_field.vel);
+	vm_vec_scale(&Asteroid_field.vel, (float)asteroid_speed);
+	Asteroid_field.speed = (float)asteroid_speed;
+	Asteroid_field.debris_genre = DG_DEBRIS;
+
+	Asteroid_field.field_debris_type.clear();
+
+	Asteroid_field.field_asteroid_type.clear();
+
+	Asteroid_field.field_debris_type = std::move(debris_types);
+
+	Asteroid_field.min_bound = o_min;
+	Asteroid_field.max_bound = o_max;
+
+	vec3d a_rad;
+	vm_vec_sub(&a_rad, &Asteroid_field.max_bound, &Asteroid_field.min_bound);
+	vm_vec_scale(&a_rad, 0.5f);
+	float b_rad = vm_vec_mag(&a_rad);
+
+	Asteroid_field.bound_rad = MAX(3000.0f, b_rad);
+
+	// Only create debris if we have some to create
+	if ((!Asteroid_field.field_debris_type.empty()) && (num_asteroids > 0)) {
+		asteroid_create_all();
 	}
 }
 
@@ -636,15 +824,17 @@ void asteroid_create_all()
  */
 void asteroid_level_init()
 {
-	Asteroid_field.num_initial_asteroids=0;
-	Num_asteroids = 0;
-	Asteroid_targets.clear();
-	Default_asteroid_throwing_behavior = true;
-	asteroid_obj_list_init();
-	SCP_vector<asteroid_info>::iterator ast;
-	for (ast = Asteroid_info.begin(); ast != Asteroid_info.end(); ++ast)
-		ast->damage_type_idx = ast->damage_type_idx_sav;
-	Asteroid_field.num_used_field_debris_types = 0;
+	Asteroid_field = {};
+
+	if (!Fred_running)
+	{
+		for (auto& ast : Asteroid_info)
+			ast.damage_type_idx = ast.damage_type_idx_sav;
+
+		Num_asteroids = 0;
+		asteroid_obj_list_init();
+		Asteroid_targets.clear();
+	}
 }
 
 /**
@@ -696,37 +886,37 @@ static int asteroid_should_wrap(object *objp, asteroid_field *asfieldp)
 }
 
 /**
- * Wrap an asteroid from one end of the asteroid field to the other
+ * Generates a potential new position for an asteroid that might wrap
+ * from one end of the asteroid field to the other
  */
-static void asteroid_wrap_pos(object *objp, asteroid_field *asfieldp)
+static void asteroid_wrap_pos(vec3d *pos, asteroid_field *asfieldp)
 {
-	if (objp->pos.xyz.x < asfieldp->min_bound.xyz.x) {
-		objp->pos.xyz.x = asfieldp->max_bound.xyz.x + (objp->pos.xyz.x - asfieldp->min_bound.xyz.x);
+	if (pos->xyz.x < asfieldp->min_bound.xyz.x) {
+		pos->xyz.x = asfieldp->max_bound.xyz.x + (pos->xyz.x - asfieldp->min_bound.xyz.x);
 	}
 
-	if (objp->pos.xyz.y < asfieldp->min_bound.xyz.y) {
-		objp->pos.xyz.y = asfieldp->max_bound.xyz.y + (objp->pos.xyz.y - asfieldp->min_bound.xyz.y);
-	}
-	
-	if (objp->pos.xyz.z < asfieldp->min_bound.xyz.z) {
-		objp->pos.xyz.z = asfieldp->max_bound.xyz.z + (objp->pos.xyz.z - asfieldp->min_bound.xyz.z);
+	if (pos->xyz.y < asfieldp->min_bound.xyz.y) {
+		pos->xyz.y = asfieldp->max_bound.xyz.y + (pos->xyz.y - asfieldp->min_bound.xyz.y);
 	}
 
-	if (objp->pos.xyz.x > asfieldp->max_bound.xyz.x) {
-		objp->pos.xyz.x = asfieldp->min_bound.xyz.x + (objp->pos.xyz.x - asfieldp->max_bound.xyz.x);
+	if (pos->xyz.z < asfieldp->min_bound.xyz.z) {
+		pos->xyz.z = asfieldp->max_bound.xyz.z + (pos->xyz.z - asfieldp->min_bound.xyz.z);
 	}
 
-	if (objp->pos.xyz.y > asfieldp->max_bound.xyz.y) {
-		objp->pos.xyz.y = asfieldp->min_bound.xyz.y + (objp->pos.xyz.y - asfieldp->max_bound.xyz.y);
+	if (pos->xyz.x > asfieldp->max_bound.xyz.x) {
+		pos->xyz.x = asfieldp->min_bound.xyz.x + (pos->xyz.x - asfieldp->max_bound.xyz.x);
 	}
 
-	if (objp->pos.xyz.z > asfieldp->max_bound.xyz.z) {
-		objp->pos.xyz.z = asfieldp->min_bound.xyz.z + (objp->pos.xyz.z - asfieldp->max_bound.xyz.z);
+	if (pos->xyz.y > asfieldp->max_bound.xyz.y) {
+		pos->xyz.y = asfieldp->min_bound.xyz.y + (pos->xyz.y - asfieldp->max_bound.xyz.y);
+	}
+
+	if (pos->xyz.z > asfieldp->max_bound.xyz.z) {
+		pos->xyz.z = asfieldp->min_bound.xyz.z + (pos->xyz.z - asfieldp->max_bound.xyz.z);
 	}
 
 	// wrap on inner bound, check all 3 axes as needed, use of rand ok for multiplayer with send_asteroid_throw()
-	inner_bound_pos_fixup(asfieldp, &objp->pos);
-
+	inner_bound_pos_fixup(asfieldp, pos);
 }
 
 
@@ -745,6 +935,8 @@ static int asteroid_is_targeted(object *objp)
 
 	for ( so = GET_FIRST(&Ship_obj_list); so != END_OF_LIST(&Ship_obj_list); so = GET_NEXT(so) ) {
 		ship_objp = &Objects[so->objnum];
+		if (ship_objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
 		if ( Ai_info[Ships[ship_objp->instance].ai_index].target_objnum == asteroid_obj_index ) {
 			return 1;
 		}
@@ -771,7 +963,8 @@ static void asteroid_aim_at_target(object *objp, object *asteroid_objp, float de
 		vm_vec_add2(&rand_vec, &objp->orient.vec.rvec);
 	vm_vec_normalize(&rand_vec);
 
-	speed = Asteroid_info[0].max_speed * (frand()/2.0f + 0.5f);
+	auto asp = &Asteroids[asteroid_objp->instance];
+	speed = Asteroid_info[asp->asteroid_type].max_speed * (frand()/2.0f + 0.5f);
 	
 	vm_vec_copy_scale(&asteroid_objp->phys_info.vel, &rand_vec, -speed);
 	asteroid_objp->phys_info.desired_vel = asteroid_objp->phys_info.vel;
@@ -795,11 +988,38 @@ static void sanitize_asteroid_targets_list() {
 }
 
 /**
+* Checks if an asteroid will be within the player's view
+*
+**/
+bool asteroid_is_within_view(vec3d *pos, float range, bool range_override)
+{
+	vec3d vec_to_asteroid;
+
+	// Distance and view cone for the position in relation to the player
+	float dist = vm_vec_normalized_dir(&vec_to_asteroid, pos, &Eye_position);
+	float dot = vm_vec_dot(&Eye_matrix.vec.fvec, &vec_to_asteroid);
+
+	// if asteroid is within view or far enough away then wrap
+	if (dot > cos(g3_get_hfov(Proj_fov))) {
+		if (range_override) {
+			return true;
+		} else {
+			if (dist < range) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
  * Call once per frame to maybe throw some asteroids at one or more ships.
  *
  */
 static void maybe_throw_asteroid()
 {
+	Assertion(!Asteroid_field.field_asteroid_type.empty(), "maybe_throw_asteroid() called while field_asteroid_type.size was 0; this should never happen, get a coder!");
 
 	for (asteroid_target& target : Asteroid_targets) {
 		if (!timestamp_elapsed(target.throw_stamp))
@@ -817,36 +1037,26 @@ static void maybe_throw_asteroid()
 
 		target.throw_stamp = _timestamp(1000 + 1200 * target.incoming_asteroids / (Game_skill_level+1));
 
-		int counter = Random::next(Asteroid_field.num_used_field_debris_types);
-		int subtype = -1;
-		for (int i = 0; i < NUM_DEBRIS_POFS; i++) {
-			if (Asteroid_field.field_debris_type[i] >= 0) {
-				if (counter == 0) {
-					subtype = i;
-					break;
-				}
-				else
-					counter--;
-			}
-		}
+		// get a valid subtype
+		int subtype = get_asteroid_subtype_index_by_name(pick_random_asteroid_type(), ASTEROID_TYPE_LARGE);
 
 		// this really shouldn't happen but just in case...
 		if (subtype < 0)
 			return;
 
-		object *objp = asteroid_create(&Asteroid_field, ASTEROID_TYPE_LARGE, subtype);
-		if (objp != nullptr) {
-			asteroid_aim_at_target(target_objp, objp, ASTEROID_MIN_COLLIDE_TIME + frand() * 20.0f);
+		object *ast_objp = asteroid_create(&Asteroid_field, ASTEROID_TYPE_LARGE, subtype, Asteroid_field.enhanced_visibility_checks);
+		if (ast_objp != nullptr) {
+			asteroid_aim_at_target(target_objp, ast_objp, ASTEROID_MIN_COLLIDE_TIME + frand() * 20.0f);
 
 			// if asteroid is inside inner bound, kill it
-			if (asteroid_in_inner_bound(&Asteroid_field, &objp->pos, 0.0f)) {
-				objp->flags.set(Object::Object_Flags::Should_be_dead);
+			if (asteroid_in_inner_bound(&Asteroid_field, &ast_objp->pos, 0.0f)) {
+				ast_objp->flags.set(Object::Object_Flags::Should_be_dead);
 			} else {
-				Asteroids[objp->instance].target_objnum = target.objnum;
+				Asteroids[ast_objp->instance].target_objnum = target.objnum;
 				target.incoming_asteroids++;
 
 				if ( MULTIPLAYER_MASTER ) {
-					send_asteroid_throw( objp );
+					send_asteroid_throw( ast_objp );
 				}
 			}
 		}
@@ -885,64 +1095,84 @@ void asteroid_delete( object * obj )
 }
 
 /**
- * See if we should reposition the asteroid.  
+ * See if we should reposition the asteroid.
  * Only reposition if oustide the bounding volume and the player isn't looking towards the asteroid.
  */
 static void asteroid_maybe_reposition(object *objp, asteroid_field *asfieldp)
 {
-	// passive field does not wrap
-	if (asfieldp->field_type == FT_PASSIVE) {
+	// passive field does not wrap if there is no gravity
+	if (IS_VEC_NULL(&The_mission.gravity) && (asfieldp->field_type == FT_PASSIVE)) {
 		return;
 	}
 
-	if ( asteroid_should_wrap(objp, asfieldp) ) {
-		vec3d	vec_to_asteroid, old_asteroid_pos, old_vel;
-		float		dot, dist;
+	if (asteroid_should_wrap(objp, asfieldp)) {
 
-		old_asteroid_pos = objp->pos;
-		old_vel = objp->phys_info.vel;
+		// Generate a possible new position if we do end up wrapping, but don't move the asteroid yet
+		vec3d new_pos = objp->pos;
+		asteroid_wrap_pos(&new_pos, asfieldp);
 
-		// don't wrap asteroid if it is a target of some ship
-		if ( !asteroid_is_targeted(objp) ) {
+		bool wrap = false;
+		bool reverse = false;
 
-			// only wrap if player won't see asteroid disappear/reverse direction
-			dist = vm_vec_normalized_dir(&vec_to_asteroid, &objp->pos, &Eye_position);
-			dot = vm_vec_dot(&Eye_matrix.vec.fvec, &vec_to_asteroid);
-			
-			if ( (dot < 0.7f) || (dist > asfieldp->bound_rad) ) {
-				if (Num_asteroids > MAX_ASTEROIDS-10) {
-					objp->flags.set(Object::Object_Flags::Should_be_dead);
-				} else {
-					// check to ensure player won't see asteroid appear either
-					asteroid_wrap_pos(objp, asfieldp);
-					asteroid* astp = &Asteroids[objp->instance];
+		// If asteroid is targeted then we cannot wrap because they player would see it and say "SHENANIGANS!"
+		// So we bail
+		if (asteroid_is_targeted(objp)) {
+			return;
+		}
 
-					// this doesnt count as a thrown asteroid anymore
-					for (asteroid_target& target : Asteroid_targets)
-						if (target.objnum == astp->target_objnum)
-							target.incoming_asteroids--;
+		// if asteroid is not within view...
+		if (!asteroid_is_within_view(&objp->pos, asfieldp->bound_rad, asfieldp->enhanced_visibility_checks)) {
 
-					astp->target_objnum = -1;
+			// if asteroid new position is within view then reverse velocity, otherwise wrap
+			if (asteroid_is_within_view(&new_pos, (asfieldp->bound_rad * 1.3f), asfieldp->enhanced_visibility_checks)) {
 
-					dist = vm_vec_normalized_dir(&vec_to_asteroid, &objp->pos, &Eye_position);
-					dot = vm_vec_dot(&Eye_matrix.vec.fvec, &vec_to_asteroid);
-					
-					if ( (dot > 0.7f) && (dist < (asfieldp->bound_rad * 1.3f)) ) {
-						// player would see asteroid pop out other side, so reverse velocity instead of wrapping						
-						objp->pos = old_asteroid_pos;		
-						vm_vec_copy_scale(&objp->phys_info.vel, &old_vel, -1.0f);
-						objp->phys_info.desired_vel = objp->phys_info.vel;
-						Asteroids[objp->instance].target_objnum = -1;
-					}
-
-					// update last pos (after vel is known)
-					vm_vec_scale_add(&objp->last_pos, &objp->pos, &objp->phys_info.vel, -flFrametime);
-
-					asteroid_update_collide(objp);
-
-					if ( MULTIPLAYER_MASTER )
-						send_asteroid_throw( objp );
+				// if the mission has gravity, then we can't reverse. So make sure gravity is null
+				if (IS_VEC_NULL(&The_mission.gravity)) {
+					reverse = true;
 				}
+
+			} else {
+				wrap = true;
+			}
+
+		}
+
+		// we can wrap, but we have too many asteroids, so destroy this one instead
+		if (wrap && (Num_asteroids > MAX_ASTEROIDS - 10)) {
+			objp->flags.set(Object::Object_Flags::Should_be_dead);
+			return;
+		}
+
+		// Reverse instead of wrap!
+		if (reverse) {
+			vm_vec_copy_scale(&objp->phys_info.vel, &objp->phys_info.vel, -1.0f);
+			objp->phys_info.desired_vel = objp->phys_info.vel;
+			Asteroids[objp->instance].target_objnum = -1;
+			return;
+		}
+
+		// We can wrap, so wrap!
+		if (wrap) {
+			objp->pos = new_pos;
+			asteroid *astp = &Asteroids[objp->instance];
+
+			if (asfieldp->field_type == FT_ACTIVE) {
+				// this doesnt count as a thrown asteroid anymore
+				for (asteroid_target &target : Asteroid_targets)
+					if (target.objnum == astp->target_objnum)
+						target.incoming_asteroids--;
+
+				astp->target_objnum = -1;
+			}
+
+			// update last pos (after vel is known)
+			vm_vec_scale_add(&objp->last_pos, &objp->pos, &objp->phys_info.vel, -flFrametime);
+
+			asteroid_update_collide(objp);
+
+			if (asfieldp->field_type == FT_ACTIVE) {
+				if (MULTIPLAYER_MASTER)
+					send_asteroid_throw(objp);
 			}
 		}
 	}
@@ -970,7 +1200,6 @@ int asteroid_check_collision(object *pasteroid, object *other_obj, vec3d *hitpos
 	}
 
 	mc_info	mc;
-	mc_info_init(&mc);
 	int		num, asteroid_subtype;
 
 	Assert( pasteroid->type == OBJ_ASTEROID );
@@ -986,7 +1215,7 @@ int asteroid_check_collision(object *pasteroid, object *other_obj, vec3d *hitpos
 		// asteroid weapon collision
 		Assert( other_obj->type == OBJ_WEAPON );
 		mc.model_instance_num = Asteroids[num].model_instance_num;
-		mc.model_num = Asteroid_info[Asteroids[num].asteroid_type].model_num[asteroid_subtype];	// Fill in the model to check
+		mc.model_num = Asteroid_info[Asteroids[num].asteroid_type].subtypes[asteroid_subtype].model_number;	// Fill in the model to check
 		mc.orient = &pasteroid->orient;					// The object's orient
 		mc.pos = &pasteroid->pos;							// The object's position
 		mc.p0 = &other_obj->last_pos;				// Point 1 of ray to check
@@ -1064,10 +1293,9 @@ int asteroid_check_collision(object *pasteroid, object *other_obj, vec3d *hitpos
 		mc.flags = (MC_CHECK_MODEL | MC_CHECK_SPHERELINE);
 
 		// copy important data
-		int copy_flags = mc.flags;  // make a copy of start end positions of sphere in  big ship RF
-		vec3d copy_p0, copy_p1;
-		copy_p0 = *mc.p0;
-		copy_p1 = *mc.p1;
+		int orig_flags = mc.flags;  // make a copy of start end positions of sphere in big ship RF
+		vec3d orig_p0 = *mc.p0;
+		vec3d orig_p1 = *mc.p1;
 
 		// first test against the sphere - if this fails then don't do any submodel tests
 		mc.flags = MC_ONLY_SPHERE | MC_CHECK_SPHERELINE;
@@ -1093,7 +1321,7 @@ int asteroid_check_collision(object *pasteroid, object *other_obj, vec3d *hitpos
 				}
 
 				// Only check single submodel now, since children of moving submodels are handled as moving as well
-				mc.flags = copy_flags | MC_SUBMODEL;
+				mc.flags = orig_flags | MC_SUBMODEL;
 
 				// check each submodel in turn
 				for (auto submodel: submodel_vector) {
@@ -1138,9 +1366,9 @@ int asteroid_check_collision(object *pasteroid, object *other_obj, vec3d *hitpos
 			}
 
 			// Now complete base model collision checks that do not take into account rotating submodels.
-			mc.flags = copy_flags;
-			*mc.p0 = copy_p0;
-			*mc.p1 = copy_p1;
+			mc.flags = orig_flags;
+			mc.p0 = &orig_p0;
+			mc.p1 = &orig_p1;
 			mc.orient = &heavy_obj->orient;
 
 			// usual ship_ship collision test
@@ -1168,7 +1396,7 @@ int asteroid_check_collision(object *pasteroid, object *other_obj, vec3d *hitpos
 	} else {
 		// Asteroid is heavier obj
 		mc.model_instance_num = Asteroids[num].model_instance_num;
-		mc.model_num = Asteroid_info[Asteroids[num].asteroid_type].model_num[asteroid_subtype];		// Fill in the model to check
+		mc.model_num = Asteroid_info[Asteroids[num].asteroid_type].subtypes[asteroid_subtype].model_number;		// Fill in the model to check
 		mc.orient = &pasteroid->orient;				// The object's orient
 		mc.radius = model_get_core_radius(Ship_info[Ships[pship_obj->instance].ship_info_index].model_num);
 
@@ -1249,14 +1477,62 @@ void asteroid_render(object * obj, model_draw_list *scene)
 
 		Assert( asp->flags & AF_USED );
 
-		model_clear_instance( Asteroid_info[asp->asteroid_type].model_num[asp->asteroid_subtype]);
+		model_clear_instance( Asteroid_info[asp->asteroid_type].subtypes[asp->asteroid_subtype].model_number);
 
 		model_render_params render_info;
 
-		render_info.set_object_number( OBJ_INDEX(obj) );
-		render_info.set_flags(MR_IS_ASTEROID);
+		uint64_t render_flags = MR_IS_ASTEROID;
 
-		model_render_queue(&render_info, scene, Asteroid_info[asp->asteroid_type].model_num[asp->asteroid_subtype], &obj->orient, &obj->pos);	//	Replace MR_NORMAL with 0x07 for big yellow blobs
+		if (asp->render_flags[Object::Raw_Pof_Flags::Render_without_light])
+			render_flags |= MR_NO_LIGHTING;
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Glowmaps_disabled]) {
+			render_flags |= MR_NO_GLOWMAPS;
+		}
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Draw_as_wireframe]) {
+			render_flags |= MR_SHOW_OUTLINE_HTL | MR_NO_POLYS | MR_NO_TEXTURING;
+			render_info.set_color(Wireframe_color);
+		}
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Render_full_detail]) {
+			render_flags |= MR_FULL_DETAIL;
+		}
+
+		uint debug_flags = render_info.get_debug_flags();
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Render_without_diffuse]) {
+			debug_flags |= MR_DEBUG_NO_DIFFUSE;
+		}
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Render_without_glowmap]) {
+			debug_flags |= MR_DEBUG_NO_GLOW;
+		}
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Render_without_normalmap]) {
+			debug_flags |= MR_DEBUG_NO_NORMAL;
+		}
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Render_without_ambientmap]) {
+			debug_flags |= MR_DEBUG_NO_AMBIENT;
+		}
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Render_without_specmap]) {
+			debug_flags |= MR_DEBUG_NO_SPEC;
+		}
+
+		if (asp->render_flags[Object::Raw_Pof_Flags::Render_without_reflectmap]) {
+			debug_flags |= MR_DEBUG_NO_REFLECT;
+		}
+
+		render_info.set_object_number( OBJ_INDEX(obj) );
+
+		render_info.set_flags(render_flags);
+		render_info.set_debug_flags(debug_flags);
+		if (asp->model_instance_num >= 0)
+			render_info.set_replacement_textures(model_get_instance(asp->model_instance_num)->texture_replace);
+
+		model_render_queue(&render_info, scene, Asteroid_info[asp->asteroid_type].subtypes[asp->asteroid_subtype].model_number, &obj->orient, &obj->pos);	//	Replace MR_NORMAL with 0x07 for big yellow blobs
 	}
 }
 
@@ -1325,9 +1601,8 @@ static float asteroid_create_explosion(object *objp)
 		fireball_type = FIREBALL_ASTEROID;
 	}
 
-	if (fireball_type >= Num_fireball_types) {
-		Warning(LOCATION, "Invalid fireball type %i specified for an asteroid, only %i fireball types are defined.", fireball_type, Num_fireball_types);
-
+	if (fireball_type >= static_cast<int>(Fireball_info.size())) {
+		Warning(LOCATION, "Invalid fireball type %i specified for an asteroid; only " SIZE_T_ARG " fireball types are defined.", fireball_type, Fireball_info.size());
 		return 0;
 	}
 
@@ -1351,7 +1626,7 @@ static void asteroid_explode_sound(object *objp, int type, int play_loud)
 	gamesnd_id sound_index;
 	float range_factor = 1.0f;		// how many times sound should traver farther than normal
 
-	if (type % NUM_DEBRIS_SIZES <= 1)
+	if (type % NUM_ASTEROID_SIZES <= 1)
 	{
 		sound_index = gamesnd_id(GameSounds::ASTEROID_EXPLODE_SMALL);
 		range_factor = 5.0;
@@ -1393,9 +1668,11 @@ static void asteroid_do_area_effect(object *asteroid_objp)
 
 	for ( so = GET_FIRST(&Ship_obj_list); so != END_OF_LIST(&Ship_obj_list); so = GET_NEXT(so) ) {
 		ship_objp = &Objects[so->objnum];
-	
-		// don't blast navbuoys
-		if ( ship_get_SIF(ship_objp->instance)[Ship::Info_Flags::Navbuoy] ) {
+		if (ship_objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
+		// don't blast no-collide or navbuoys
+		if ( !ship_objp->flags[Object::Object_Flags::Collides] || ship_get_SIF(ship_objp->instance)[Ship::Info_Flags::Navbuoy] ) {
 			continue;
 		}
 
@@ -1403,7 +1680,7 @@ static void asteroid_do_area_effect(object *asteroid_objp)
 			continue;
 
 		ship_apply_global_damage(ship_objp, asteroid_objp, &asteroid_objp->pos, damage, asip->damage_type_idx);
-		weapon_area_apply_blast(NULL, ship_objp, &asteroid_objp->pos, blast, 0);
+		weapon_area_apply_blast(nullptr, ship_objp, &asteroid_objp->pos, blast, false);
 	}	// end for
 }
 
@@ -1415,33 +1692,59 @@ static void asteroid_do_area_effect(object *asteroid_objp)
  * @param hitpos		world position asteroid was hit, can be NULL if hit by area effect
  * @param damage		amount of damage to apply to asteroid
  */
-void asteroid_hit( object * pasteroid_obj, object * other_obj, vec3d * hitpos, float damage )
+void asteroid_hit( object * pasteroid_obj, object * other_obj, vec3d * hitpos, float damage, vec3d* force )
 {
-	float		explosion_life;
-	asteroid	*asp;
-
-	asp = &Asteroids[pasteroid_obj->instance];
-
+	asteroid	*asp = &Asteroids[pasteroid_obj->instance];
+	asteroid_info *asip = &Asteroid_info[Asteroids[pasteroid_obj->instance].asteroid_type];
+	
 	if (pasteroid_obj->flags[Object::Object_Flags::Should_be_dead]){
 		return;
 	}
-
+	
 	if ( MULTIPLAYER_MASTER ){
-		send_asteroid_hit( pasteroid_obj, other_obj, hitpos, damage );
+		send_asteroid_hit( pasteroid_obj, other_obj, hitpos, damage, force );
 	}
-
+	
+	if (hitpos && force && The_mission.ai_profile->flags[AI::Profile_Flags::Whackable_asteroids]) {
+		vec3d rel_hit_pos = *hitpos - pasteroid_obj->pos;
+		physics_calculate_and_apply_whack(force, &rel_hit_pos, &pasteroid_obj->phys_info, &pasteroid_obj->orient, &pasteroid_obj->phys_info.I_body_inv);
+		pasteroid_obj->phys_info.desired_vel = pasteroid_obj->phys_info.vel;
+	}
+	
 	pasteroid_obj->hull_strength -= damage;
-
+	
 	if (pasteroid_obj->hull_strength < 0.0f) {
 		if ( !asp->final_death_time.isValid() ) {
 			int play_loud_collision = 0;
+			
+			float explosion_life = 1.f;
+			int breakup_timestamp;
+			
+			Assertion(!asip->end_particles.isValid() || asip->breakup_delay.has_value(), "Asteroid %s has end particles but no breakup delay. Parsing should not have allowed this!", asip->name);
 
-			explosion_life = asteroid_create_explosion(pasteroid_obj);
+			if (asip->end_particles.isValid()) {
+				auto source = particle::ParticleManager::get()->createSource(asip->end_particles);
+
+				// Use the position since the asteroid is going to be invalid soon
+				auto host = std::make_unique<EffectHostVector>(pasteroid_obj->pos, pasteroid_obj->orient, pasteroid_obj->phys_info.vel);
+				host->setRadius(pasteroid_obj->radius);
+				source->setHost(std::move(host));
+				source->setNormal(pasteroid_obj->orient.vec.uvec);
+				source->finishCreation();
+			} else {
+				explosion_life = asteroid_create_explosion(pasteroid_obj);
+			}
+
+			if (asip->breakup_delay.has_value()) {
+				breakup_timestamp = fl2i(*asip->breakup_delay * MILLISECONDS_PER_SECOND);
+			} else {
+				breakup_timestamp = fl2i((explosion_life * MILLISECONDS_PER_SECOND) / 5.f);
+			}
 
 			asteroid_explode_sound(pasteroid_obj, asp->asteroid_type, play_loud_collision);
 			asteroid_do_area_effect(pasteroid_obj);
 
-			asp->final_death_time = _timestamp( fl2i(explosion_life*MILLISECONDS_PER_SECOND)/5 );	// Wait till 30% of vclip time before breaking the asteroid up.
+			asp->final_death_time = _timestamp( breakup_timestamp );	// Wait till 20% of vclip time before breaking the asteroid up, or use the specified delay
 			if ( hitpos ) {
 				asp->death_hit_pos = *hitpos;
 			} else {
@@ -1457,8 +1760,10 @@ void asteroid_hit( object * pasteroid_obj, object * other_obj, vec3d * hitpos, f
 			weapon_info *wip;
 			wip = &Weapon_info[Weapons[other_obj->instance].weapon_info_index];
 			// If the weapon didn't play any impact animation, play custom asteroid impact animation
-			if (!wip->impact_weapon_expl_effect.isValid()) {
-				particle::create( hitpos, &vmd_zero_vector, 0.0f, Asteroid_impact_explosion_radius, particle::PARTICLE_BITMAP, Asteroid_impact_explosion_ani );
+			if (!wip->impact_weapon_expl_effect.isValid() && Asteroid_impact_explosion_ani.isValid()) {
+				auto source = particle::ParticleManager::get()->createSource(Asteroid_impact_explosion_ani);
+				source->setHost(std::make_unique<EffectHostVector>(*hitpos, vmd_identity_matrix, vmd_zero_vector));
+				source->finishCreation();
 			}
 		}
 	}
@@ -1472,13 +1777,20 @@ void asteroid_hit( object * pasteroid_obj, object * other_obj, vec3d * hitpos, f
  */
 void asteroid_level_close()
 {
-	int	i;
 
-	for (i=0; i<MAX_ASTEROIDS; i++) {
+	for (int i=0; i<MAX_ASTEROIDS; i++) {
 		if (Asteroids[i].flags & AF_USED) {
 			Asteroids[i].flags &= ~AF_USED;
 			Assert(Asteroids[i].objnum >=0 && Asteroids[i].objnum < MAX_OBJECTS);
 			Objects[Asteroids[i].objnum].flags.set(Object::Object_Flags::Should_be_dead);
+		}
+	}
+
+	//when a level is closed, all models are cleared, so let's make sure that
+	//is tracked for asteroids as well -Mjn
+	for (size_t i = 0; i < Asteroid_info.size(); i++) {
+		for (size_t j = 0; j < Asteroid_info[i].subtypes.size(); j++) {
+			Asteroid_info[i].subtypes[j].model_number = -1;
 		}
 	}
 
@@ -1514,9 +1826,8 @@ static void asteroid_maybe_break_up(object *pasteroid_obj)
 		bool hooked = scripting::hooks::OnDeath->isActive();
 
 		if (hooked) {
-			skip = scripting::hooks::OnDeath->isOverride(
-				scripting::hook_param_list(scripting::hook_param("Self", 'o', pasteroid_obj)),
-				pasteroid_obj);
+			skip = scripting::hooks::OnDeath->isOverride(scripting::hooks::ObjectDeathConditions{ pasteroid_obj },
+				scripting::hook_param_list(scripting::hook_param("Self", 'o', pasteroid_obj)));
 		}
 		if (!skip)
 		{
@@ -1575,7 +1886,8 @@ static void asteroid_maybe_break_up(object *pasteroid_obj)
 								roids_to_create.push_back(split->asteroid_type);
 					}
 
-					random_shuffle(roids_to_create.begin(), roids_to_create.end());
+					std::random_device rd;
+					std::shuffle(roids_to_create.begin(), roids_to_create.end(), std::mt19937(rd()));
 
 					size_t total_roids = roids_to_create.size();
 					for (size_t i = 0; i < total_roids; i++) {
@@ -1624,16 +1936,14 @@ static void asteroid_maybe_break_up(object *pasteroid_obj)
 			asp->final_death_time = TIMESTAMP::invalid();
 		}
 		if (hooked) {
-			scripting::hooks::OnDeath->run(
-				scripting::hook_param_list(scripting::hook_param("Self", 'o', pasteroid_obj)),
-				pasteroid_obj);
+			scripting::hooks::OnDeath->run(scripting::hooks::ObjectDeathConditions{ pasteroid_obj },
+				scripting::hook_param_list(scripting::hook_param("Self", 'o', pasteroid_obj)));
 		}
 		if (scripting::hooks::OnAsteroidDeath->isActive()) {
 			scripting::hooks::OnAsteroidDeath->run(
 				scripting::hook_param_list(
 					scripting::hook_param("Asteroid", 'o', pasteroid_obj),
-					scripting::hook_param("Hitpos", 'o', asp->death_hit_pos)),
-				pasteroid_obj);
+					scripting::hook_param("Hitpos", 'o', asp->death_hit_pos)));
 		}
 	}
 }
@@ -1683,7 +1993,6 @@ static void asteroid_test_collide(object *pasteroid_obj, object *pship_obj, mc_i
 static int asteroid_will_collide(object *pasteroid_obj, object *escort_objp)
 {
 	mc_info	mc;
-	mc_info_init(&mc);
 
 	asteroid_test_collide(pasteroid_obj, escort_objp, &mc);
 
@@ -1777,12 +2086,11 @@ void asteroid_process_post(object * obj)
 		
 		asteroid	*asp = &Asteroids[num];
 
-		// Only wrap if active field
-		if (Asteroid_field.field_type == FT_ACTIVE) {
-			if ( timestamp_elapsed(asp->check_for_wrap) ) {
-				asteroid_maybe_reposition(obj, &Asteroid_field);
-				asp->check_for_wrap = _timestamp(ASTEROID_CHECK_WRAP_TIMESTAMP);
-			}
+		//Passive fields might wrap if there's gravity so do
+		//this for all fields now-Mjn
+		if ( timestamp_elapsed(asp->check_for_wrap) ) {
+			asteroid_maybe_reposition(obj, &Asteroid_field);
+			asp->check_for_wrap = _timestamp(ASTEROID_CHECK_WRAP_TIMESTAMP);
 		}
 
 		asteroid_verify_collide_objnum(asp);
@@ -1814,7 +2122,6 @@ float asteroid_time_to_impact(object *asteroid_objp)
 	float		time=-1.0f, total_dist, speed;
 	asteroid	*asp;
 	mc_info	mc;
-	mc_info_init(&mc);
 
 	asp = &Asteroids[asteroid_objp->instance];
 
@@ -1836,72 +2143,255 @@ float asteroid_time_to_impact(object *asteroid_objp)
 	return time;
 }
 
+static SCP_string setup_display_name(SCP_string name)
+{
+
+	size_t split = std::string::npos;
+	char thisSpecies[NAME_LENGTH];
+
+	for (auto& species : Species_info) {
+		if (name.compare(0, strlen(species.species_name), species.species_name) == 0) {
+			split = strlen(species.species_name);
+			strcpy_s(thisSpecies, species.species_name);
+			break;
+		}
+	}
+
+	if (split == std::string::npos)
+		return XSTR("Asteroid", 431);
+
+	char newName[NAME_LENGTH];
+	strcpy_s(newName, thisSpecies);
+	strcat(newName, " ");
+	strcat(newName, XSTR("debris", 348));
+	return newName;
+
+}
+
+// Temporary list used to grab parsed data. After verification, the list is cleared -Mjn
+static SCP_vector<asteroid_info> asteroid_list;
+
+// Gets the asteroid pointer for asteroid_list NOT Asteroid_info. Use only during parsing! - Mjn
+static asteroid_info* get_asteroid_pointer(const char* asteroid_name)
+{
+	for (int i = 0; i < (int)asteroid_list.size(); i++) {
+		if (!stricmp(asteroid_name, asteroid_list[i].name)) {
+			return &asteroid_list[i];
+		}
+	}
+
+	// Didn't find anything.
+	return nullptr;
+}
+
 /**
  * Read in a single asteroid section from asteroid.tbl
  */
-static void asteroid_parse_section(asteroid_info *asip)
+static void asteroid_parse_section()
 {
+	bool create_if_not_found = true;
+	asteroid_info asteroid_t;
+	
 	required_string("$Name:");
-	stuff_string(asip->name, F_NAME, NAME_LENGTH);
+	stuff_string(asteroid_t.name, F_NAME, NAME_LENGTH);
 
-	required_string( "$POF file1:" );
-	stuff_string(asip->pof_files[0], F_NAME, MAX_FILENAME_LEN);
-
-	required_string( "$POF file2:" );
-	stuff_string(asip->pof_files[1], F_NAME, MAX_FILENAME_LEN);
-
-	if ( (stristr(asip->name, "Asteroid") != NULL) ) {
-		required_string( "$POF file3:" );
-		stuff_string(asip->pof_files[2], F_NAME, MAX_FILENAME_LEN);
+	if (optional_string("+nocreate")) {
+		if (!Parsing_modular_table) {
+			Warning(LOCATION, "+nocreate flag used for asteroid in non-modular table\n");
+		}
+		create_if_not_found = false;
 	}
 
-	required_string("$Detail distance:");
-	asip->num_detail_levels = (int)stuff_int_list(asip->detail_distance, MAX_ASTEROID_DETAIL_LEVELS, RAW_INTEGER_TYPE);
+	// Does this asteroid exist already?
+	// If so, load this new info into it
+	asteroid_info* asteroid_p = get_asteroid_pointer(asteroid_t.name);
 
-	required_string("$Max Speed:");
-	stuff_float(&asip->max_speed);
+	if (asteroid_p != nullptr) {
+		if (!Parsing_modular_table) {
+			error_display(1,
+				"Error:  Asteroid %s already exists.  All asteroid names must be unique.",
+				asteroid_t.name);
+		}
+	} else {
+		// Don't create asteroid if it has +nocreate and is in a modular table.
+		if (!create_if_not_found && Parsing_modular_table) {
+			if (!skip_to_start_of_string_either("$Name:", "#end")) {
+				error_display(1, "Missing [#end] or [$Name] after asteroid %s", asteroid_t.name);
+			}
+			return;
+		}
+		asteroid_list.push_back(asteroid_t);
+		asteroid_p = &asteroid_list[asteroid_list.size() - 1];
+
+	}
+
+	if (optional_string("$Display Name:")) {
+		stuff_string(asteroid_p->display_name, F_NAME);
+	} 
+	
+	// setup display name only if the string is empty - Mjn
+	if (asteroid_p->display_name.empty()) {
+		asteroid_p->display_name = setup_display_name(asteroid_p->name);
+	}
+
+	if (optional_string("$Type:")) {
+		stuff_int(&asteroid_p->type);
+	}
+
+	switch (asteroid_p->type) {
+	case ASTEROID_TYPE_SMALL:
+	case ASTEROID_TYPE_MEDIUM:
+	case ASTEROID_TYPE_LARGE:
+	case ASTEROID_TYPE_DEBRIS:
+		break;
+	default:
+		error_display(0, "Unknown asteroid type [%i] found for asteroid %s. Assuming debris", asteroid_p->type, asteroid_p->name);
+		asteroid_p->type = ASTEROID_TYPE_DEBRIS;
+	}
+
+	auto insert_or_replace_subtype_pof = [](SCP_vector<asteroid_subtype_info>& subtypes, const asteroid_subtype_info& new_subtype) {
+		for (auto& subtype : subtypes) {
+			if (lcase_equal(subtype.type_name, new_subtype.type_name)) {
+				strcpy_s(subtype.pof_filename, new_subtype.pof_filename);
+				return;
+			}
+		}
+		subtypes.push_back(new_subtype);
+	};
+
+	if (optional_string("$POF file1:")) {
+		asteroid_subtype_info thisType;
+
+		thisType.type_name = "Brown";
+		
+		stuff_string(thisType.pof_filename, F_NAME, MAX_FILENAME_LEN);
+
+		thisType.model_number = -1;
+
+		insert_or_replace_subtype_pof(asteroid_p->subtypes, thisType);
+	}
+
+	if (optional_string("$POF file2:")) {
+		asteroid_subtype_info thisType;
+
+		thisType.type_name = "Blue";
+		stuff_string(thisType.pof_filename, F_NAME, MAX_FILENAME_LEN);
+
+		thisType.model_number = -1;
+
+		insert_or_replace_subtype_pof(asteroid_p->subtypes, thisType);
+	}
+
+	if (optional_string("$POF file3:")) {
+		asteroid_subtype_info thisType;
+
+		thisType.type_name = "Orange";
+		stuff_string(thisType.pof_filename, F_NAME, MAX_FILENAME_LEN);
+
+		thisType.model_number = -1;
+
+		insert_or_replace_subtype_pof(asteroid_p->subtypes, thisType);
+	}
+
+	// For asteroid types we can have unlimited subtypes
+	if (asteroid_p->type != ASTEROID_TYPE_DEBRIS) {
+		while (optional_string("$Subtype:")) {
+			asteroid_subtype_info thisType;
+
+			stuff_string(thisType.type_name, F_NAME);
+
+			required_string("+POF file:");
+			stuff_string(thisType.pof_filename, F_NAME, MAX_FILENAME_LEN);
+
+			thisType.model_number = -1;
+
+			bool exists = false;
+			for (const auto& type : asteroid_p->subtypes) {
+				if (type.type_name == thisType.type_name) {
+					exists = true;
+				}
+			}
+
+			if (exists) {
+				error_display(0,
+					"Asteroid subtype %s already exists for asteroid %s",
+					thisType.type_name.c_str(),
+					asteroid_p->name);
+			} else {
+				asteroid_p->subtypes.push_back(thisType);
+			}
+		}
+	}
+
+	if (optional_string("$Detail distance:")) {
+		asteroid_p->num_detail_levels = sz2i(stuff_int_list(asteroid_p->detail_distance, MAX_ASTEROID_DETAIL_LEVELS, ParseLookupType::RAW_INTEGER_TYPE));
+	}
+
+	if (optional_string("$Max Speed:")) {
+		stuff_float(&asteroid_p->max_speed);
+	}
+
+	if (optional_string("$Rotational Velocity Multiplier:")) {
+		stuff_float(&asteroid_p->rotational_vel_multiplier);
+	}
 
 	if(optional_string("$Damage Type:")) {
 		char buf[NAME_LENGTH];
 		stuff_string(buf, F_NAME, NAME_LENGTH);
-		asip->damage_type_idx_sav = damage_type_add(buf);
-		asip->damage_type_idx = asip->damage_type_idx_sav;
-	}
-	
-	if(optional_string("$Explosion Animations:")){
-		int temp[MAX_FIREBALL_TYPES];
-		auto parsed_ints = stuff_int_list(temp, MAX_FIREBALL_TYPES, RAW_INTEGER_TYPE);
-		asip->explosion_bitmap_anims.clear();
-		asip->explosion_bitmap_anims.insert(asip->explosion_bitmap_anims.begin(), temp, temp+parsed_ints);
+		asteroid_p->damage_type_idx_sav = damage_type_add(buf);
+		asteroid_p->damage_type_idx = asteroid_p->damage_type_idx_sav;
 	}
 
-	if(optional_string("$Explosion Radius Mult:"))
-		stuff_float(&asip->fireball_radius_multiplier);
+	if (optional_string("$Explosion Effect:")) {
+		asteroid_p->end_particles = particle::util::parseEffect(asteroid_p->name);
+	} else {
+		if(optional_string("$Explosion Animations:")){
+			stuff_fireball_index_list(asteroid_p->explosion_bitmap_anims, asteroid_p->name);
+		}
+		
+		if (optional_string("$Explosion Radius Mult:")) {
+				stuff_float(&asteroid_p->fireball_radius_multiplier);
+		}
+	}
 
-	required_string("$Expl inner rad:");
-	stuff_float(&asip->inner_rad);
+	if (optional_string("$Breakup Delay:")) {
+		stuff_float(&asteroid_p->breakup_delay.emplace());
+	}
 
-	required_string("$Expl outer rad:");
-	stuff_float(&asip->outer_rad);
+	if (asteroid_p->end_particles.isValid() && !asteroid_p->breakup_delay.has_value()) {
+		error_display(0, "Asteroid %s has an explosion effect but no breakup delay!", asteroid_p->name);
+	}
 
-	required_string("$Expl damage:");
-	stuff_float(&asip->damage);
+	if (optional_string("$Expl inner rad:")){
+		stuff_float(&asteroid_p->inner_rad);
+	}
 
-	required_string("$Expl blast:");
-	stuff_float(&asip->blast);
+	if (optional_string("$Expl outer rad:")) {
+		stuff_float(&asteroid_p->outer_rad);
+	}
 
-	required_string("$Hitpoints:");
-	stuff_float(&asip->initial_asteroid_strength);
+	if (optional_string("$Expl damage:")){
+		stuff_float(&asteroid_p->damage);
+	}
+
+	if (optional_string("$Expl blast:")){
+		stuff_float(&asteroid_p->blast);
+	}
+
+	if (optional_string("$Hitpoints:")){
+		stuff_float(&asteroid_p->initial_asteroid_strength);
+	}
 
 	while(optional_string("$Split:")) {
-		int split_type;
+		int split_index;
 
-		stuff_int(&split_type);
+		stuff_int(&split_index);
 
-		if (split_type>=0 && split_type<NUM_DEBRIS_SIZES) {
+		if (split_index >=0 && split_index < (int)asteroid_list.size()) {
 			asteroid_split_info new_split;
 
-			new_split.asteroid_type = split_type;
+			new_split.asteroid_type = split_index;
+			strcpy(new_split.name, asteroid_list[split_index].name);
 
 			if(optional_string("+Min:"))
 				stuff_int(&new_split.min);
@@ -1913,75 +2403,49 @@ static void asteroid_parse_section(asteroid_info *asip)
 			else
 				new_split.max = 0;
 
-			asip->split_info.push_back( new_split );
+			asteroid_p->split_info.push_back(new_split);
 		} else
-			Warning(LOCATION, "Invalid asteroid reference %i used for $Split in asteroids table, ignoring.", split_type);
+			Warning(LOCATION, "Invalid asteroid reference %i used for $Split in asteroids table, ignoring.", split_index);
+	}
+
+	// provide a way to define splits by name instead of index, verified after all parsing is done - Mjn
+	while (optional_string("$Split name:")) {
+		char split_name[NAME_LENGTH];
+
+		stuff_string(split_name, F_NAME, NAME_LENGTH);
+
+		asteroid_split_info new_split;
+
+		new_split.asteroid_type = -1;
+		strcpy(new_split.name, split_name);
+
+		if (optional_string("+Min:"))
+			stuff_int(&new_split.min);
+		else
+			new_split.min = 0;
+
+		if (optional_string("+Max:"))
+			stuff_int(&new_split.max);
+		else
+			new_split.max = 0;
+
+		asteroid_p->split_info.push_back(new_split);
 	}
 
 	if (optional_string("$Spawn Weight:")) {
-		stuff_float(&asip->spawn_weight);
-		if (asip->spawn_weight <= 0.0f) {
-			Warning(LOCATION, "Spawn weight for asteroid '%s' must be greater than 0", asip->name);
-			asip->spawn_weight = 1.0f;
-		}
-	} else {
-		switch (Asteroid_info.size() % NUM_DEBRIS_SIZES)
-		{
-			case ASTEROID_TYPE_SMALL:
-				asip->spawn_weight = SMALL_DEBRIS_WEIGHT;
-				break;
-			case ASTEROID_TYPE_MEDIUM:
-				asip->spawn_weight = MEDIUM_DEBRIS_WEIGHT;
-				break;
-			case ASTEROID_TYPE_LARGE:
-				asip->spawn_weight = LARGE_DEBRIS_WEIGHT;
-				break;
-			default:
-				UNREACHABLE("Here be dragons");
-		}
-	}
-}
-
-// changes the name to "[species] Debris" if it had a name like "[species] debris #"
-void maybe_change_asteroid_name(asteroid_info* asip) {
-
-	SCP_string name = asip->name;
-	size_t split = std::string::npos;
-
-	for (species_info species : Species_info) {
-		if (name.compare(0, strlen(species.species_name), species.species_name) == 0) {
-			split = strlen(species.species_name);
-			break;
+		if (asteroid_p->type == ASTEROID_TYPE_DEBRIS) {
+			stuff_float(&asteroid_p->spawn_weight);
+			if (asteroid_p->spawn_weight <= 0.0f) {
+				Warning(LOCATION, "Spawn weight for asteroid '%s' must be greater than 0", asteroid_p->name);
+				asteroid_p->spawn_weight = 1.0f;
+			}
+		} else {
+			Warning(LOCATION, "Spawn weight defined for non-debris type asteroid '%s', but can only be defined for debris types.", asteroid_p->name);
 		}
 	}
 
-	if (split == std::string::npos)
-		return;
-
-	SCP_string remaining_name = name.substr(split + 1, name.length());
-
-	split = remaining_name.find(' ');
-
-	if (split == std::string::npos)
-		return;
-
-	SCP_string debris = remaining_name.substr(0, split);
-	SCP_string num = remaining_name.substr(split + 1, remaining_name.length());
-
-	if (stricmp(debris.c_str(), "Debris") != 0)
-		return;
-
-	if (num.empty() || std::find_if(num.begin(), num.end(), [](char c) {
-	                       return !std::isdigit(c, SCP_default_locale);
-	                   }) != num.end())
-		return;
-
-	// make sure this asteroid would correspond the 'species section' of the old style retail asteroids
-	if (Asteroid_info.size() < NUM_DEBRIS_SIZES + Species_info.size() * NUM_DEBRIS_SIZES && Asteroid_info.size() >= NUM_DEBRIS_SIZES) {
-		int idx = (int)(Asteroid_info.size()) / NUM_DEBRIS_SIZES - 1;
-		strcpy_s(asip->name, Species_info[idx].species_name);
-		strcat(asip->name, " ");
-		strcat(asip->name, XSTR("debris", 348));
+	if (optional_string("$Gravity Const:")) {
+		stuff_float(&asteroid_p->gravity_const);
 	}
 }
 
@@ -2000,103 +2464,250 @@ to do with the debris of ships that explode, however these
 are the same debris and asteroids that get flung at a ship
 that is being protected.
 */
-static void asteroid_parse_tbl()
+static void asteroid_parse_tbl(const char* filename)
 {
-	char impact_ani_file[MAX_FILENAME_LEN];
 	
 	try
 	{
-		read_file_text("asteroid.tbl", CF_TYPE_TABLES);
+		read_file_text(filename, CF_TYPE_TABLES);
 		reset_parse();
 
 		required_string("#Asteroid Types");
 
-		size_t tally = 0;
-
-#ifndef NDEBUG
-		SCP_vector<SCP_string> parsed_asteroids;
-#endif
-
-		// parse and tally each asteroid
+		// parse each asteroid
 		while (required_string_either("#End", "$Name:"))
 		{
-			asteroid_info new_asteroid;
 
-			asteroid_parse_section(&new_asteroid);
+			asteroid_parse_section();
 
-			maybe_change_asteroid_name(&new_asteroid);
-
-#ifndef NDEBUG
-			SCP_string msg;
-			msg.append("Parsing asteroid: '");
-			msg.append(new_asteroid.name);
-			msg.append("' as a '");
-			msg.append((tally >= NUM_DEBRIS_SIZES) ? "generic" : "special");
-			msg.append("'");
-			switch (tally % NUM_DEBRIS_SIZES) {
-			case ASTEROID_TYPE_SMALL:
-				msg.append(" small\n");
-				break;
-			case ASTEROID_TYPE_MEDIUM:
-				msg.append(" medium\n");
-				break;
-			case ASTEROID_TYPE_LARGE:
-				msg.append(" large\n");
-				break;
-			default:
-				Error(LOCATION, "Get a coder! Math has broken!\n"
-					"Important numbers:\n"
-					"\ttally: " SIZE_T_ARG "\n"
-					"\tNUM_DEBRIS_SIZES: %d\n",
-					tally, NUM_DEBRIS_SIZES
-					);
-				msg.append(" unknown\n");
-			}
-			parsed_asteroids.push_back(msg);
-#endif
-			Asteroid_info.push_back(new_asteroid);
-			tally++;
 		}
+
 		required_string("#End");
 
-		Asteroid_impact_explosion_ani = -1;
-		required_string("$Impact Explosion:");
-		stuff_string(impact_ani_file, F_NAME, MAX_FILENAME_LEN);
-
-		if (VALID_FNAME(impact_ani_file)) {
-			int num_frames;
-			Asteroid_impact_explosion_ani = bm_load_animation(impact_ani_file, &num_frames, nullptr, nullptr, nullptr, true);
+		if (optional_string("$Impact Explosion Effect:")) {
+			Asteroid_impact_explosion_ani = particle::util::parseEffect();
 		}
+		else {
+			char impact_ani_file[MAX_FILENAME_LEN] = {0};
+			float Asteroid_impact_explosion_radius = 0.0f;
+			int num_frames;
 
-		required_string("$Impact Explosion Radius:");
-		stuff_float(&Asteroid_impact_explosion_radius);
+			if (optional_string("$Impact Explosion:")) {
+				stuff_string(impact_ani_file, F_NAME, MAX_FILENAME_LEN);
+			}
+			if (optional_string("$Impact Explosion Radius:")) {
+				stuff_float(&Asteroid_impact_explosion_radius);
+			}
+
+			if(VALID_FNAME(impact_ani_file)) {
+				Asteroid_impact_explosion_ani = particle::ParticleManager::get()->addEffect(particle::ParticleEffect(
+						"", //Name
+						::util::UniformFloatRange(1.f), //Particle num
+						particle::ParticleEffect::Duration::ONETIME, //Single Particle Emission
+						::util::UniformFloatRange(), //No duration
+						::util::UniformFloatRange(-1.f), //Single particle only
+						particle::ParticleEffect::ShapeDirection::ALIGNED, //Particle direction
+						::util::UniformFloatRange(), //Velocity Inherit
+						false, //Velocity Inherit absolute?
+						nullptr, //Velocity volume
+						::util::UniformFloatRange(), //Velocity volume multiplier
+						particle::ParticleEffect::VelocityScaling::NONE, //Velocity directional scaling
+						std::nullopt, //Orientation-based velocity
+						std::nullopt, //Position-based velocity
+						nullptr, //Position volume
+						particle::ParticleEffectHandle::invalid(), //Trail
+						1.f, //Chance
+						false, //Affected by detail
+						-1.f, //Culling range multiplier
+						false, //Disregard Animation Length. Must be true for everything using particle::Anim_bitmap_X
+						false, //Don't reverse animation
+						false, //parent local
+						false, //ignore velocity inherit if parented
+						false, //position velocity inherit absolute?
+						std::nullopt, //Local velocity offset
+						std::nullopt, //Local offset
+						::util::UniformFloatRange(-1.f), //Lifetime
+						::util::UniformFloatRange(Asteroid_impact_explosion_radius), //Radius
+						bm_load_animation(impact_ani_file, &num_frames, nullptr, nullptr, nullptr, true))); //Bitmap
+			}
+		}
 
 		if (optional_string("$Briefing Icon Closeup Model:")) {
 			stuff_string(Asteroid_icon_closeup_model, F_NAME, NAME_LENGTH);
-		}
-		else {
-			strcpy_s(Asteroid_icon_closeup_model, Asteroid_info[ASTEROID_TYPE_LARGE].pof_files[0]);	// magic file from retail
 		}
 
 		if (optional_string("$Briefing Icon Closeup Position:")) {
 			stuff_vec3d(&Asteroid_icon_closeup_position);
 		}
-		else {
-			vm_vec_make(&Asteroid_icon_closeup_position, 0.0f, 0.0f, -334.0f);  // magic numbers from retail
-		}
 
 		if (optional_string("$Briefing Icon Closeup Zoom:")) {
 			stuff_float(&Asteroid_icon_closeup_zoom);
 		}
-		else {
-			Asteroid_icon_closeup_zoom = 0.5f;	// magic number from retail
-		}
+
 	}
 	catch (const parse::ParseException& e)
 	{
-		mprintf(("TABLES: Unable to parse '%s'!  Error message = %s.\n", "asteroid.tbl", e.what()));
+		mprintf(("TABLES: Unable to parse '%s'!  Error message = %s.\n", filename, e.what()));
 		return;
 	}
+}
+
+// Gets the index of an asteroid by name from Asteroid_info
+int get_asteroid_index(const char* asteroid_name)
+{
+	for (int i = 0; i < static_cast<int>(Asteroid_info.size()); i++) {
+		if (!stricmp(asteroid_name, Asteroid_info[i].name)) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+// Returns the list of unique asteroid subtype names.
+// List is cached after the first call since Asteroid_info cannot change during an engine instance.
+const SCP_vector<SCP_string>& get_list_valid_asteroid_subtypes()
+{
+	static SCP_vector<SCP_string> list;
+
+	if (list.empty()) {
+		for (const auto& this_asteroid : Asteroid_info) {
+			if (this_asteroid.type != ASTEROID_TYPE_DEBRIS) {
+				for (const auto& subtype : this_asteroid.subtypes) {
+					// Only add unique names
+					if (std::find(list.begin(), list.end(), subtype.type_name) == list.end()) {
+						list.push_back(subtype.type_name);
+					}
+				}
+			}
+		}
+	}
+
+	return list;
+}
+
+
+static void verify_asteroid_splits() 
+{
+	
+	for (int i = 0; i < (int)Asteroid_info.size(); i++) {
+		SCP_vector<asteroid_split_info> splits_t;
+
+		for (int j = 0; j < (int)Asteroid_info[i].split_info.size(); j++) {
+			int asteroid_index = get_asteroid_index(Asteroid_info[i].split_info[j].name);
+			if (asteroid_index >= 0) {
+				Asteroid_info[i].split_info[j].asteroid_type = asteroid_index;
+				splits_t.push_back(Asteroid_info[i].split_info[j]);
+			} else {
+				Warning(LOCATION,
+					"Unknown asteroid %s defined as split type for asteroid %s, removing!",
+					Asteroid_info[i].split_info[j].name,
+					Asteroid_info[i].name);
+			}
+		}
+
+		// Replace splits with only valid splits
+		Asteroid_info[i].split_info = splits_t;
+	}
+}
+
+static void verify_asteroid_list()
+{
+	SCP_string asteroid_size[NUM_ASTEROID_SIZES] = {"Small", "Medium", "Large"};
+	float asteroid_spawn_weight[NUM_ASTEROID_SIZES] = {SMALL_DEBRIS_WEIGHT, MEDIUM_DEBRIS_WEIGHT, LARGE_DEBRIS_WEIGHT};
+	
+	// Set the three asteroid sizes
+	for (int i = 0; i < NUM_ASTEROID_SIZES; i++) {
+
+		bool found = false;
+
+		for (int j = 0; j < (int)asteroid_list.size(); j++) {
+			if (asteroid_list[j].type == i) {
+				mprintf(("%s asteroid parsed with name %s\n", asteroid_size[i].c_str(), asteroid_list[j].name));
+				asteroid_list[j].spawn_weight = asteroid_spawn_weight[i]; //Be absolutely sure we're using the right spawn weight for asteroids
+				Asteroid_info.push_back(asteroid_list[j]);
+				asteroid_list.erase(asteroid_list.begin() + j);
+				found = true;
+				break;
+			}
+		}
+
+		if (found)
+			continue;
+
+		//Left this as a log print instead of a Warning because of retail-Mjn
+		mprintf(("%s asteroid not found. Using asteroid %s\n", asteroid_size[i].c_str(), asteroid_list[0].name));
+		asteroid_list[0].type = i;
+		asteroid_list[0].spawn_weight = asteroid_spawn_weight[i]; //Be absolutely sure we're using the right spawn weight for asteroids
+		Asteroid_info.push_back(asteroid_list[0]);
+		asteroid_list.erase(asteroid_list.begin());
+		continue;
+
+	}
+
+	// Rest should be debris type
+	for (int i = 0; i < (int)asteroid_list.size(); i++) {
+
+		// Remove all subtypes except the first one
+		asteroid_list[i].subtypes.resize(1);
+		// Make sure the first subtype is set as debris
+		asteroid_list[i].subtypes[0].type_name = "Debris";
+
+		if (asteroid_list[i].type < 0) {
+			Asteroid_info.push_back(asteroid_list[i]);
+		} else {
+			Warning(LOCATION, "Additional %s asteroid type found with name %s. Setting as debris type instead!", asteroid_size[asteroid_list[i].type].c_str(), asteroid_list[i].name);
+			asteroid_list[i].type = ASTEROID_TYPE_DEBRIS;
+			Asteroid_info.push_back(asteroid_list[i]);
+		}
+	}
+
+	asteroid_list.clear();
+
+	//Check that we have the appropriate POF files-Mjn
+	for (int i = 0; i < (int)Asteroid_info.size(); i++) {
+		if (Asteroid_info[i].subtypes.size() == 0) {
+			Error(LOCATION, "Asteroid %s needs at least one subtype!", Asteroid_info[i].name);
+		}
+	}
+}
+
+/**
+ * Called once, at game start.  Do any one-time initializations here
+ */
+void asteroid_init()
+{
+	Asteroid_impact_explosion_ani = particle::ParticleEffectHandle::invalid();
+	Asteroid_icon_closeup_model[0] = '\0';
+	vm_vec_make(&Asteroid_icon_closeup_position, 0.0f, 0.0f, -334.0f);	// magic numbers from retail
+	Asteroid_icon_closeup_zoom = 0.5f;									// magic number from retail
+
+	// first parse the default table
+	asteroid_parse_tbl("asteroid.tbl");
+
+	// parse any modular tables
+	parse_modular_table("*-ast.tbm", asteroid_parse_tbl);
+
+	//No asteroids defined. Bail!
+	if (asteroid_list.empty())
+		return;
+
+	// now verify the asteroids were found and put them in the correct order
+	verify_asteroid_list();
+
+	// now that Asteroid_info is filled in we can verify the asteroid splits and set their indecies
+	verify_asteroid_splits();
+
+	if (!Asteroid_impact_explosion_ani.isValid()) {
+		// this will always be missing on a standalone
+		if ( !Is_standalone ) {
+			Error(LOCATION, "Missing valid asteroid impact explosion definition in asteroid.tbl!");
+		}
+	}
+
+	if (Asteroid_icon_closeup_model[0] == '\0')
+		strcpy_s(Asteroid_icon_closeup_model, Asteroid_info[ASTEROID_TYPE_LARGE].subtypes[0].pof_filename); // magic file from retail
+	
 }
 
 /**
@@ -2113,6 +2724,8 @@ static int set_asteroid_throw_objnum()
 
 	for ( so = GET_FIRST(&Ship_obj_list); so != END_OF_LIST(&Ship_obj_list); so = GET_NEXT(so) ) {
 		ship_objp = &Objects[so->objnum];
+		if (ship_objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
 
 		if (Ship_info[Ships[ship_objp->instance].ship_info_index].is_big_or_huge()) {
 			if (asteroid_is_ship_inside_field(&Asteroid_field, &ship_objp->pos, ship_objp->radius))
@@ -2133,7 +2746,13 @@ void asteroid_frame()
 		return;
 	}
 
-	if (Default_asteroid_throwing_behavior) {
+	// If no asteroid types are defined for the field, abort.
+	if (Asteroid_field.field_asteroid_type.empty()) {
+		return;
+	}
+
+	// If there are no explicit targets, fall back to default retail targeting behavior
+	if (Asteroid_field.target_names.empty()) {
 		int objnum = set_asteroid_throw_objnum();
 		if (Asteroid_targets.empty() || Asteroid_targets[0].objnum != objnum) {
 			Asteroid_targets.clear();
@@ -2147,14 +2766,6 @@ void asteroid_frame()
 	maybe_throw_asteroid();
 }
 
-/**
- * Called once, at game start.  Do any one-time initializations here
- */
-void asteroid_init()
-{
-	asteroid_parse_tbl();
-}
-
 extern bool Extra_target_info;
 
 /**
@@ -2166,6 +2777,8 @@ void asteroid_show_brackets()
 	object	*asteroid_objp, *player_target;
 	asteroid	*asp;
 
+	Assertion(GET_FIRST(&Asteroid_obj_list) != nullptr, "asteroid_show_brackets() called before Asteroid_obj_list was initialized; this shouldn't happen. Get a coder!");
+
 	// get pointer to player target, so we don't need to take OBJ_INDEX() of asteroid_objp to compare to target_objnum
 	if ( Player_ai->target_objnum >= 0 ) {
 		player_target = &Objects[Player_ai->target_objnum];
@@ -2173,7 +2786,10 @@ void asteroid_show_brackets()
 		player_target = NULL;
 	}
 
-	for ( asteroid_objp = GET_FIRST(&obj_used_list); asteroid_objp !=END_OF_LIST(&obj_used_list); asteroid_objp = GET_NEXT(asteroid_objp) ) {
+	for (auto aop: list_range(&Asteroid_obj_list)) {
+		asteroid_objp = &Objects[aop->objnum];
+		if (asteroid_objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
 		if (asteroid_objp->type != OBJ_ASTEROID ) {
 			continue;
 		}
@@ -2208,7 +2824,12 @@ void asteroid_target_closest_danger()
 	asteroid	*asp;
 	float		dist, closest_dist = 999999.0f;
 
-	for ( asteroid_objp = GET_FIRST(&obj_used_list); asteroid_objp !=END_OF_LIST(&obj_used_list); asteroid_objp = GET_NEXT(asteroid_objp) ) {
+	Assertion(GET_FIRST(&Asteroid_obj_list) != nullptr, "asteroid_target_closest_danger() called before Asteroid_obj_list was initialized; this shouldn't happen. Get a coder!");
+
+	for (auto aop: list_range(&Asteroid_obj_list)) {
+		asteroid_objp = &Objects[aop->objnum];
+		if (asteroid_objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
 		if (asteroid_objp->type != OBJ_ASTEROID ) {
 			continue;
 		}
@@ -2234,22 +2855,30 @@ void asteroid_target_closest_danger()
 
 void asteroid_page_in()
 {
+	if (Asteroid_info.empty())
+		return;
+
 	if (Asteroid_field.num_initial_asteroids > 0 ) {
-		int i, j, k;
 
 		nprintf(( "Paging", "Paging in asteroids\n" ));
 
+		size_t num_debris_types = NUM_ASTEROID_SIZES;
+		if (Asteroid_field.debris_genre == DG_DEBRIS) {
+			num_debris_types = Asteroid_field.field_debris_type.size();
+		}
 
-		// max of MAX_ACTIVE_DEBRIS_TYPES possible debris field models
-		for (i=0; i<MAX_ACTIVE_DEBRIS_TYPES; i++) {
+
+		// for asteroids this will loop over all three possible sizes
+		// for debris this will loop over all selected types
+		for (size_t i = 0; i < num_debris_types; i++) {
 			asteroid_info	*asip;
 
 			if (Asteroid_field.debris_genre == DG_ASTEROID) {
 				// asteroid
-				Assert(i < NUM_DEBRIS_SIZES);
+				Assertion(i < NUM_ASTEROID_SIZES, "Got invalid call to load non-existent asteroid size!");
 				asip = &Asteroid_info[i];
 			} else {
-				// ship debris - always full until empty
+				// debris - always full until empty
 				if (Asteroid_field.field_debris_type[i] != -1) {
 					asip = &Asteroid_info[Asteroid_field.field_debris_type[i]];
 				} else {
@@ -2258,28 +2887,36 @@ void asteroid_page_in()
 			}
 
 
-			for (k=0; k<NUM_DEBRIS_POFS; k++) {
+			for (size_t k = 0; k < asip->subtypes.size(); k++) {
 
-				// SHIP DEBRIS - use subtype 0
-				if (Asteroid_field.debris_genre == DG_SHIP) {
+				// DEBRIS FIELDS - always use subtype 0
+				if (Asteroid_field.debris_genre == DG_DEBRIS) {
 					if (k > 0) {
 						break;
 					}
 				} else {
-					// ASTEROID DEBRIS - use subtype (Asteroid_field.field_debris_type[] != -1)
-					if (Asteroid_field.field_debris_type[k] == -1) {
+					// ASTEROID FIELDS - use subtype k, if active
+					bool active = false;
+					for (const auto& active_type : Asteroid_field.field_asteroid_type) {
+						if (active_type == asip->subtypes[k].type_name) {
+							active = true;
+						}
+					}
+
+					if (!active) {
 						continue;
 					}
 				}
 
-				if (asip->model_num[k] < 0)
+				// model is already paged in
+				if (asip->subtypes[k].model_number < 0)
 					continue;
 
-				asip->modelp[k] = model_get(asip->model_num[k]);
+				const auto mp = model_get(asip->subtypes[k].model_number);
 
 				// Page in textures
-				for (j=0; j<asip->modelp[k]->n_textures; j++ )	{
-					asip->modelp[k]->maps[j].PageIn();			
+				for (int j = 0; j < mp->n_textures; j++) {
+					mp->maps[j].PageIn();			
 				}
 
 			}

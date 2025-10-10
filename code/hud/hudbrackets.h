@@ -25,7 +25,7 @@ void draw_brackets_diamond_quick(graphics::line_draw_list* draw_list, int x1, in
 
 int draw_subsys_brackets(graphics::line_draw_list* draw_list, ship_subsys* subsys, int min_width, int min_height, bool draw = true, bool set_color = true, int* draw_coords = NULL);
 
-class HudGaugeBrackets: public HudGauge
+class HudGaugeBrackets: public HudGauge3DAnchor
 {
 protected:
 	int attacking_dot;
@@ -41,7 +41,7 @@ public:
 	void initMinTargetBoxSizes(int w, int h);
 	void initMinSubTargetBoxSizes(int w, int h);
 	void initBitmaps(char *fname);
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void renderObjectBrackets(object *targetp, color *clr, int w_correction, int h_correction, int flags);
 	void renderNavBrackets(vec3d* nav_pos, vertex* nav_point, color* clr, char* string);
 	void renderBoundingBrackets(int x1, int y1, int x2, int y2, int w_correction, int h_correction, float distance, int target_objnum, int flags);

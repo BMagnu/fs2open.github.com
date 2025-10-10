@@ -42,6 +42,7 @@ _ReSharper*/
 
 #Project files
 [Bb]uild/
+[Oo]ut/
 
 #Subversion files
 .svn
@@ -250,6 +251,7 @@ documentation/doxygen/*
 projects/*
 /.vs
 CMakeSettings.json
+CMakePresets.json
 
 # Weird files created by Linux
 .fuse_hidden*
@@ -258,3 +260,5 @@ CMakeSettings.json
 !/code/scripting/lua/LuaConvert.h
 !/code/debugconsole/
 !/docker/build
+CMakeFiles/cmake.check_cache
+CMakeCache.txt

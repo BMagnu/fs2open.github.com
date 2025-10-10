@@ -63,36 +63,6 @@ bool vm_matrix_equal(const matrix4 &self, const matrix4 &other)
 		vm_vec_equal(self.vec.pos, other.vec.pos);
 }
 
-// -----------------------------------------------------------
-// atan2_safe()
-//
-// Wrapper around atan2() that used atanf() to calculate angle.  Safe
-// for optimized builds.  Handles special cases when x == 0.
-//
-float atan2_safe(float y, float x)
-{
-	float ang;
-
-	// special case, x == 0
-	if ( x == 0.0f ) {
-		if ( y == 0.0f ) 
-			ang = 0.0f;
-		else if ( y > 0.0f )
-			ang = PI_2;
-		else
-			ang = -PI_2;
-
-		return ang;
-	}
-	
-	ang = atanf(y/x);
-	if ( x < 0.0f ){
-		ang += PI;
-	}
-
-	return ang;
-}
-
 // ---------------------------------------------------------------------
 // vm_vec_component()
 //
@@ -180,6 +150,18 @@ vec3d vm_vec_new(float x, float y, float z)
 	return vec;
 }
 
+vec4 vm_vec4_new(float x, float y, float z, float w)
+{
+	vec4 vec;
+
+	vec.xyzw.x = x;
+	vec.xyzw.y = y;
+	vec.xyzw.z = z;
+	vec.xyzw.w = w;
+
+	return vec;
+}
+
 matrix vm_matrix_new(float a0, float a1, float a2, float a3, float a4, float a5, float a6, float a7, float a8)
 {
 	matrix m;
@@ -216,6 +198,30 @@ void vm_vec_add(vec3d *dest, const vec3d *src0, const vec3d *src1)
 	dest->xyz.x = src0->xyz.x + src1->xyz.x;
 	dest->xyz.y = src0->xyz.y + src1->xyz.y;
 	dest->xyz.z = src0->xyz.z + src1->xyz.z;
+}
+
+//Component-wise multiplication of two vectors
+void vm_vec_cmult(vec3d* dest, const vec3d* src0, const vec3d* src1) {
+	dest->xyz.x = src0->xyz.x * src1->xyz.x;
+	dest->xyz.y = src0->xyz.y * src1->xyz.y;
+	dest->xyz.z = src0->xyz.z * src1->xyz.z;
+}
+void vm_vec_cmult2(vec3d* dest, const vec3d* src) {
+	dest->xyz.x *= src->xyz.x;
+	dest->xyz.y *= src->xyz.y;
+	dest->xyz.z *= src->xyz.z;
+}
+
+//Component-wise division of two vectors
+void vm_vec_cdiv(vec3d* dest, const vec3d* src0, const vec3d* src1) {
+	dest->xyz.x = src0->xyz.x / src1->xyz.x;
+	dest->xyz.y = src0->xyz.y / src1->xyz.y;
+	dest->xyz.z = src0->xyz.z / src1->xyz.z;
+}
+void vm_vec_cdiv2(vec3d* dest, const vec3d* src) {
+	dest->xyz.x /= src->xyz.x;
+	dest->xyz.y /= src->xyz.y;
+	dest->xyz.z /= src->xyz.z;
 }
 
 //subs two vectors, fills in dest, returns ptr to dest
@@ -270,6 +276,19 @@ vec3d *vm_vec_avg_n(vec3d *dest, int n, const vec3d src[])
 	return dest;
 }
 
+//Calculates the componentwise minimum of the two vectors
+void vm_vec_min(vec3d* dest, const vec3d* src0, const vec3d* src1) {
+	dest->xyz.x = std::min(src0->xyz.x, src1->xyz.x);
+	dest->xyz.y = std::min(src0->xyz.y, src1->xyz.y);
+	dest->xyz.z = std::min(src0->xyz.z, src1->xyz.z);
+}
+
+//Calculates the componentwise maximum of the two vectors
+void vm_vec_max(vec3d* dest, const vec3d* src0, const vec3d* src1) {
+	dest->xyz.x = std::max(src0->xyz.x, src1->xyz.x);
+	dest->xyz.y = std::max(src0->xyz.y, src1->xyz.y);
+	dest->xyz.z = std::max(src0->xyz.z, src1->xyz.z);
+}
 
 //averages two vectors. returns ptr to dest
 //dest can equal either source
@@ -381,6 +400,16 @@ void vm_vec_scale2(vec3d *dest, float n, float d)
 	dest->xyz.z = dest->xyz.z* n * d;
 }
 
+// interpolate between two vectors
+// dest = src0 + (k * (src1 - src0))
+// Might be helpful to think of vec0 as the before, and vec1 as the after
+void vm_vec_linear_interpolate(vec3d* dest, const vec3d* src0, const vec3d* src1, const float k)
+{
+	dest->xyz.x = ((src1->xyz.x - src0->xyz.x) * k) + src0->xyz.x;
+	dest->xyz.y = ((src1->xyz.y - src0->xyz.y) * k) + src0->xyz.y;
+	dest->xyz.z = ((src1->xyz.z - src0->xyz.z) * k) + src0->xyz.z;
+}
+
 //returns dot product of 2 vectors
 float vm_vec_dot(const vec3d *v0, const vec3d *v1)
 {
@@ -442,7 +471,8 @@ float vm_vec_dist(const vec3d *v0, const vec3d *v1)
 bool vm_vec_is_normalized(const vec3d *v)
 {
 	// By the standards of FSO, it is sufficient to check that the magnitude is close to 1.
-	return vm_vec_mag(v) > 0.999f && vm_vec_mag(v) < 1.001f;
+	float mag = vm_vec_mag(v);
+	return mag > 0.999f && mag < 1.001f;
 }
 
 //normalize a vector. returns mag of source vec (always greater than zero)
@@ -453,10 +483,10 @@ float vm_vec_copy_normalize(vec3d *dest, const vec3d *src)
 	m = vm_vec_mag(src);
 
 	//	Mainly here to trap attempts to normalize a null vector.
-	if (m <= 0.0f) {
-		mprintf(("Null vec3d in vec3d normalize.\n"
-				 "Trace out of vecmat.cpp and find offending code.\n"));
-
+	if (fl_near_zero(m)) {
+		// Since vectors are not expected to be null in this function, this really ought to be a Warning, as in the original release.
+		nprintf(("Network", "Null vec3d in vec3d normalize.\n"
+			"Trace out of vecmat.cpp and find offending code.\n"));
 		dest->xyz.x = 1.0f;
 		dest->xyz.y = 0.0f;
 		dest->xyz.z = 0.0f;
@@ -476,37 +506,51 @@ float vm_vec_copy_normalize(vec3d *dest, const vec3d *src)
 //normalize a vector. returns mag of source vec (always greater than zero)
 float vm_vec_normalize(vec3d *v)
 {
-	float t;
-	t = vm_vec_copy_normalize(v,v);
-	return t;
+	return vm_vec_copy_normalize(v,v);
 }
 
 // Normalize a vector.
-// If vector is 0,0,0, return 1.0f, and change v to 1,0,0.  
+// If vector is 0,0,0, return 1.0f, and change v to 1,0,0.
 // Otherwise return the magnitude.
-// No warning() generated for null vector.
-float vm_vec_normalize_safe(vec3d *v)
+// No warning() generated for null vector, as it is expected that some vectors may be null.
+float vm_vec_copy_normalize_safe(vec3d *dest, const vec3d *src, bool fallbackToZeroVec)
 {
 	float m;
 
-	m = vm_vec_mag(v);
+	m = vm_vec_mag(src);
 
 	//	Mainly here to trap attempts to normalize a null vector.
-	if (m <= 0.0f) {
-		v->xyz.x = 1.0f;
-		v->xyz.y = 0.0f;
-		v->xyz.z = 0.0f;
-		return 1.0f;
+	if (fl_near_zero(m)) {
+		if (fallbackToZeroVec) {
+			dest->xyz.x = 0.0f;
+			dest->xyz.y = 0.0f;
+			dest->xyz.z = 0.0f;
+			return 0.0f;
+		}
+		else {
+			dest->xyz.x = 1.0f;
+			dest->xyz.y = 0.0f;
+			dest->xyz.z = 0.0f;
+			return 1.0f;
+		}
 	}
 
 	float im = 1.0f / m;
 
-	v->xyz.x *= im;
-	v->xyz.y *= im;
-	v->xyz.z *= im;
+	dest->xyz.x = src->xyz.x * im;
+	dest->xyz.y = src->xyz.y * im;
+	dest->xyz.z = src->xyz.z * im;
 
 	return m;
+}
 
+// Normalize a vector.
+// If vector is 0,0,0, return 1.0f, and change v to 1,0,0.
+// Otherwise return the magnitude.
+// No warning() generated for null vector.
+float vm_vec_normalize_safe(vec3d *v, bool fallbackToZeroVec)
+{
+	return vm_vec_copy_normalize_safe(v,v, fallbackToZeroVec);
 }
 
 //return the normalized direction vector between two points
@@ -812,6 +856,11 @@ matrix *vm_vector_2_matrix(matrix *m, const vec3d *fvec, const vec3d *uvec, cons
 
 matrix *vm_vector_2_matrix_norm(matrix *m, const vec3d *fvec, const vec3d *uvec, const vec3d *rvec)
 {
+	// sanity
+	Assertion(fvec == nullptr || vm_vec_is_normalized(fvec), "if fvec is provided, it must be normalized!");
+	Assertion(uvec == nullptr || vm_vec_is_normalized(uvec), "if uvec is provided, it must be normalized!");
+	Assertion(rvec == nullptr || vm_vec_is_normalized(rvec), "if rvec is provided, it must be normalized!");
+
 	matrix temp = vmd_identity_matrix;
 
 	vec3d *xvec=&temp.vec.rvec;
@@ -935,7 +984,7 @@ angles *vm_extract_angles_matrix(angles *a, const matrix *m)
 {
 	float sinh,cosh,cosp;
 
-	a->h = atan2_safe(m->vec.fvec.xyz.x,m->vec.fvec.xyz.z);
+	a->h = atan2(m->vec.fvec.xyz.x,m->vec.fvec.xyz.z);
 
 	sinh = sinf(a->h); cosh = cosf(a->h);
 
@@ -950,7 +999,7 @@ angles *vm_extract_angles_matrix(angles *a, const matrix *m)
 
 	fvec_xz_distance = fl_sqrt( ( (m->vec.fvec.xyz.x)*(m->vec.fvec.xyz.x) ) + ( (m->vec.fvec.xyz.z)*(m->vec.fvec.xyz.z) ) );
 
-	a->p = atan2_safe(-m->vec.fvec.xyz.y, fvec_xz_distance);
+	a->p = atan2(-m->vec.fvec.xyz.y, fvec_xz_distance);
 
 	if (cosp == 0.0f)	//the cosine of pitch is zero.  we're pitched straight up. say no bank
 
@@ -962,7 +1011,7 @@ angles *vm_extract_angles_matrix(angles *a, const matrix *m)
 		sinb = m->vec.rvec.xyz.y/cosp;
 		cosb = m->vec.uvec.xyz.y/cosp;
 
-		a->b = atan2_safe(sinb,cosb);
+		a->b = atan2(sinb,cosb);
 	}
 
 
@@ -1008,7 +1057,7 @@ static angles *vm_extract_angles_vector_normalized(angles *a, const vec3d *v)
 
 	a->p = asinf_safe(-v->xyz.y);
 
-	a->h = atan2_safe(v->xyz.z,v->xyz.x);
+	a->h = atan2(v->xyz.z,v->xyz.x);
 
 	return a;
 }
@@ -1357,6 +1406,8 @@ void vm_vec_rand_vec(vec3d *rvec)
 // Returns the rotated point in "out".
 void vm_rot_point_around_line(vec3d *out, const vec3d *in, float angle, const vec3d *line_point, const vec3d *line_dir)
 {
+	Assertion(line_dir != nullptr && vm_vec_is_normalized(line_dir), "line_dir vector must be normalized!");
+
 	vec3d tmp, tmp1;
 	matrix m, r;
 	angles ta;
@@ -1508,6 +1559,21 @@ int vm_matrix_same(matrix *m1, matrix *m2)
 
 // --------------------------------------------------------------------------------------
 
+void vm_quaternion_to_matrix(matrix* M, float a, float b, float c, float s) {
+	// 1st ROW vector
+	M->vec.rvec.xyz.x = 1.0f - 2.0f * b * b - 2.0f * c * c;
+	M->vec.rvec.xyz.y = 2.0f * a * b + 2.0f * s * c;
+	M->vec.rvec.xyz.z = 2.0f * a * c - 2.0f * s * b;
+	// 2nd ROW vector
+	M->vec.uvec.xyz.x = 2.0f * a * b - 2.0f * s * c;
+	M->vec.uvec.xyz.y = 1.0f - 2.0f * a * a - 2.0f * c * c;
+	M->vec.uvec.xyz.z = 2.0f * b * c + 2.0f * s * a;
+	// 3rd ROW vector
+	M->vec.fvec.xyz.x = 2.0f * a * c + 2.0f * s * b;
+	M->vec.fvec.xyz.y = 2.0f * b * c - 2.0f * s * a;
+	M->vec.fvec.xyz.z = 1.0f - 2.0f * a * a - 2.0f * b * b;
+}
+
 void vm_quaternion_rotate(matrix *M, float theta, const vec3d *u)
 //  given an arbitrary rotation axis and rotation angle, function generates the
 //  corresponding rotation matrix
@@ -1525,18 +1591,7 @@ void vm_quaternion_rotate(matrix *M, float theta, const vec3d *u)
 	c = (u->xyz.z * sin_theta);
 	s = cosf(theta * 0.5f);
 
-// 1st ROW vector
-	M->vec.rvec.xyz.x = 1.0f - 2.0f*b*b - 2.0f*c*c;
-	M->vec.rvec.xyz.y = 2.0f*a*b + 2.0f*s*c;
-	M->vec.rvec.xyz.z = 2.0f*a*c - 2.0f*s*b;
-// 2nd ROW vector
-	M->vec.uvec.xyz.x = 2.0f*a*b - 2.0f*s*c;
-	M->vec.uvec.xyz.y = 1.0f - 2.0f*a*a - 2.0f*c*c;
-	M->vec.uvec.xyz.z = 2.0f*b*c + 2.0f*s*a;
-// 3rd ROW vector
-	M->vec.fvec.xyz.x = 2.0f*a*c + 2.0f*s*b;
-	M->vec.fvec.xyz.y = 2.0f*b*c - 2.0f*s*a;
-	M->vec.fvec.xyz.z = 1.0f - 2.0f*a*a - 2.0f*b*b;
+	vm_quaternion_to_matrix(M, a, b, c, s);
 }
 
 // --------------------------------------------------------------------------------------
@@ -1673,10 +1728,10 @@ float vm_closest_angle_to_matrix(const matrix* mat, const vec3d* rot_axis, float
 		//If we support IEEE float handling, we don't need this, the div by 0 will be handled correctly with the INF. If not, do this:
 		const float yz_recip = (!std::numeric_limits<float>::is_iec559 && y * z < 0.001f) ? FLT_MAX : 1.0f / (y * z);
 
-		solutions = { 2 * atan2_safe(-sr_neg * (y * y + sr) * yz_recip, -2 * sr_neg),
-					  2 * atan2_safe(sr_neg * (y * y + sr) * yz_recip, 2 * sr_neg),
-					  2 * atan2_safe(-sr_pos * (y * y - sr) * yz_recip, -2 * sr_pos),
-					  2 * atan2_safe(sr_pos * (y * y - sr) * yz_recip, 2 * sr_pos) };
+		solutions = { 2.0f * atan2f(-sr_neg * (y * y + sr) * yz_recip, -2.0f * sr_neg),
+					  2.0f * atan2f(sr_neg * (y * y + sr) * yz_recip, 2.0f * sr_neg),
+					  2.0f * atan2f(-sr_pos * (y * y - sr) * yz_recip, -2.0f * sr_pos),
+					  2.0f * atan2f(sr_pos * (y * y - sr) * yz_recip, 2.0f * sr_pos) };
 	}
 	float value = -2.0f;
 	float correct = 0;
@@ -2268,7 +2323,7 @@ bool is_valid_matrix(const matrix *m)
 	return is_valid_vec(&m->vec.fvec) && is_valid_vec(&m->vec.uvec) && is_valid_vec(&m->vec.rvec);
 }
 
-// interpolate between 2 vectors. t goes from 0.0 to 1.0. at
+// interpolate between 2 vectors. t goes from 0.0 to 1.0.
 void vm_vec_interp_constant(vec3d *out, const vec3d *v0, const vec3d *v1, float t)
 {
 	vec3d cross;
@@ -2296,7 +2351,8 @@ void vm_vec_random_cone(vec3d *out, const vec3d *in, float max_angle, const matr
 	if(orient != NULL){
 		rot = orient;
 	} else {
-		vm_vector_2_matrix(&m, in, NULL, NULL);
+		Assertion(in != nullptr && vm_vec_is_normalized(in), "input vector must be normalized!");
+		vm_vector_2_matrix_norm(&m, in, nullptr, nullptr);
 		rot = &m;
 	}
 
@@ -2323,7 +2379,8 @@ void vm_vec_random_cone(vec3d *out, const vec3d *in, float min_angle, float max_
 	if(orient != NULL){
 		rot = orient;
 	} else {
-		vm_vector_2_matrix(&m, in, NULL, NULL);
+		Assertion(in != nullptr && vm_vec_is_normalized(in), "input vector must be normalized!");
+		vm_vector_2_matrix_norm(&m, in, nullptr, nullptr);
 		rot = &m;
 	}
 	
@@ -2775,7 +2832,7 @@ void vm_matrix4_get_orientation(matrix *out, const matrix4 *m)
 	out->a2d[2][2] = m->a2d[2][2];
 }
 
-void vm_matrix4_get_offset(vec3d *out, matrix4 *m)
+void vm_matrix4_get_offset(vec3d *out, const matrix4 *m)
 {
 	out->xyz.x = m->vec.pos.xyzw.x;
 	out->xyz.y = m->vec.pos.xyzw.y;
@@ -2891,68 +2948,6 @@ void vm_match_bank(vec3d* out_rvec, const vec3d* goal_fvec, const matrix* match_
 	vm_vec_unrotate(out_rvec, &temp, &dest_frame);
 }
 
-// Cyborg17 - Rotational interpolation between two angle structs in radians.  Assumes that the rotation direction is the smaller arc difference.
-// src0 is the starting angle struct, src1 is the ending angle struct, interp_perc must be a float between 0.0f and 1.0f inclusive.
-// rot_vel is only used to determine the rotation direction. This functions assumes a <= 2PI rotation in any axis.  
-// You will get inaccurate results otherwise.
-void vm_interpolate_angles_quick(angles *dest0, angles *src0, angles *src1, float interp_perc) {
-	
-	Assertion((interp_perc >= 0.0f) && (interp_perc <= 1.0f), "Interpolation percentage, %f, sent to vm_interpolate_angles is invalid. The valid range is [0,1], go find a coder!", interp_perc);
-
-	angles arc_measures;
-
-	arc_measures.p = src1->p - src0->p;	
-	arc_measures.h = src1->h - src0->h;	
-	arc_measures.b = src1->b - src0->b;
-
-	  // pitch
-	  // if start and end are basically the same, assume we can basically jump to the end.
-	if ( (fabs(arc_measures.p) < 0.00001f) ) {
-		arc_measures.p = 0.0f;
-
-	} // Test if we actually need to go in the other direction
-	else if (arc_measures.p > (PI*1.5f)) {
-		arc_measures.p = PI2 - arc_measures.p;
-
-	} // Test if we actually need to go in the other direction for negative values
-	else if (arc_measures.p < -PI_2) {
-		arc_measures.p = -PI2 - arc_measures.p;
-	}
-
-	  // heading
-	  // if start and end are basically the same, assume we can basically jump to the end.
-	if ( (fabs(arc_measures.h) < 0.00001f) ) {
-		arc_measures.h = 0.0f;
-
-	} // Test if we actually need to go in the other direction
-	else if (arc_measures.h > (PI*1.5f)) {
-		arc_measures.h = PI2 - arc_measures.h;
-
-	} // Test if we actually need to go in the other direction for negative values
-	else if (arc_measures.h < -PI_2) {
-		arc_measures.h = -PI2 - arc_measures.h;
-	}
-
-	// bank
-	// if start and end are basically the same, assume we can basically jump to the end.
-	if ( (fabs(arc_measures.b) < 0.00001f) ) {
-		arc_measures.b = 0.0f;
-
-	} // Test if we actually need to go in the other direction
-	else if (arc_measures.b > (PI*1.5f)) {
-		arc_measures.b = PI2 - arc_measures.b;
-
-	} // Test if we actually need to go in the other direction for negative values
-	else if (arc_measures.b < -PI_2) {
-		arc_measures.b = -PI2 - arc_measures.b;
-	}
-
-	// Now just multiply the difference in angles by the given percentage, and then subtract it from the destination angles.
-	// If arc_measures is 0.0f, then we are basically bashing to the ending orientation without worrying about the inbetween.
-	dest0->p = src0->p + (arc_measures.p * interp_perc);
-	dest0->h = src0->h + (arc_measures.h * interp_perc);
-	dest0->b = src0->b + (arc_measures.b * interp_perc);
-}
 
 // Interpolate between two matrices, using t as a percentage progress between them.
 // Intended values for t are [0.0f, 1.0f], but values outside this range are allowed,
@@ -2993,7 +2988,7 @@ void vm_interpolate_matrices(matrix* out_orient, const matrix* curr_orient, cons
 	matrix rot_matrix;
 
 	vm_quaternion_rotate(&rot_matrix, t * theta, &rot_axis); // get the matrix that rotates current to our interpolated matrix
-	vm_matrix_x_matrix(out_orient, &rot_matrix, curr_orient); // do the final rotation
+	vm_matrix_x_matrix(out_orient, curr_orient, &rot_matrix); // do the final rotation
 	
 }
 

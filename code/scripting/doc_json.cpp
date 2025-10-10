@@ -221,18 +221,29 @@ static json_t* json_doc_generate_param_element(const HookVariableDocumentation& 
 static json_t* json_doc_generate_action_element(const DocumentationAction& action)
 {
 	json_t* paramArray = json_array();
+	json_t* conditionArray = json_array();
 
 	for (const auto& param : action.parameters) {
 		json_array_append_new(paramArray, json_doc_generate_param_element(param));
 	}
 
-	return json_pack("{s:s,s:s,s:o,s:b}",
+	for (const auto& condition : action.conditions) {
+		json_array_append_new(conditionArray, json_pack("{s:s,s:s}",
+			"name",
+			condition.first.c_str(),
+			"description",
+			condition.second->documentation.c_str()));
+	}
+
+	return json_pack("{s:s,s:s,s:o,s:o,s:b}",
 		"name",
 		action.name.c_str(),
 		"description",
 		action.description.c_str(),
 		"hookVars",
 		paramArray,
+		"conditions",
+		conditionArray,
 		"overridable",
 		action.overridable);
 }
@@ -260,6 +271,21 @@ void output_json_doc(const ScriptingDocumentation& doc, const SCP_string& filena
 		}
 
 		json_object_set_new(root.get(), "conditions", conditionArray);
+	}
+	{
+		json_t* optionsArray = json_array();
+
+		for (const auto& option : doc.options) {
+			json_t* optionsObject = json_object();
+
+			json_object_set_new(optionsObject, "title", json_string(option.title.c_str()));
+			json_object_set_new(optionsObject, "key", json_string(option.key.c_str()));
+			json_object_set_new(optionsObject, "description", json_string(option.description.c_str()));
+
+			json_array_append_new(optionsArray, optionsObject);
+		}
+
+		json_object_set_new(root.get(), "options", optionsArray);
 	}
 	{
 		json_t* enumObject = json_object();

@@ -12,10 +12,10 @@
 #include "anim/animplay.h"
 #include "anim/packunpack.h"
 #include "cfile/cfile.h"
-#include "cmdline/cmdline.h"
 #include "gamehelp/contexthelp.h"
 #include "gamesnd/gamesnd.h"
 #include "globalincs/alphacolors.h"
+#include "globalincs/utility.h"
 #include "graphics/shadows.h"
 #include "graphics/matrix.h"
 #include "hud/hudbrackets.h"
@@ -30,6 +30,7 @@
 #include "missionui/missionshipchoice.h"
 #include "missionui/missionweaponchoice.h"
 #include "model/model.h"
+#include "mod_table/mod_table.h"
 #include "network/multi.h"
 #include "network/multi_pmsg.h"
 #include "network/multimsgs.h"
@@ -77,8 +78,7 @@ typedef struct wl_bitmap_group
 #define WEAPON_ICON_FRAME_SELECTED			2
 #define WEAPON_ICON_FRAME_DISABLED			3
 
-
-#define NUM_WEAPON_SETTINGS	2
+constexpr int NUM_WL_LAYOUTS = 2;
 
 #define MAX_WEAPON_BUTTONS	8
 #define MIN_WEAPON_BUTTONS	7
@@ -93,6 +93,32 @@ typedef struct wl_bitmap_group
 #define WL_BUTTON_DUMMY						5
 #define WL_BUTTON_MULTI_LOCK				6
 #define WL_BUTTON_APPLY_ALL					7
+
+// mask regions for icons in the scrollable lists
+// NOLINTBEGIN(modernize-macro-to-enum)
+#define ICON_PRIMARY_0				28
+#define ICON_PRIMARY_1				29
+#define ICON_PRIMARY_2				30
+#define ICON_PRIMARY_3				31
+#define ICON_SECONDARY_0			10
+#define ICON_SECONDARY_1			11
+#define ICON_SECONDARY_2			12
+#define ICON_SECONDARY_3			13
+// NOLINTEND(modernize-macro-to-enum)
+
+constexpr int NUM_PRIMARY_MASK_REGIONS = 4;
+constexpr int NUM_SECONDARY_MASK_REGIONS = 4;
+
+// mask regions for icons that sit above the ship
+// NOLINTBEGIN(modernize-macro-to-enum)
+#define ICON_SHIP_PRIMARY_0		32
+#define ICON_SHIP_PRIMARY_1		33
+#define ICON_SHIP_PRIMARY_2		34
+#define ICON_SHIP_SECONDARY_0		35
+#define ICON_SHIP_SECONDARY_1		36
+#define ICON_SHIP_SECONDARY_2		37
+#define ICON_SHIP_SECONDARY_3		38
+// NOLINTEND(modernize-macro-to-enum)
 
 extern int anim_timer_start;
 
@@ -132,7 +158,7 @@ static wl_buttons Buttons[GR_NUM_RESOLUTIONS][MAX_WEAPON_BUTTONS] = {
 };
 
 
-static const char *Wl_mask_single[NUM_WEAPON_SETTINGS][GR_NUM_RESOLUTIONS] = {
+static const char *Wl_mask_single[NUM_WL_LAYOUTS][GR_NUM_RESOLUTIONS] = {
 	{
 		"weaponloadout-m",
 		"2_weaponloadout-m"
@@ -143,7 +169,7 @@ static const char *Wl_mask_single[NUM_WEAPON_SETTINGS][GR_NUM_RESOLUTIONS] = {
 	}
 };
 
-static const char *Wl_mask_multi[NUM_WEAPON_SETTINGS][GR_NUM_RESOLUTIONS] = {
+static const char *Wl_mask_multi[NUM_WL_LAYOUTS][GR_NUM_RESOLUTIONS] = {
 	{
 		"weaponloadoutmulti-m",
 		"2_weaponloadoutmulti-m"
@@ -155,7 +181,7 @@ static const char *Wl_mask_multi[NUM_WEAPON_SETTINGS][GR_NUM_RESOLUTIONS] = {
 	}
 };
 
-static const char *Wl_loadout_select_mask[NUM_WEAPON_SETTINGS][GR_NUM_RESOLUTIONS] = {
+static const char *Wl_loadout_select_mask[NUM_WL_LAYOUTS][GR_NUM_RESOLUTIONS] = {
 	{
 		"weaponloadout-m",
 		"2_weaponloadout-m"
@@ -167,7 +193,7 @@ static const char *Wl_loadout_select_mask[NUM_WEAPON_SETTINGS][GR_NUM_RESOLUTION
 };
 
 
-static const char *Weapon_select_background_fname[NUM_WEAPON_SETTINGS][GR_NUM_RESOLUTIONS] = {
+static const char *Weapon_select_background_fname[NUM_WL_LAYOUTS][GR_NUM_RESOLUTIONS] = {
 	{
 		"WeaponLoadout",
 		"2_WeaponLoadout"
@@ -178,7 +204,7 @@ static const char *Weapon_select_background_fname[NUM_WEAPON_SETTINGS][GR_NUM_RE
 	}
 };
 
-static const char *Weapon_select_multi_background_fname[NUM_WEAPON_SETTINGS][GR_NUM_RESOLUTIONS] = {
+static const char *Weapon_select_multi_background_fname[NUM_WL_LAYOUTS][GR_NUM_RESOLUTIONS] = {
 	{
 		"WeaponLoadoutMulti",
 		"2_WeaponLoadoutMulti"
@@ -326,14 +352,15 @@ typedef struct wl_ship_class_info
 
 wl_ship_class_info	Wl_ships[MAX_SHIP_CLASSES];
 
-typedef struct wl_icon_info
+struct wl_icon_info
 {
 	int				icon_bmaps[NUM_ICON_FRAMES];
 	int				laser_bmap;
 	int				model_index;
-	int				can_use;
+	bool			can_use_for_ship;
+	TriStateBool	can_use_for_bank;
 	generic_anim	animation;
-} wl_icon_info;
+};
 
 wl_icon_info	Wl_icons_teams[MAX_TVT_TEAMS][MAX_WEAPON_TYPES];
 wl_icon_info	*Wl_icons = NULL;
@@ -460,10 +487,10 @@ const char *wl_tooltip_handler(const char *str)
 		return NULL;
 
 	if (!stricmp(str, "@weapon_desc")) {
-		char *str2;
+		const char *str2;
 		int x, y, w, h;
 
-		str2 = Weapon_info[Selected_wl_class].desc;
+		str2 = coalesce(Weapon_info[Selected_wl_class].desc.get(), "");
 		gr_get_string_size(&w, &h, str2);
 		x = Wl_weapon_desc_coords[gr_screen.res][0] - w / 2;
 		y = Wl_weapon_desc_coords[gr_screen.res][1] - h / 2;
@@ -567,7 +594,7 @@ void weapon_button_do(int i)
 {
 	switch ( i ) {
 			case WL_BUTTON_SCROLL_PRIMARY_UP:
-				if ( common_scroll_up_pressed(&Plist_start, Plist_size, 4) ) {
+				if ( common_scroll_up_pressed(&Plist_start, Plist_size, NUM_PRIMARY_MASK_REGIONS) ) {
 					gamesnd_play_iface(InterfaceSounds::SCROLL);
 				} else {
 					gamesnd_play_iface(InterfaceSounds::GENERAL_FAIL);
@@ -575,7 +602,7 @@ void weapon_button_do(int i)
 			break;
 
 			case WL_BUTTON_SCROLL_PRIMARY_DOWN:
-				if ( common_scroll_down_pressed(&Plist_start, Plist_size, 4) ) {
+				if ( common_scroll_down_pressed(&Plist_start, Plist_size, NUM_PRIMARY_MASK_REGIONS) ) {
 					gamesnd_play_iface(InterfaceSounds::SCROLL);
 				} else {
 					gamesnd_play_iface(InterfaceSounds::GENERAL_FAIL);
@@ -583,7 +610,7 @@ void weapon_button_do(int i)
 			break;
 
 			case WL_BUTTON_SCROLL_SECONDARY_UP:
-				if ( common_scroll_up_pressed(&Slist_start, Slist_size, 4) ) {
+				if ( common_scroll_up_pressed(&Slist_start, Slist_size, NUM_SECONDARY_MASK_REGIONS) ) {
 					gamesnd_play_iface(InterfaceSounds::SCROLL);
 				} else {
 					gamesnd_play_iface(InterfaceSounds::GENERAL_FAIL);
@@ -591,7 +618,7 @@ void weapon_button_do(int i)
 			break;
 
 			case WL_BUTTON_SCROLL_SECONDARY_DOWN:
-				if ( common_scroll_down_pressed(&Slist_start, Slist_size, 4) ) {
+				if ( common_scroll_down_pressed(&Slist_start, Slist_size, NUM_SECONDARY_MASK_REGIONS) ) {
 					gamesnd_play_iface(InterfaceSounds::SCROLL);
 				} else {
 					gamesnd_play_iface(InterfaceSounds::GENERAL_FAIL);
@@ -713,7 +740,7 @@ void draw_3d_overhead_view(int model_num,
 	int ship_class,
 	float* rotation_buffer,
 	float frametime,
-	int selected_ship_slot,
+	int weapon_array[MAX_SHIP_WEAPONS],
 	int selected_weapon_class,
 	int hovered_weapon_slot,
 	int x1,
@@ -737,7 +764,9 @@ void draw_3d_overhead_view(int model_num,
 	int bank7_y,
 	int bank_prim_offset,
 	int bank_sec_offset,
-	int bank_y_offset)
+	int bank_y_offset,
+	overhead_style style,
+	const SCP_string& tcolor)
 {
 	ship_info* sip = &Ship_info[ship_class];
 
@@ -749,12 +778,12 @@ void draw_3d_overhead_view(int model_num,
 		float zoom;
 		zoom = sip->closeup_zoom * 1.3f;
 
-		if (!Cmdline_ship_choice_3d) {
+		if (style == OH_TOP_VIEW) {
 			rot_angles.p = -(PI_2);
 			rot_angles.b = 0.0f;
 			rot_angles.h = 0.0f;
 			vm_angles_2_matrix(&object_orient, &rot_angles);
-		} else {
+		} else if (style == OH_ROTATING) {
 			float rev_rate;
 			rev_rate = REVOLUTION_RATE;
 			if (sip->is_big_ship()) {
@@ -778,6 +807,8 @@ void draw_3d_overhead_view(int model_num,
 			rot_angles.b = 0.0f;
 			rot_angles.h = *rotation_buffer;
 			vm_rotate_matrix_by_angles(&object_orient, &rot_angles);
+		} else {
+			Error(LOCATION, "Got call to draw overhead ship with invalid style!");
 		}
 		model_render_params render_info;
 
@@ -821,6 +852,11 @@ void draw_3d_overhead_view(int model_num,
 
 		render_info.set_flags(MR_AUTOCENTER | MR_NO_FOGGING);
 
+		if (sip->uses_team_colors) {
+			SCP_string tc = tcolor.empty() ? sip->default_team_name : tcolor;
+			render_info.set_team_color(tc, "none", 0, 0);
+		}
+
 		model_render_immediate(&render_info, model_num, &object_orient, &vmd_zero_vector);
 
 		Glowpoint_use_depth_buffer = true;
@@ -835,7 +871,7 @@ void draw_3d_overhead_view(int model_num,
 		vec3d subobj_pos;
 		int x, y;
 		int xc, yc;
-		int num_found = 2;
+		int num_found = 0;
 
 		int bank_coords[MAX_SHIP_WEAPONS][2] = {
 			{bank1_x, bank1_y},
@@ -849,10 +885,10 @@ void draw_3d_overhead_view(int model_num,
 
 		// Render selected primary lines
 		for (x = 0; x < pm->n_guns; x++) {
-			if ((Wss_slots[selected_ship_slot].wep[x] == selected_weapon_class && hovered_weapon_slot < 0) ||
+			if ((weapon_array[x] == selected_weapon_class && hovered_weapon_slot < 0) ||
 				x == hovered_weapon_slot) {
-				Assert(num_found < NUM_ICON_FRAMES);
-				gr_set_color_fast(&Icon_colors[ICON_FRAME_NORMAL + num_found]);
+				Assert(num_found < MAX_SHIP_SECONDARY_BANKS);
+				gr_set_color_fast(&Overhead_line_colors[num_found]);
 				gr_circle(bank_coords[x][0] + bank_prim_offset, bank_coords[x][1] + bank_y_offset, 5, resize_mode);
 				for (y = 0; y < pm->gun_banks[x].num_slots; y++) {
 					// Stuff
@@ -905,7 +941,7 @@ void draw_3d_overhead_view(int model_num,
 					gr_curve(lineendx, lineendy, 5, curve, resize_mode);
 
 					if (curve == 0 || curve == 1) {
-						lineendy = bank_coords[x][1] + lround(bank_y_offset * 1.5);
+						lineendy = bank_coords[x][1] + static_cast<int>(lround(bank_y_offset * 1.5));
 					} else {
 						lineendy = bank_coords[x][1] + (bank_y_offset / 2);
 					}
@@ -917,14 +953,14 @@ void draw_3d_overhead_view(int model_num,
 			}
 		}
 
-		num_found = 2;
+		num_found = 0;
 		// Render selected secondary lines
 		for (x = 0; x < pm->n_missiles; x++) {
-			if ((Wss_slots[selected_ship_slot].wep[x + MAX_SHIP_PRIMARY_BANKS] == selected_weapon_class &&
+			if ((weapon_array[x + MAX_SHIP_PRIMARY_BANKS] == selected_weapon_class &&
 					hovered_weapon_slot < 0) ||
 				x + MAX_SHIP_PRIMARY_BANKS == hovered_weapon_slot) {
-				Assert(num_found < NUM_ICON_FRAMES);
-				gr_set_color_fast(&Icon_colors[ICON_FRAME_NORMAL + num_found]);
+				Assert(num_found < MAX_SHIP_PRIMARY_BANKS);
+				gr_set_color_fast(&Overhead_line_colors[num_found]);
 				gr_circle(bank_coords[x + MAX_SHIP_PRIMARY_BANKS][0] + bank_sec_offset,
 					bank_coords[x + MAX_SHIP_PRIMARY_BANKS][1] + bank_y_offset,
 					5,
@@ -979,7 +1015,7 @@ void draw_3d_overhead_view(int model_num,
 					if (curve == 1 || curve == 2) {
 						lineendy = bank_coords[x + MAX_SHIP_PRIMARY_BANKS][1] + (bank_y_offset / 2);
 					} else {
-						lineendy = bank_coords[x + MAX_SHIP_PRIMARY_BANKS][1] + lround(bank_y_offset * 1.5);
+						lineendy = bank_coords[x + MAX_SHIP_PRIMARY_BANKS][1] + static_cast<int>(lround(bank_y_offset * 1.5));
 					}
 
 					gr_line(xc, lineendy, xc, yc, resize_mode);
@@ -1041,7 +1077,7 @@ void wl_render_overhead_view(float frametime)
 	{
 		display_type = -1;
 
-		if(Cmdline_ship_choice_3d || !strlen(sip->overhead_filename))
+		if (Use_3d_overhead_ship || !strlen(sip->overhead_filename))
 		{
 			if (wl_ship->model_num < 0)
 			{
@@ -1051,7 +1087,7 @@ void wl_render_overhead_view(float frametime)
 
 			if(wl_ship->model_num > -1)
 			{
-				if(Cmdline_ship_choice_3d)
+				if (Use_3d_overhead_ship)
 				{
 					display_type = 2;
 				}
@@ -1114,7 +1150,7 @@ void wl_render_overhead_view(float frametime)
 			ship_class,
 			&WeapSelectScreenShipRot,
 			frametime,
-			Selected_wl_slot,
+			Wss_slots[Selected_wl_slot].wep,
 			Selected_wl_class,
 			Hot_weapon_bank,
 			Wl_overhead_coords[gr_screen.res][0],
@@ -1181,25 +1217,38 @@ int eval_weapon_flag_for_game_type(int weapon_flags)
  * Go through the possible weapons to choose from, and flag some as disabled since
  * that ship class cannot use that kind of weapon.  The weapon filter is specified
  * in ships.tbl, where each ship has a list of all the possible weapons it can use.
+ * @param ship_class the ship class that might equip this weapon
+ * @param bank_index index of bank (0..2 primary, 0..6 secondary), or <0 if the bank is not being considered
  */
-void wl_set_disabled_weapons(int ship_class)
+void wl_set_disabled_weapons(int ship_class, int bank_index)
 {
-	int				i;
-	ship_info		*sip;
-
-	if ( ship_class == - 1 )
+	if ( ship_class < 0 )
 		return;
 
 	Assert(ship_class >= 0 && ship_class < ship_info_size());
+	Assert(bank_index < MAX_SHIP_PRIMARY_BANKS + MAX_SHIP_SECONDARY_BANKS);
 	Assert( Wl_icons != NULL );
 
-	sip = &Ship_info[ship_class];
+	auto sip = &Ship_info[ship_class];
 
-	for ( i = 0; i < MAX_WEAPON_TYPES; i++ )
+	int i = 0;
+	for ( auto &wi: Weapon_info )
 	{
 		//	Determine whether weapon #i is allowed on this ship class in the current type of mission.
 		//	As of 9/6/99, the only difference is dogfight missions have a different list of legal weapons.
-		Wl_icons[i].can_use = eval_weapon_flag_for_game_type(sip->allowed_weapons[i]);
+		Wl_icons[i].can_use_for_ship = eval_weapon_flag_for_game_type(sip->allowed_weapons[i]);
+
+		//	Also determine whether the weapon can be used on this bank
+		if ( bank_index < 0 || !Wl_icons[i].can_use_for_ship )
+			Wl_icons[i].can_use_for_bank = TriStateBool::UNKNOWN_;
+		else if ( (wi.is_primary() && bank_index >= MAX_SHIP_PRIMARY_BANKS) || (wi.is_secondary() && bank_index < MAX_SHIP_PRIMARY_BANKS) )
+			Wl_icons[i].can_use_for_bank = TriStateBool::UNKNOWN_;
+		else if ( !eval_weapon_flag_for_game_type(sip->restricted_loadout_flag[bank_index]) || eval_weapon_flag_for_game_type(sip->allowed_bank_restricted_weapons[bank_index][i]) )
+			Wl_icons[i].can_use_for_bank = TriStateBool::TRUE_;
+		else
+			Wl_icons[i].can_use_for_bank = TriStateBool::FALSE_;
+
+		++i;
 	}
 }
 
@@ -1229,26 +1278,27 @@ void maybe_select_wl_slot(int block, int slot)
  */
 void maybe_select_new_weapon(int index)
 {
-	int weapon_class;
+	int region_index, weapon_class;
 
 	// if a weapon is being carried, do nothing
 	if ( wl_icon_being_carried() ) {
 		return;
 	}
 
-	int region_index = ICON_PRIMARY_0+index;
-	if ( index > 3 ) {
-		region_index = ICON_SECONDARY_0 + (index - 4);
+	if ( index < NUM_PRIMARY_MASK_REGIONS ) {
+		region_index = ICON_PRIMARY_0 + index;
+	} else {
+		region_index = ICON_SECONDARY_0 + (index - NUM_PRIMARY_MASK_REGIONS);
 	}
 
 	if ( Wl_mouse_down_on_region != region_index ) {
 		return;
 	}
 
-	if ( index < 4 ) {
+	if ( index < NUM_PRIMARY_MASK_REGIONS ) {
 		weapon_class = Plist[Plist_start+index];
 	} else {
-		weapon_class = Slist[Slist_start+index-4];
+		weapon_class = Slist[Slist_start+index-NUM_PRIMARY_MASK_REGIONS];
 	}
 
 	if ( weapon_class >= 0 ) {
@@ -1286,6 +1336,9 @@ void maybe_select_new_ship_weapon(int index)
 	}
 
 	Selected_wl_class = wep[index];
+
+	// some weapons are bank-specific, so re-check the disabled weapons
+	wl_set_disabled_weapons(Wss_slots[Selected_wl_slot].ship_class, index);
 }
 
 /**
@@ -1329,7 +1382,7 @@ void wl_load_icons(int weapon_class)
 
 	icon = &Wl_icons[weapon_class];
 
-	if(!Cmdline_weapon_choice_3d || (wip->render_type == WRT_LASER && !strlen(wip->tech_model)))
+	if (!Use_3d_weapon_icons || (wip->render_type == WRT_LASER && !VALID_FNAME(wip->tech_model)))
 	{
 		first_frame = bm_load_animation(Weapon_info[weapon_class].icon_filename, &num_frames, nullptr, nullptr, nullptr, false, CF_TYPE_INTERFACE);
 
@@ -1340,15 +1393,15 @@ void wl_load_icons(int weapon_class)
 
 	multi_send_anti_timeout_ping();
 
-	if ( icon->model_index == -1 && ( ( strlen(wip->tech_model) && !strlen(wip->anim_filename) ) || (first_frame == -1) ) )
+	if ( icon->model_index == -1 && ( ( VALID_FNAME(wip->tech_model) && !VALID_FNAME(wip->anim_filename) ) || (first_frame == -1) ) )
 	{
-		if(strlen(wip->tech_model))
+		if(VALID_FNAME(wip->tech_model))
 		{
-			icon->model_index = model_load(wip->tech_model, 0, NULL, 0);
+			icon->model_index = model_load(wip->tech_model, nullptr, ErrorType::WARNING);
 		}
 		if(wip->render_type != WRT_LASER && icon->model_index == -1)
 		{
-			icon->model_index = model_load(wip->pofbitmap_name, 0, NULL);
+			icon->model_index = model_load(wip->pofbitmap_name);
 		}
 	}
 }
@@ -1512,13 +1565,13 @@ void wl_maybe_reset_selected_slot()
 
 /**
  * If Selected_wl_class is -1, choose the first weapon available from the pool for an animation
- *  - on second thought, choose the first weapon that is oin the ship, then go to the pools
+ *  - on second thought, choose the first weapon that is on the ship, then go to the pools
  */
 void wl_maybe_reset_selected_weapon_class()
 {
 	int i;
 
-	if ( Selected_wl_class >= 0 ) 
+	if ( (Selected_wl_class >= 0) && !(Always_reset_selected_wep_on_loadout_open) ) 
 		return;
 
 	Assert( Wss_slots != NULL );
@@ -1558,7 +1611,7 @@ void wl_set_selected_slot(int slot_num)
 	Selected_wl_slot = slot_num;
 	if ( Selected_wl_slot >= 0 ) {
 		Assert( Wss_slots != NULL );
-		wl_set_disabled_weapons(Wss_slots[slot_num].ship_class);
+		wl_set_disabled_weapons(Wss_slots[slot_num].ship_class, -1);
 	}
 }
 
@@ -1807,15 +1860,16 @@ void wl_add_index_to_list(int wi_index)
  */
 void wl_remove_weps_from_pool(int *wep, int *wep_count, int ship_class)
 {
-	int i, wi_index;
+	int bank, wi_index;
+	auto &si = Ship_info[ship_class];
 
 	Assert( Wl_pool != NULL );
 
-	for ( i = 0; i < MAX_SHIP_WEAPONS; i++ ) {
-		wi_index = wep[i];
+	for ( bank = 0; bank < MAX_SHIP_WEAPONS; bank++ ) {
+		wi_index = wep[bank];
 		if ( wi_index >= 0 ) {
-			if ( (wep_count[i] > 0) && ((Wl_pool[wi_index] - wep_count[i]) >= 0) ) {
-				Wl_pool[wi_index] -= wep_count[i];
+			if ( (wep_count[bank] > 0) && ((Wl_pool[wi_index] - wep_count[bank]) >= 0) ) {
+				Wl_pool[wi_index] -= wep_count[bank];
 			} else {
 				// not enough weapons in pool
 				// TEMP HACK: FRED doesn't fill in a weapons pool if there are no starting wings... so
@@ -1824,7 +1878,7 @@ void wl_remove_weps_from_pool(int *wep, int *wep_count, int ship_class)
 					wl_add_index_to_list(wi_index);
 				} else {
 
-					if ( (Wl_pool[wi_index] <= 0) || (wep_count[i] == 0) ) {
+					if ( (Wl_pool[wi_index] <= 0) || (wep_count[bank] == 0) ) {
 						// fresh out of this weapon, pick an alternate pool weapon if we can
 						for (const auto &new_index : Player_weapon_precedence) {
 							Assertion(new_index >= 0, "Somehow, a negative index (%d) got into Player_weapon_precedence; this should not happen. Get a coder!", new_index);
@@ -1838,33 +1892,41 @@ void wl_remove_weps_from_pool(int *wep, int *wep_count, int ship_class)
 								continue;
 							}
 
-							if ( !eval_weapon_flag_for_game_type(Ship_info[ship_class].allowed_weapons[new_index]) ) {
+							// check whether the weapon is allowed in general for this ship
+							if ( !eval_weapon_flag_for_game_type(si.allowed_weapons[new_index]) ) {
 								continue;
 							}
 
-							wep[i] = new_index;
+							// check whether the weapon is allowed for this bank
+							if (eval_weapon_flag_for_game_type(si.restricted_loadout_flag[bank])) {
+								if (!eval_weapon_flag_for_game_type(si.allowed_bank_restricted_weapons[bank][new_index])) {
+									continue;
+								}
+							}
+
+							wep[bank] = new_index;
 							wi_index = new_index;
 							break;
 						}
 					}
 
-					int new_wep_count = wep_count[i];
+					int new_wep_count = wep_count[bank];
 					if ( Weapon_info[wi_index].subtype == WP_MISSILE )
 					{
 						int secondary_bank_index;
-						secondary_bank_index = i-3;
+						secondary_bank_index = bank - MAX_SHIP_PRIMARY_BANKS;
 						if ( secondary_bank_index < 0 ) {
 							Int3();
 							secondary_bank_index = 0;
 						}
-						new_wep_count = wl_calc_missile_fit(wi_index, Ship_info[ship_class].secondary_bank_ammo_capacity[secondary_bank_index]);
+						new_wep_count = wl_calc_missile_fit(wi_index, si.secondary_bank_ammo_capacity[secondary_bank_index]);
 					}
 
-					wep_count[i] = MIN(new_wep_count, Wl_pool[wi_index]);
-					Assert(wep_count[i] >= 0);
-					Wl_pool[wi_index] -= wep_count[i];
-					if ( wep_count[i] <= 0 ) {
-						wep[i] = -1;
+					wep_count[bank] = MIN(new_wep_count, Wl_pool[wi_index]);
+					Assert(wep_count[bank] >= 0);
+					Wl_pool[wi_index] -= wep_count[bank];
+					if ( wep_count[bank] <= 0 ) {
+						wep[bank] = -1;
 					}
 				}
 			}
@@ -1988,7 +2050,7 @@ void weapon_select_close_team()
  * This init is called even before the weapons loadout screen is entered.  It is called when the
  * briefing state is entered.
  */
-void weapon_select_common_init()
+void weapon_select_common_init(bool API_Access)
 {
 	int idx;
 
@@ -2005,9 +2067,11 @@ void weapon_select_common_init()
 		weapon_select_init_team(Common_team);
 	}
 
-	wl_reset_selected_slot();
-	wl_reset_carried_icon();
-	wl_maybe_reset_selected_weapon_class();
+	if (!API_Access) {
+		wl_reset_selected_slot();
+		wl_reset_carried_icon();
+		wl_maybe_reset_selected_weapon_class();
+	}
 }
 
 /**
@@ -2034,7 +2098,7 @@ void weapon_select_init()
 
 	wl_maybe_reset_selected_slot();
 	Assert( Wss_slots != NULL );
-	wl_set_disabled_weapons(Wss_slots[Selected_wl_slot].ship_class);
+	wl_set_disabled_weapons(Wss_slots[Selected_wl_slot].ship_class, -1);
 
 	Weapon_select_overlay_id = help_overlay_get_index(WL_OVERLAY);
 	help_overlay_set_state(Weapon_select_overlay_id,gr_screen.res,0);
@@ -2227,9 +2291,12 @@ void do_mouse_over_list_weapon(int index)
 {
 	Hot_weapon_icon = index;
 
-	int region_index = ICON_PRIMARY_0+index;
-	if ( index > 3 ) {
-		region_index = ICON_SECONDARY_0 + (index - 4);
+	int region_index;
+
+	if ( index < NUM_PRIMARY_MASK_REGIONS ) {
+		region_index = ICON_PRIMARY_0 + index;
+	} else {
+		region_index = ICON_SECONDARY_0 + (index - NUM_PRIMARY_MASK_REGIONS);
 	}
 	
 	if ( Wl_mouse_down_on_region != region_index ){
@@ -2285,10 +2352,10 @@ int do_mouse_over_ship_weapon(int index)
 
 	if ( wl_icon_being_carried() && is_moved ) {
 		if ( Weapon_info[Carried_wl_icon.weapon_class].subtype != WP_MISSILE ) {
-			if ( (index < 3) && (Wss_slots[Selected_wl_slot].wep_count[index] >= 0) ) 
+			if ( (index < MAX_SHIP_PRIMARY_BANKS) && (Wss_slots[Selected_wl_slot].wep_count[index] >= 0) )
 				Hot_weapon_bank = index;
 		} else {
-			if ( index >= 3 && ( Wss_slots[Selected_wl_slot].wep_count[index] >= 0) ) 
+			if ( index >= MAX_SHIP_PRIMARY_BANKS && ( Wss_slots[Selected_wl_slot].wep_count[index] >= 0) )
 				Hot_weapon_bank = index;
 		}
 	}
@@ -2347,12 +2414,12 @@ void wl_render_weapon_desc(float frametime)
 	if (!Weapon_desc_wipe_done) {
 		// draw mid-wipe version
 		// decide which char is last (and bright)
-		int bright_char_index = (int)(Weapon_desc_wipe_time_elapsed * WEAPON_DESC_MAX_LENGTH / WEAPON_DESC_WIPE_TIME);
-		int i, w, h, curr_len;
+		size_t bright_char_index = (size_t)(Weapon_desc_wipe_time_elapsed * WEAPON_DESC_MAX_LENGTH / WEAPON_DESC_WIPE_TIME);
+		int i, w, h;
 		
 		// draw weapon title (above weapon anim)
 		for (i=0; i<2; i++) {
-			curr_len = (int)strlen(Weapon_desc_lines[i]);
+			size_t curr_len = strlen(Weapon_desc_lines[i]);
 
 			if (bright_char_index < curr_len) {
 				// save bright char and plunk in some nulls to shorten string
@@ -2365,7 +2432,7 @@ void wl_render_weapon_desc(float frametime)
 
 				// draw the bright letters
 				gr_set_color_fast(&Color_bright_white);
-				gr_get_string_size(&w, &h, Weapon_desc_lines[i], curr_len);
+				gr_get_string_size(&w, &h, Weapon_desc_lines[i], 1.0f, curr_len);
 				gr_printf_menu(weapon_title_coords[0]+w, weapon_title_coords[1]+(line_height*i), "%c", bright_char[i]);
 
 				// restore the bright char to the string
@@ -2380,7 +2447,7 @@ void wl_render_weapon_desc(float frametime)
 
 		// draw weapon desc (below weapon anim)
 		for (i=2; i<WEAPON_DESC_MAX_LINES; i++) {
-			curr_len = (int)strlen(Weapon_desc_lines[i]);
+			size_t curr_len = strlen(Weapon_desc_lines[i]);
 
 			if (bright_char_index < curr_len) {
 				// save bright char and plunk in some nulls to shorten string
@@ -2393,7 +2460,7 @@ void wl_render_weapon_desc(float frametime)
 
 				// draw the bright letters
 				gr_set_color_fast(&Color_bright_white);
-				gr_get_string_size(&w, &h, Weapon_desc_lines[i], curr_len);
+				gr_get_string_size(&w, &h, Weapon_desc_lines[i], 1.0f, curr_len);
 				gr_printf_menu(weapon_desc_coords[0]+w, weapon_desc_coords[1]+(line_height*(i-2)), "%c", bright_char[i]);
 
 				// restore the bright char to the string
@@ -2434,9 +2501,10 @@ void wl_render_weapon_desc(float frametime)
  */
 void wl_weapon_desc_start_wipe()
 {
-	int currchar_src = 0, currline_dest = 2, currchar_dest = 0, i;
+	size_t currchar_src = 0;
+	int currline_dest = 2, currchar_dest = 0, i;
 	int w, h;
-	int title_len = (int)strlen(Weapon_info[Selected_wl_class].title);
+	size_t title_len = strlen(Weapon_info[Selected_wl_class].title);
 
 	// init wipe vars
 	Weapon_desc_wipe_time_elapsed = 0.0f;
@@ -2444,10 +2512,10 @@ void wl_weapon_desc_start_wipe()
 
 	// break title into two lines if too long
 	strcpy_s(Weapon_desc_lines[0], Weapon_info[Selected_wl_class].title);
-	gr_get_string_size(&w, &h, Weapon_info[Selected_wl_class].title, title_len);
+	gr_get_string_size(&w, &h, Weapon_info[Selected_wl_class].title, 1.0f, title_len);
 	if (w > Weapon_title_max_width[gr_screen.res]) {
 		// split
-		currchar_src = (int)(((float)title_len / (float)w) * Weapon_title_max_width[gr_screen.res]);			// char to start space search at
+		currchar_src = (size_t)(((float)title_len / (float)w) * Weapon_title_max_width[gr_screen.res]);			// char to start space search at
 		while (Weapon_desc_lines[0][currchar_src] != ' ') {
 			currchar_src--;
 			if (currchar_src <= 0) {
@@ -2465,9 +2533,10 @@ void wl_weapon_desc_start_wipe()
 	
 	// break current description into lines (break at the /n's)
 	currchar_src = 0;
-	if (Weapon_info[Selected_wl_class].desc != NULL) {
-		while (Weapon_info[Selected_wl_class].desc[currchar_src] != '\0') {
-			if (Weapon_info[Selected_wl_class].desc[currchar_src] == '\n') {
+	if (Weapon_info[Selected_wl_class].desc) {
+		auto desc = Weapon_info[Selected_wl_class].desc.get();
+		while (desc[currchar_src] != '\0') {
+			if (desc[currchar_src] == '\n') {
 				// break here
 				if (currchar_src != 0) {					// protect against leading /n's
 					Weapon_desc_lines[currline_dest][currchar_dest] = '\0';
@@ -2476,7 +2545,7 @@ void wl_weapon_desc_start_wipe()
 				}
 			} else {
 				// straight copy
-				Weapon_desc_lines[currline_dest][currchar_dest] = Weapon_info[Selected_wl_class].desc[currchar_src];
+				Weapon_desc_lines[currline_dest][currchar_dest] = desc[currchar_src];
 				currchar_dest++;
 			}
 
@@ -2731,13 +2800,29 @@ void weapon_select_do(float frametime)
 		weapon_ani_coords = Wl_weapon_ani_coords[gr_screen.res];
 	}
 
-	if(Selected_wl_class != -1 && Wl_icons[Selected_wl_class].model_index != -1) {
+	if (Selected_wl_class != -1 && Use_3d_weapon_select) {
 		static float WeapSelectScreenWeapRot = 0.0f;
-		wl_icon_info *sel_icon	= &Wl_icons[Selected_wl_class];
+		int modelIdx = -1;
 		weapon_info *wip = &Weapon_info[Selected_wl_class];
+
+		//Get the model
+		if (VALID_FNAME(wip->tech_model)) {
+			modelIdx = model_load(wip->tech_model, nullptr, ErrorType::WARNING);
+		}
+		if (wip->render_type != WRT_LASER && modelIdx == -1) {
+			modelIdx = model_load(wip->pofbitmap_name, nullptr, ErrorType::FATAL_ERROR);
+		}
+
+		select_effect_params params;
+		params.effect = wip->selection_effect;
+		params.fs2_grid_color = wip->fs2_effect_grid_color;
+		params.fs2_scanline_color = wip->fs2_effect_scanline_color;
+		params.fs2_grid_density = wip->fs2_effect_grid_density;
+		params.fs2_wireframe_color = wip->fs2_effect_wireframe_color;
+
 		model_render_params render_info;
 		draw_model_rotating(&render_info, 
-			sel_icon->model_index,
+			modelIdx,
 			weapon_ani_coords[0],
 			weapon_ani_coords[1],
 			gr_screen.res == 0 ? 202 : 332,
@@ -2748,7 +2833,7 @@ void weapon_select_do(float frametime)
 			REVOLUTION_RATE,
 			MR_IS_MISSILE | MR_AUTOCENTER | MR_NO_FOGGING,
 			GR_RESIZE_MENU,
-			wip->selection_effect);
+			params);
 	} else if ( Weapon_anim_class != -1 && ( Selected_wl_class == Weapon_anim_class )) {
 		Assert(Selected_wl_class >= 0 && Selected_wl_class < weapon_info_size());
 		if ( Weapon_anim_class != Selected_wl_class )
@@ -2764,7 +2849,7 @@ void weapon_select_do(float frametime)
 		wl_render_overhead_view(frametime);
 		wl_draw_ship_weapons(Selected_wl_slot);
 		for ( int i = 0; i < MAX_WING_BLOCKS; i++ ) {
-			draw_wing_block(i, Hot_wl_slot, Selected_wl_slot, -1, false);
+			draw_wing_block(i, Hot_wl_slot, Selected_wl_slot, -1, false, true);
 		}
 		common_render_selected_screen_button();
 	}
@@ -2782,7 +2867,7 @@ void weapon_select_do(float frametime)
 		sx = mx + Wl_delta_x;
 		sy = my + Wl_delta_y;
 
-		if ( Wl_icons[Carried_wl_icon.weapon_class].can_use > 0)
+		if ( Wl_icons[Carried_wl_icon.weapon_class].can_use_for_ship )
 		{
 			wl_icon_info *icon = &Wl_icons[Carried_wl_icon.weapon_class];
 			weapon_info *wip = &Weapon_info[Carried_wl_icon.weapon_class];
@@ -2836,7 +2921,8 @@ void weapon_select_do(float frametime)
 		}
 
 		// check so see if this is really a legal weapon to carry away
-		if ( !Wl_icons[Carried_wl_icon.weapon_class].can_use )
+		// (don't check can_use_for_bank here because we may drop the weapon on a bank that wasn't previously selected)
+		if ( !Wl_icons[Carried_wl_icon.weapon_class].can_use_for_ship )
 		{
 			int diffx, diffy;
 			diffx = abs(Carried_wl_icon.from_x-mx);
@@ -2946,7 +3032,7 @@ void wl_render_icon_count(int num, int x, int y)
 	Assert(number_to_draw >= 0);
 
 	sprintf(buf, "%d", number_to_draw);
-	gr_get_string_size(&num_w, &num_h, buf, (int)strlen(buf));
+	gr_get_string_size(&num_w, &num_h, buf, 1.0f, strlen(buf));
 
 	// render
 	gr_set_color_fast(&Color_white);
@@ -3010,7 +3096,7 @@ void wl_render_icon(int index, int x, int y, int num, int draw_num_flag, int hot
 	}
 
 	// if icon is disabled
-	if ( !icon->can_use ) {
+	if ( !icon->can_use_for_ship || icon->can_use_for_bank == TriStateBool::FALSE_ ) {
 		if(icon->icon_bmaps[0] != -1)
 			bitmap_id = icon->icon_bmaps[WEAPON_ICON_FRAME_DISABLED];	// disabled icon
 		else
@@ -3123,7 +3209,7 @@ void draw_wl_icon_with_number(int list_count, int weapon_class)
 	Assert( (Wl_icons != NULL) && (Wl_pool != NULL) );
 
 
-	if(Wl_icons[weapon_class].can_use)
+	if ( Wl_icons[weapon_class].can_use_for_ship && Wl_icons[weapon_class].can_use_for_bank != TriStateBool::FALSE_ )
 	{
 		gr_set_color_fast(&Icon_colors[WEAPON_ICON_FRAME_NORMAL]);
 	}
@@ -3146,14 +3232,14 @@ void draw_wl_icons()
 	count=0;
 	for ( i = Plist_start; i < Plist_size; i++ ) {
 		draw_wl_icon_with_number(count, Plist[i]);
-		if ( ++count > 3 )
+		if ( ++count >= NUM_PRIMARY_MASK_REGIONS )
 			break;
 	}
 
 	count=0;
 	for ( i = Slist_start; i < Slist_size; i++ ) {
-		draw_wl_icon_with_number(count+4, Slist[i]);
-		if ( ++count > 3 )
+		draw_wl_icon_with_number(count+NUM_PRIMARY_MASK_REGIONS, Slist[i]);
+		if ( ++count >= NUM_SECONDARY_MASK_REGIONS )
 			break;
 	}
 }
@@ -3181,10 +3267,10 @@ void wl_pick_icon_from_list(int index)
 		return;
 	}
 
-	if ( index < 4 ) {
+	if ( index < NUM_PRIMARY_MASK_REGIONS ) {
 		weapon_class = Plist[Plist_start+index];
 	} else {
-		weapon_class = Slist[Slist_start+index-4];
+		weapon_class = Slist[Slist_start+index-NUM_PRIMARY_MASK_REGIONS];
 	}
 
 	// there isn't a weapon there at all!
@@ -3215,7 +3301,7 @@ void pick_from_ship_slot(int num)
 {
 	int mx, my, *wep, *wep_count;
 		
-	Assert(num < 7);
+	Assert(num < MAX_SHIP_WEAPONS);
 
 	if ( Selected_wl_slot == -1 )
 		return;
@@ -3236,7 +3322,8 @@ void pick_from_ship_slot(int num)
 		return;
 	}
 
-	Assert(Wl_icons[wep[num]].can_use);
+	Assert(Wl_icons[wep[num]].can_use_for_ship);
+	// we can't Assert on can_use_for_bank here because we may have clicked on a bank that isn't selected
 
 	wl_set_carried_icon(num, Selected_wl_slot, wep[num]);
 	common_flash_button_init();
@@ -3534,7 +3621,7 @@ void wl_saturate_bank(int ship_slot, int bank)
 		return;
 	}
 
-	max_count = wl_calc_missile_fit(slot->wep[bank], Ship_info[slot->ship_class].secondary_bank_ammo_capacity[bank-3]);
+	max_count = wl_calc_missile_fit(slot->wep[bank], Ship_info[slot->ship_class].secondary_bank_ammo_capacity[bank - MAX_SHIP_PRIMARY_BANKS]);
 	overflow = slot->wep_count[bank] - max_count;
 	if ( overflow > 0 ) {
 		Assert( Wl_pool != NULL );
@@ -3644,7 +3731,7 @@ int wl_swap_slot_slot(int from_bank, int to_bank, int ship_slot, interface_snd_i
 		// case 2a: secondaries are the same type
 		if ( slot->wep[from_bank] == slot->wep[to_bank] ) {
 			int dest_max, dest_can_fit, source_can_give;
-			dest_max = wl_calc_missile_fit(slot->wep[to_bank], Ship_info[slot->ship_class].secondary_bank_ammo_capacity[to_bank-3]);
+			dest_max = wl_calc_missile_fit(slot->wep[to_bank], Ship_info[slot->ship_class].secondary_bank_ammo_capacity[to_bank - MAX_SHIP_PRIMARY_BANKS]);
 
 			dest_can_fit = dest_max - slot->wep_count[to_bank];
 
@@ -4015,6 +4102,10 @@ void wl_apply_current_loadout_to_all_ships_in_current_wing()
 
 		// get the slot for this ship
 		cur_wss_slot = cur_wing_block * MAX_WING_SLOTS + cur_wing_slot;
+
+		// make sure there is actually a ship here
+		if (Wss_slots[cur_wss_slot].ship_class < 0)
+			continue;
 
 		// get the ship's name and class
 		sip = &Ship_info[Wss_slots[cur_wss_slot].ship_class];	

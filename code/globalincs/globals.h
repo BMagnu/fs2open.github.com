@@ -13,7 +13,6 @@
 // from parselo.h
 #define	PATHNAME_LENGTH			192
 #define	NAME_LENGTH				32
-#define	SEXP_LENGTH				128
 #define	DATE_LENGTH				32
 #define	TIME_LENGTH				16
 #define	DATE_TIME_LENGTH		48
@@ -32,8 +31,8 @@
 #define SHORT_CALLSIGN_PIXEL_W	80		// max width of short_callsign[] in pixels
 
 // from ship.h
-#define MAX_SHIPS					400			// max number of ship instances there can be.DTP; bumped from 200 to 400
-#define SHIPS_LIMIT					400			// what MAX_SHIPS will be at release time (for error checking in debug mode); dtp Bumped from 200 to 400
+#define MAX_SHIPS					500		// max number of ship instances there can be.DTP; bumped from 200 to 400, then to 500 in 2022
+#define SHIPS_LIMIT					500		// what MAX_SHIPS will be at release time (for error checking in debug mode); dtp Bumped from 200 to 400, then to 500 in 2022
 
 // from missionparse.h and then redefined to the same value in sexp.h
 #define TOKEN_LENGTH	32
@@ -61,7 +60,7 @@
 #define MAX_COMPLETE_ESCORT_LIST	20
              
 // from weapon.h
-#define MAX_WEAPONS	2000
+#define MAX_WEAPONS	3000		//Increased from 2000 to 3000 in 2022
 
 #define MAX_WEAPON_TYPES				500
 
@@ -73,7 +72,8 @@
 #define MAX_POLYGON_MODELS  300
 
 // object.h
-#define MAX_OBJECTS			3500		
+//If this value exceeds 2^16-1, this will break collision pair caching as is. Proceed with caution.
+#define MAX_OBJECTS			5000	//Increased from 3500 to 5000 in 2022	
 
 // from weapon.h (and beam.h)
 #define MAX_BEAM_SECTIONS				5

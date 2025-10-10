@@ -14,6 +14,7 @@
 #include "globalincs/globals.h"
 #include "globalincs/pstypes.h"
 #include "globalincs/flagset.h"
+#include "globalincs/version.h"
 #include "def_files/def_files.h"
 #include "utils/unicode.h"
 
@@ -37,6 +38,8 @@ extern int Token_found_flag;
 #define	EOLN			(char)0x0a
 #define CARRIAGE_RETURN (char)0x0d
 
+enum class LineEndingType { UNKNOWN, CR, CRLF, LF };
+
 #define	F_NAME					1
 #define	F_DATE					2
 #define	F_NOTES					3
@@ -48,23 +51,27 @@ extern int Token_found_flag;
 #define	F_MESSAGE				9	// this is now obsolete for mission messages - all messages in missions should now use $MessageNew and stuff strings as F_MULTITEXT
 #define	F_MULTITEXT				10
 #define F_RAW					11	// for any internal parsing use. Just strips whitespace and copies the text.
-#define F_LNAME					12	//Filenames
+#define F_LNAME					12	// Filenames
+#define F_TRIMMED				13	// Like F_NAME etc., but without leading and trailing whitespace
 
 #define PARSE_BUF_SIZE			4096
 
-#define	SHIP_TYPE			0	// used to identify which kind of array to do a search for a name in
-#define	SHIP_INFO_TYPE		1
-#define	WEAPON_LIST_TYPE	2	//	to parse an int_list of weapons
-#define	RAW_INTEGER_TYPE	3	//	to parse a list of integers
-#define	WEAPON_POOL_TYPE	4
+enum class ParseLookupType
+{
+	RAW_INTEGER_TYPE,   // to parse a list of integers
+	SHIP_TYPE,          // used to identify which kind of array to do a search for a name in
+	SHIP_INFO_TYPE,
+	WEAPON_LIST_TYPE,   // to parse an int_list of weapons
+	WEAPON_POOL_TYPE,
+	FIREBALL_INFO_TYPE,
+	MISSION_LOADOUT_SHIP_LIST,
+	MISSION_LOADOUT_WEAPON_LIST,
+	CAMPAIGN_LOADOUT_SHIP_LIST,
+	CAMPAIGN_LOADOUT_WEAPON_LIST,
+};
 
 // Karajorma - Used by the stuff_ship_list and stuff_weapon_list SEXPs
 #define NOT_SET_BY_SEXP_VARIABLE	-1
-
-#define MISSION_LOADOUT_SHIP_LIST		5
-#define MISSION_LOADOUT_WEAPON_LIST		6
-#define CAMPAIGN_LOADOUT_SHIP_LIST		7
-#define CAMPAIGN_LOADOUT_WEAPON_LIST	8
 
 #define SEXP_SAVE_MODE				1
 #define SEXP_ERROR_CHECK_MODE		2
@@ -74,9 +81,12 @@ extern bool end_string_at_first_hash_symbol(char *src, bool ignore_doubled_hash 
 extern bool end_string_at_first_hash_symbol(SCP_string &src, bool ignore_doubled_hash = false);
 extern char *get_pointer_to_first_hash_symbol(char *src, bool ignore_doubled_hash = false);
 extern const char *get_pointer_to_first_hash_symbol(const char *src, bool ignore_doubled_hash = false);
-extern int get_index_of_first_hash_symbol(SCP_string &src, bool ignore_doubled_hash = false);
+extern int get_index_of_first_hash_symbol(const SCP_string &src, bool ignore_doubled_hash = false);
 
 extern void consolidate_double_characters(char *str, char ch);
+
+// for limiting strings that may be very long; useful for dialog boxes
+char *three_dot_truncate(char *buffer, const char *source, size_t buffer_size);
 
 // white space
 extern int is_white_space(char ch);
@@ -96,6 +106,9 @@ extern int is_gray_space(char ch);
 extern bool is_gray_space(unicode::codepoint_t cp);
 extern void ignore_gray_space(const char **pp = nullptr);
 
+// other
+extern bool is_parenthesis(char ch);
+
 // error
 extern int get_line_num();
 extern char *next_tokens(bool terminate_before_parenthesis_or_comma = false);
@@ -106,6 +119,7 @@ extern void error_display(int error_level, SCP_FORMAT_STRING const char *format,
 extern int skip_to_string(const char *pstr, const char *end = NULL);
 extern int skip_to_start_of_string(const char *pstr, const char *end = NULL);
 extern int skip_to_start_of_string_either(const char *pstr1, const char *pstr2, const char *end = NULL);
+extern int skip_to_start_of_string_one_of(const SCP_vector<SCP_string>& pstr, const char* end = nullptr);
 extern void advance_to_eoln(const char *terminators);
 extern bool skip_eoln();
 extern void skip_token();
@@ -117,7 +131,7 @@ extern int optional_string_one_of(int arg_count, ...);
 
 // required
 extern int required_string(const char *pstr);
-extern int required_string_either(const char *str1, const char *str2);
+extern int required_string_either(const char *str1, const char *str2, bool advance = false);
 extern int required_string_one_of(int arg_count, ...);
 
 // stuff
@@ -144,6 +158,10 @@ extern char* alloc_block(const char* startstr, const char* endstr, int extra_cha
 // the default string length if using the F_NAME case.
 extern char *stuff_and_malloc_string(int type, const char *terminators = nullptr);
 extern void stuff_malloc_string(char **dest, int type, const char *terminators = nullptr);
+extern void stuff_string(std::unique_ptr<char[]> &outstr, int type, bool null_if_empty, const char *terminators = nullptr);
+extern void stuff_string(SCP_vm_unique_ptr<char> &outstr, int type, bool null_if_empty, const char *terminators = nullptr);
+extern bool check_first_non_whitespace_char(const char *str, char ch_to_look_for, char **after_ch = nullptr);
+extern bool check_first_non_grayspace_char(const char *str, char ch_to_look_for, char **after_ch = nullptr);
 extern int stuff_float(float *f, bool optional = false);
 extern int stuff_int(int *i, bool optional = false);
 extern int stuff_long(long *l, bool optional = false);
@@ -152,7 +170,26 @@ extern int stuff_int_optional(int *i);
 extern int stuff_float_optional(float *f);
 extern void stuff_string_list(SCP_vector<SCP_string>& slp);
 extern size_t stuff_string_list(char slp[][NAME_LENGTH], size_t max_strings);
-extern void parse_string_flag_list(int *dest, flag_def_list defs[], size_t defs_size);
+extern void parse_string_flag_list(int &dest, flag_def_list defs[], size_t defs_size);
+
+// If this data is going to be parsed multiple times (like for mission load), then the dest variable
+// needs to be cleared in between parses, otherwise we keep bad data.
+// For tbm files, it must not be reset.
+template <class T>
+void parse_string_flag_list(SCP_set<T> &dest, flag_def_list_templated<T> defs[], size_t defs_size)
+{
+	SCP_vector<SCP_string> slp;
+	stuff_string_list(slp);
+
+	for (auto &str : slp)
+	{
+		for (size_t j = 0; j < defs_size; j++)
+		{
+			if (!stricmp(str.c_str(), defs[j].name))
+				dest.insert(defs[j].def);
+		}
+	}
+}
 
 
 // A templated version of parse_string_flag_list, to go along with the templated flag_def_list_new.
@@ -223,12 +260,14 @@ void stuff_flagset(T *dest) {
     diag_printf("Stuffed flagset: %" PRIu64 "\n", dest->to_u64());
 }
 
-extern size_t stuff_int_list(int *ilp, size_t max_ints, int lookup_type = RAW_INTEGER_TYPE);
+extern size_t stuff_int_list(int *ilp, size_t max_ints, ParseLookupType lookup_type = ParseLookupType::RAW_INTEGER_TYPE, bool warn_on_lookup_failure = true);
+extern void stuff_int_list(SCP_vector<int> &ilp, ParseLookupType lookup_type = ParseLookupType::RAW_INTEGER_TYPE, bool warn_on_lookup_failure = true);
 extern size_t stuff_float_list(float* flp, size_t max_floats);
 extern void stuff_float_list(SCP_vector<float>& flp);
 extern size_t stuff_vec3d_list(vec3d *vlp, size_t max_vecs);
 extern void stuff_vec3d_list(SCP_vector<vec3d> &vec_list);
 extern size_t stuff_bool_list(bool *blp, size_t max_bools);
+extern void stuff_vec2d(vec2d* vp);
 extern void stuff_vec3d(vec3d *vp);
 extern void stuff_matrix(matrix *mp);
 extern void stuff_angles_deg_phb(angles* vp);
@@ -239,27 +278,51 @@ extern void find_and_stuff_or_add(const char *id, int *addr, int f_type, char *s
 	int max, const char *description);
 extern int get_string(char *str, int max = -1);
 extern void get_string(SCP_string &str);
+extern void stuff_parenthesized_vec2d(vec2d* vp);
 extern void stuff_parenthesized_vec3d(vec3d *vp);
 extern void stuff_boolean(int *i, bool a_to_eol=true);
 extern void stuff_boolean(bool *b, bool a_to_eol=true);
 extern void stuff_boolean_flag(int *i, int flag, bool a_to_eol=true);
+extern bool parse_boolean(const char *token, bool*b);
 
 template <class T>
-int string_lookup(const char* str1, T strlist, size_t max, const char* description = nullptr, bool say_errors = false)
+int string_lookup(const char* str1, const T& strlist, size_t max, const char* description = nullptr, bool say_errors = false, bool print_list = false)
 {
 	for (size_t i=0; i<max; i++)
 	{
 		Assert(strlen(strlist[i]) != 0); //-V805
 
 		if (!stricmp(str1, strlist[i]))
-			return (int)i;
+			return static_cast<int>(i);
 	}
 
 	if (say_errors)
-		error_display(0, "Unable to find [%s] in %s list.\n", str1, description);
+	{
+		const char* suffix;
+		SCP_string list;
+
+		if (print_list)
+		{
+			list = ":\n";
+			for (size_t i=0; i<max; i++)
+			{
+				list += "    ";
+				list += strlist[i];
+				list += "\n";
+			}
+			suffix = list.c_str();
+		}
+		else
+			suffix = ".\n";
+
+		error_display(0, "Unable to find \"%s\" in %s list%s", str1, description ? description : "unnamed", suffix);
+	}
 
 	return -1;
 }
+
+int string_lookup(const char* str1, const SCP_vector<SCP_string>& strlist, const char* description = nullptr, bool say_errors = false, bool print_list = false);
+int string_lookup(const SCP_string& str1, const SCP_vector<SCP_string>& strlist, const char* description = nullptr, bool say_errors = false, bool print_list = false);
 
 template<class Flags, class Flagset>
 void stuff_boolean_flag(Flagset& destination, Flags flag, bool a_to_eol = true)
@@ -269,11 +332,11 @@ void stuff_boolean_flag(Flagset& destination, Flags flag, bool a_to_eol = true)
     destination.set(flag, temp);
 }
 
-extern int check_for_string(const char *pstr);
-extern int check_for_string_raw(const char *pstr);
-extern int check_for_eof();
-extern int check_for_eof_raw();
-extern int check_for_eoln();
+extern bool check_for_string(const char *pstr);
+extern bool check_for_string_raw(const char *pstr);
+extern bool check_for_eof();
+extern bool check_for_eof_raw();
+extern bool check_for_eoln();
 
 // from aicode.cpp
 extern void parse_float_list(float *plist, size_t size);
@@ -292,6 +355,7 @@ extern void stop_parse();
 // utility
 extern void compact_multitext_string(char *str);
 extern void compact_multitext_string(SCP_string &str);
+extern void read_file_bytes(const char *filename, int mode, char *raw_bytes = nullptr);
 extern void read_file_text(const char *filename, int mode = CF_TYPE_ANY, char *processed_text = NULL, char *raw_text = NULL);
 extern void read_file_text_from_default(const default_file& file, char *processed_text = NULL, char *raw_text = NULL);
 extern void read_raw_file_text(const char *filename, int mode = CF_TYPE_ANY, char *raw_text = NULL);
@@ -303,7 +367,7 @@ extern size_t maybe_convert_foreign_characters(const char *in, char *out, bool a
 extern void maybe_convert_foreign_characters(SCP_string &text);
 extern size_t get_converted_string_length(const char *text);
 extern size_t get_converted_string_length(const SCP_string &text);
-char *split_str_once(char *src, int max_pixel_w);
+char *split_str_once(char *src, int max_pixel_w, float scale = 1.0f);
 int split_str(const char* src,
 			  int max_pixel_w,
 			  int* n_chars,
@@ -319,6 +383,10 @@ int split_str(const char* src,
 			  int max_line_length = INT_MAX,
 			  unicode::codepoint_t ignore_char = (unicode::codepoint_t) -1,
 			  bool strip_leading_whitespace = true);
+
+SCP_vector<std::pair<size_t, size_t>> str_wrap_to_width(const SCP_string& source_string, int max_pixel_width, bool strip_leading_whitespace = true, size_t source_start = 0, size_t source_length = std::string::npos);
+
+SCP_vector<std::pair<size_t, size_t>> str_wrap_to_width(const char* source_string, int max_pixel_width, bool strip_leading_whitespace = true, size_t source_length = std::string::npos);
 
 // fred
 extern int required_string_fred(const char *pstr, const char *end = NULL);
@@ -384,7 +452,7 @@ struct loadout_row
 };
 
 //Karajorma/Goober5000 - Parses mission and campaign ship loadouts.
-void stuff_loadout_list(SCP_vector<loadout_row> &list, int lookup_type);
+void stuff_loadout_list(SCP_vector<loadout_row> &list, ParseLookupType lookup_type);
 int get_string_or_variable (char *str);
 int get_string_or_variable (SCP_string &str);
 #define PARSING_FOUND_STRING		0
@@ -397,6 +465,24 @@ namespace parse
 	public:
 		explicit ParseException(const std::string& msg) : std::runtime_error(msg) {}
 		~ParseException() noexcept override = default;
+	};
+
+	class FileOpenException : public ParseException
+	{
+	public:
+		explicit FileOpenException(const std::string& msg) : ParseException(msg) {}
+		~FileOpenException() noexcept override = default;
+	};
+
+	class VersionException : public std::runtime_error
+	{
+	private:
+		gameversion::version _required_version;
+
+	public:
+		explicit VersionException(const std::string& msg, const gameversion::version& required_version) : std::runtime_error(msg), _required_version(required_version) {}
+		~VersionException() noexcept override = default;
+		const gameversion::version& required_version() { return _required_version; }
 	};
 
 	/**

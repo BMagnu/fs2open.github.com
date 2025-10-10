@@ -6,7 +6,10 @@
 #include "weapon/weapon.h"
 #include "graphics/matrix.h"
 #include "vecmath.h"
+#include "mission/missioncampaign.h"
 #include "missionui/missionscreencommon.h"
+#include "model/modelrender.h"
+#include "utils/string_utils.h"
 
 namespace scripting {
 namespace api {
@@ -81,6 +84,25 @@ ADE_VIRTVAR(AltName, l_Weaponclass, "string", "The alternate weapon class name."
 	return ade_set_args(L, "s", Weapon_info[idx].display_name);
 }
 
+ADE_VIRTVAR(TurretName, l_Weaponclass, "string", "The name displayed for a turret if the turret's first weapon is this weapon class.", "string", "Turret name (aka alternate subsystem name), or empty string if handle is invalid")
+{
+	int idx;
+	const char* s = nullptr;
+	if(!ade_get_args(L, "o|s", l_Weaponclass.Get(&idx), &s))
+		return ade_set_error(L, "s", "");
+
+	if(idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "s", "");
+
+	if(ADE_SETTING_VAR && s != nullptr) {
+		auto len = sizeof(Weapon_info[idx].altSubsysName);
+		strncpy(Weapon_info[idx].altSubsysName, s, len);
+		Weapon_info[idx].altSubsysName[len - 1] = 0;
+	}
+
+	return ade_set_args(L, "s", Weapon_info[idx].altSubsysName);
+}
+
 ADE_VIRTVAR(Title, l_Weaponclass, "string", "Weapon class title", "string", "Weapon class title, or empty string if handle is invalid")
 {
 	int idx;
@@ -113,17 +135,11 @@ ADE_VIRTVAR(Description, l_Weaponclass, "string", "Weapon class description stri
 	weapon_info *wip = &Weapon_info[idx];
 
 	if(ADE_SETTING_VAR) {
-		vm_free(wip->desc);
-		if(s != nullptr) {
-			wip->desc = (char*)vm_malloc(strlen(s)+1);
-			strcpy(wip->desc, s);
-		} else {
-			wip->desc = nullptr;
-		}
+		wip->desc = util::unique_copy(s, true);
 	}
 
 	if(wip->desc != nullptr)
-		return ade_set_args(L, "s", wip->desc);
+		return ade_set_args(L, "s", wip->desc.get());
 	else
 		return ade_set_args(L, "s", "");
 }
@@ -213,17 +229,11 @@ ADE_VIRTVAR(TechDescription, l_Weaponclass, "string", "Weapon class tech descrip
 	weapon_info *wip = &Weapon_info[idx];
 
 	if(ADE_SETTING_VAR) {
-		vm_free(wip->tech_desc);
-		if(s != nullptr) {
-			wip->tech_desc = (char*)vm_malloc(strlen(s)+1);
-			strcpy(wip->tech_desc, s);
-		} else {
-			wip->tech_desc = nullptr;
-		}
+		wip->tech_desc = util::unique_copy(s, true);
 	}
 
 	if(wip->tech_desc != nullptr)
-		return ade_set_args(L, "s", wip->tech_desc);
+		return ade_set_args(L, "s", wip->tech_desc.get());
 	else
 		return ade_set_args(L, "s", "");
 }
@@ -283,6 +293,23 @@ ADE_VIRTVAR(Damage, l_Weaponclass, "number", "Amount of damage that weapon deals
 	return ade_set_args(L, "f", Weapon_info[idx].damage);
 }
 
+ADE_VIRTVAR(DamageType, l_Weaponclass, nullptr, nullptr, "number", "Damage Type index, or 0 if handle is invalid. Index is index into armor.tbl")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "i", 0);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "i", 0);
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Damage Type is not supported");
+	}
+
+	//Convert to Lua's 1 based index here
+	return ade_set_args(L, "i", Weapon_info[idx].damage_type_idx_sav + 1);
+}
+
 ADE_VIRTVAR(FireWait, l_Weaponclass, "number", "Weapon fire wait (cooldown time) in seconds", "number", "Fire wait time, or 0 if handle is invalid")
 {
 	int idx;
@@ -294,13 +321,22 @@ ADE_VIRTVAR(FireWait, l_Weaponclass, "number", "Weapon fire wait (cooldown time)
 		return ade_set_error(L, "f", 0.0f);
 
 	if(ADE_SETTING_VAR) {
-		Weapon_info[idx].fire_wait = f;
+		if (Weapon_info[idx].wi_flags[Weapon::Info_Flags::Cmeasure]) {
+			LuaError(L, "Setting Countermeasure Fire Wait is not supported");
+		} else {
+			Weapon_info[idx].fire_wait = f;
+		}
 	}
 
-	return ade_set_args(L, "f", Weapon_info[idx].fire_wait);
+	float fw = Weapon_info[idx].fire_wait;
+	if (Weapon_info[idx].wi_flags[Weapon::Info_Flags::Cmeasure]) {
+		fw = static_cast<float>(Weapon_info[idx].cmeasure_firewait) / 1000.0f;
+	}
+
+	return ade_set_args(L, "f", fw);
 }
 
-ADE_VIRTVAR(FreeFlightTime, l_Weaponclass, "number", "The time the weapon will fly before turing onto its target", "number", "Free flight time or emty string if invalid")
+ADE_VIRTVAR(FreeFlightTime, l_Weaponclass, "number", "The time the weapon will fly before turing onto its target", "number", "Free flight time or empty string if invalid")
 {
 	int idx;
 	float f = 0.0f;
@@ -315,6 +351,83 @@ ADE_VIRTVAR(FreeFlightTime, l_Weaponclass, "number", "The time the weapon will f
 	}
 
 	return ade_set_args(L, "f", Weapon_info[idx].free_flight_time);
+}
+
+static int swarm_info_helper(lua_State* L)
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_NIL;
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Swarm Info is not supported");
+	}
+
+	bool flag = false;
+	if (Weapon_info[idx].wi_flags[Weapon::Info_Flags::Swarm])
+		flag = true;
+
+	return ade_set_args(L, "bii", flag, Weapon_info[idx].swarm_count, Weapon_info[idx].SwarmWait);
+}
+
+ADE_VIRTVAR_DEPRECATED(SwarmInfo, l_Weaponclass, nullptr, nullptr, "boolean",
+	"Returns whether the weapon has the swarm flag, or nil if the handle is invalid.",
+	gameversion::version(24, 2), "Deprecated in favor of weaponclass:getSwarmInfo(), since virtvars can only return a single value.")
+{
+	return swarm_info_helper(L);
+}
+
+ADE_FUNC(getSwarmInfo, l_Weaponclass, nullptr, nullptr, "boolean, number, number",
+	"Returns three values: a) whether the weapon has the swarm flag, b) the number of swarm missiles fired, c) the swarm wait. Returns nil if the handle is invalid.")
+{
+	return swarm_info_helper(L);
+}
+
+static int corkscrew_info_helper(lua_State* L)
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_NIL;
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Corkscrew Info is not supported");
+	}
+
+	bool crotate = false;
+	if (Weapon_info[idx].cs_crotate)
+		crotate = true;
+
+	bool flag = false;
+	if (Weapon_info[idx].wi_flags[Weapon::Info_Flags::Corkscrew])
+		flag = true;
+
+	return ade_set_args(L,
+		"bifibf",
+		flag,
+		Weapon_info[idx].cs_num_fired,
+		Weapon_info[idx].cs_radius,
+		Weapon_info[idx].cs_delay,
+		crotate,
+		Weapon_info[idx].cs_twist);
+}
+
+ADE_VIRTVAR_DEPRECATED(CorkscrewInfo, l_Weaponclass, nullptr, nullptr, "boolean, number, number, number, boolean, number",
+	"Returns whether the weapon has the corkscrew flag, or nil if the handle is invalid.",
+	gameversion::version(24, 2), "Deprecated in favor of weaponclass:getCorkscrewInfo(), since virtvars can only return a single value.")
+{
+	return corkscrew_info_helper(L);
+}
+
+ADE_FUNC(getCorkscrewInfo, l_Weaponclass, nullptr, nullptr, "boolean, number, number, number, boolean, number",
+	"Returns six values: a) whether the weapon has the corkscrew flag, b) the number of corkscrew missiles fired, c) the radius, d) the fire delay, e) whether the weapon counter-rotations, f) the twist value. Returns nil if the handle is invalid.")
+{
+	return corkscrew_info_helper(L);
 }
 
 ADE_VIRTVAR(LifeMax, l_Weaponclass, "number", "Life of weapon in seconds", "number", "Life of weapon, or 0 if handle is invalid")
@@ -452,6 +565,26 @@ ADE_VIRTVAR(EnergyConsumed, l_Weaponclass, nullptr, nullptr, "number", "Energy C
 	return ade_set_args(L, "f", Weapon_info[idx].energy_consumed);
 }
 
+ADE_VIRTVAR(ShockwaveDamage, l_Weaponclass, "number", "Damage the shockwave is set to if damage is overridden", "number", "Shockwave Damage if explicitly specified via table, or -1 if unspecified. Returns nil if handle is invalid")
+{
+	int idx;
+	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "f", -1.0f);
+
+	if(idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_NIL;
+
+	if(ADE_SETTING_VAR) {
+		LuaError(L, "Setting Shockwave Damage is not supported");
+	}
+
+	if (Weapon_info[idx].shockwave.damage_overridden) {
+		return ade_set_args(L, "f", Weapon_info[idx].shockwave.damage);
+	} else {
+		return ade_set_args(L, "f", -1.0f);
+	}
+}
+
 
 ADE_VIRTVAR(InnerRadius, l_Weaponclass, "number", "Radius at which the full explosion damage is done. Marks the line where damage attenuation begins. Same as $Inner Radius in weapons.tbl", "number", "Inner Radius, or 0 if handle is invalid")
 {
@@ -549,6 +682,66 @@ ADE_FUNC(hasCustomData, l_Weaponclass, nullptr, "Detects whether the weapon clas
 	return ade_set_args(L, "b", result);
 }
 
+ADE_VIRTVAR(CustomStrings,
+	l_Weaponclass,
+	nullptr,
+	"Gets the indexed custom string table for this weapon. Each item in the table is a table with the following values: "
+	"Name - the name of the custom string, Value - the value associated with the custom string, String - the custom "
+	"string itself.",
+	"table",
+	"The weapon's custom data table")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_NIL;
+
+	weapon_info* wip = &Weapon_info[idx];
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Custom Data is not supported");
+	}
+
+	auto table = luacpp::LuaTable::create(L);
+
+	int cnt = 0;
+
+	for (const auto& cs : wip->custom_strings) {
+		cnt++;
+		auto item = luacpp::LuaTable::create(L);
+
+		item.addValue("Name", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs.name));
+		item.addValue("Value", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs.value));
+		item.addValue("String", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs.text));
+
+		table.addValue(cnt, item);
+	}
+
+	return ade_set_args(L, "t", &table);
+}
+
+ADE_FUNC(hasCustomStrings,
+	l_Weaponclass,
+	nullptr,
+	"Detects whether the weapon has any custom strings",
+	"boolean",
+	"true if the weapon's custom_strings is not empty, false otherwise")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_NIL;
+
+	weapon_info* wip = &Weapon_info[idx];
+
+	bool result = !wip->custom_strings.empty();
+	return ade_set_args(L, "b", result);
+}
+
 ADE_VIRTVAR(InTechDatabase, l_Weaponclass, "boolean", "Gets or sets whether this weapon class is visible in the tech room", "boolean", "True or false")
 {
 	int idx;
@@ -564,6 +757,23 @@ ADE_VIRTVAR(InTechDatabase, l_Weaponclass, "boolean", "Gets or sets whether this
 	}
 
 	return ade_set_args(L, "b", Weapon_info[idx].wi_flags[Weapon::Info_Flags::In_tech_database]);
+}
+
+ADE_VIRTVAR(AllowedInCampaign, l_Weaponclass, "boolean", "Gets or sets whether this weapon class is allowed in loadouts in campaign mode", "boolean", "True or false")
+{
+	int idx;
+	bool new_value;
+	if (!ade_get_args(L, "o|b", l_Weaponclass.Get(&idx), &new_value))
+		return ade_set_error(L, "b", false);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "b", false);
+
+	if (ADE_SETTING_VAR) {
+		Campaign.weapons_allowed[idx] = new_value;
+	}
+
+	return Campaign.weapons_allowed[idx] ? ADE_RETURN_TRUE : ADE_RETURN_FALSE;
 }
 
 ADE_VIRTVAR(CargoSize, l_Weaponclass, "number", "The cargo size of this weapon class", "number", "The new cargo size or -1 on error")
@@ -593,6 +803,224 @@ ADE_VIRTVAR(CargoSize, l_Weaponclass, "number", "The cargo size of this weapon c
 	return ade_set_args(L, "f", info->cargo_size);
 }
 
+ADE_VIRTVAR(heatEffectiveness,
+	l_Weaponclass,
+	"number",
+	"The heat effectiveness of this weapon class if it's a countermeasure. Otherwise returns -1",
+	"number",
+	"The heat effectiveness or -1 on error")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_args(L, "f", -1.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_args(L, "f", -1.0f);
+
+	weapon_info* info = &Weapon_info[idx];
+
+	if (!info->wi_flags[Weapon::Info_Flags::Cmeasure])
+		return ade_set_args(L, "f", -1.0f);
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Heat Effectiveness is not supported");
+	}
+
+	return ade_set_args(L, "f", info->cm_heat_effectiveness);
+}
+
+ADE_VIRTVAR(aspectEffectiveness,
+	l_Weaponclass,
+	"number",
+	"The aspect effectiveness of this weapon class if it's a countermeasure. Otherwise returns -1",
+	"number",
+	"The aspect effectiveness or -1 on error")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_args(L, "f", -1.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_args(L, "f", -1.0f);
+
+	weapon_info* info = &Weapon_info[idx];
+
+	if (!info->wi_flags[Weapon::Info_Flags::Cmeasure])
+		return ade_set_args(L, "f", -1.0f);
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Aspect Effectiveness is not supported");
+	}
+
+	return ade_set_args(L, "f", info->cm_aspect_effectiveness);
+}
+
+ADE_VIRTVAR(effectiveRange,
+	l_Weaponclass,
+	"number",
+	"The effective range of this weapon class if it's a countermeasure. Otherwise returns -1",
+	"number",
+	"The effective range or -1 on error")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_args(L, "f", -1.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_args(L, "f", -1.0f);
+
+	weapon_info* info = &Weapon_info[idx];
+
+	if (!info->wi_flags[Weapon::Info_Flags::Cmeasure])
+		return ade_set_args(L, "f", -1.0f);
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Effective Range is not supported");
+	}
+
+	return ade_set_args(L, "f", info->cm_effective_rad);
+}
+
+ADE_VIRTVAR(pulseInterval,
+	l_Weaponclass,
+	"number",
+	"The pulse interval of this weapon class if it's a countermeasure. Otherwise returns -1",
+	"number",
+	"The pulse interval or -1 on error")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_args(L, "f", -1.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_args(L, "f", -1.0f);
+
+	weapon_info* info = &Weapon_info[idx];
+
+	if (!info->wi_flags[Weapon::Info_Flags::Cmeasure])
+		return ade_set_args(L, "f", -1.0f);
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Pulse Interval is not supported");
+	}
+
+	return ade_set_args(L, "f", info->cmeasure_timer_interval);
+}
+
+ADE_VIRTVAR(BurstShots, l_Weaponclass, "number", "The number of shots in a burst from this weapon.", "number", "Burst shots, 1 for non-burst weapons, or 0 if handle is invalid")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "i", 0);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "i", 0);
+
+	if (ADE_SETTING_VAR)
+		LuaError(L, "Setting BurstShots is not supported");
+
+	return ade_set_args(L, "i", Weapon_info[idx].burst_shots + 1);
+}
+
+ADE_VIRTVAR(BurstDelay, l_Weaponclass, "number", "The time in seconds between shots in a burst.", "number", "Burst delay, or 0 if handle is invalid")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "f", 0.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "f", 0.0f);
+
+	if (ADE_SETTING_VAR)
+		LuaError(L, "Setting BurstDelay is not supported");
+
+	return ade_set_args(L, "f", Weapon_info[idx].burst_delay);
+}
+
+ADE_VIRTVAR(FieldOfFire, l_Weaponclass, "number", "The angular spread for shots of this weapon.", "number", "Fof in degrees, or 0 if handle is invalid")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "f", 0.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "f", 0.0f);
+
+	if (ADE_SETTING_VAR)
+		LuaError(L, "Setting FieldOfFire is not supported");
+
+	return ade_set_args(L, "f", Weapon_info[idx].field_of_fire);
+}
+
+ADE_VIRTVAR(MaxFieldOfFire, l_Weaponclass, "number", "The maximum field of fire this weapon can have if it increases while firing.", "number", "Max Fof in degrees, or 0 if handle is invalid")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "f", 0.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "f", 0.0f);
+
+	if (ADE_SETTING_VAR)
+		LuaError(L, "Setting MaxFieldOfFire is not supported");
+
+	return ade_set_args(L, "f", Weapon_info[idx].max_fof_spread);
+}
+
+ADE_VIRTVAR(BeamLife, l_Weaponclass, "number", "The time in seconds that a beam lasts while firing.", "number", "Beam life, or 0 if handle is invalid or the weapon is not a beam")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "f", 0.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "f", 0.0f);
+
+	if (ADE_SETTING_VAR)
+		LuaError(L, "Setting BeamLife is not supported");
+
+	if (Weapon_info[idx].is_beam())
+		return ade_set_args(L, "f", Weapon_info[idx].b_info.beam_life);
+
+	return ade_set_args(L, "f", 0.0f);
+}
+
+ADE_VIRTVAR(BeamWarmup, l_Weaponclass, "number", "The time in seconds that a beam takes to warm up.", "number", "Warmup time, or 0 if handle is invalid or the weapon is not a beam")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "f", 0.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "f", 0.0f);
+
+	if (ADE_SETTING_VAR)
+		LuaError(L, "Setting BeamWarmup is not supported");
+
+	if (Weapon_info[idx].is_beam())
+		return ade_set_args(L, "f", i2fl(Weapon_info[idx].b_info.beam_warmup) / MILLISECONDS_PER_SECOND);
+
+	return ade_set_args(L, "f", 0.0f);
+}
+
+ADE_VIRTVAR(BeamWarmdown, l_Weaponclass, "number", "The time in seconds that a beam takes to warm down.", "number", "Warmdown time, or 0 if handle is invalid or the weapon is not a beam")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ade_set_error(L, "f", 0.0f);
+
+	if (idx < 0 || idx >= weapon_info_size())
+		return ade_set_error(L, "f", 0.0f);
+
+	if (ADE_SETTING_VAR)
+		LuaError(L, "Setting BeamWarmdown is not supported");
+
+	if (Weapon_info[idx].is_beam())
+		return ade_set_args(L, "f", i2fl(Weapon_info[idx].b_info.beam_warmdown) / MILLISECONDS_PER_SECOND);
+
+	return ade_set_args(L, "f", 0.0f);
+}
+
 ADE_FUNC(isValid, l_Weaponclass, NULL, "Detects whether handle is valid", "boolean", "true if valid, false if handle is invalid, nil if a syntax/type error occurs")
 {
 	int idx;
@@ -618,18 +1046,7 @@ ADE_FUNC(renderTechModel,
 	int idx;
 	float zoom = 1.3f;
 	bool lighting = true;
-	if (!ade_get_args(L,
-			"oiiii|ffffb",
-			l_Weaponclass.Get(&idx),
-			&x1,
-			&y1,
-			&x2,
-			&y2,
-			&rot_angles.h,
-			&rot_angles.p,
-			&rot_angles.b,
-			&zoom,
-			&lighting))
+	if (!ade_get_args(L, "oiiii|ffffb", l_Weaponclass.Get(&idx), &x1, &y1, &x2, &y2, &rot_angles.h, &rot_angles.p, &rot_angles.b, &zoom, &lighting))
 		return ade_set_error(L, "b", false);
 
 	if (idx < 0 || idx >= weapon_info_size())
@@ -642,20 +1059,6 @@ ADE_FUNC(renderTechModel,
 	CLAMP(rot_angles.b, 0.0f, 100.0f);
 	CLAMP(rot_angles.h, 0.0f, 100.0f);
 
-	weapon_info* wip = &Weapon_info[idx];
-	model_render_params render_info;
-
-	int modelNum;
-	//Load the model if it exists or exit early
-	if (VALID_FNAME(wip->tech_model)) {
-		modelNum = model_load(wip->tech_model, 0, nullptr, 0);
-	} else {
-		return ade_set_args(L, "b", false);
-	}
-
-	if (modelNum < 0)
-		return ade_set_args(L, "b", false);
-
 	// Handle angles
 	matrix orient = vmd_identity_matrix;
 	angles view_angles = {-0.6f, 0.0f, 0.0f};
@@ -666,45 +1069,7 @@ ADE_FUNC(renderTechModel,
 	rot_angles.h = (rot_angles.h * 0.01f) * PI2;
 	vm_rotate_matrix_by_angles(&orient, &rot_angles);
 
-	// Clip
-	gr_set_clip(x1, y1, x2 - x1, y2 - y1, GR_RESIZE_NONE);
-
-	// Handle 3D init stuff
-	g3_start_frame(1);
-	g3_set_view_matrix(&wip->closeup_pos, &vmd_identity_matrix, wip->closeup_zoom * zoom);
-
-	gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
-	gr_set_view_matrix(&Eye_position, &Eye_matrix);
-
-	// Handle light
-	light_reset();
-	vec3d light_dir = vmd_zero_vector;
-	light_dir.xyz.y = 1.0f;
-	light_add_directional(&light_dir, 0.65f, 1.0f, 1.0f, 1.0f);
-	light_rotate_all();
-
-	// Draw the ship!!
-	model_clear_instance(modelNum);
-	render_info.set_detail_level_lock(0);
-
-	uint render_flags = MR_AUTOCENTER | MR_NO_FOGGING;
-
-	if (!lighting || (wip->wi_flags[Weapon::Info_Flags::Mr_no_lighting]))
-		render_flags |= MR_NO_LIGHTING;
-
-	render_info.set_flags(render_flags);
-
-	model_render_immediate(&render_info, modelNum, &orient, &vmd_zero_vector);
-
-	// OK we're done
-	gr_end_view_matrix();
-	gr_end_proj_matrix();
-
-	// Bye!!
-	g3_end_frame();
-	gr_reset_clip();
-
-	return ade_set_args(L, "b", true);
+	return ade_set_args(L, "b", render_tech_model(TECH_WEAPON, x1, y1, x2, y2, zoom, lighting, idx, &orient));
 }
 
 // Nuke's alternate tech model rendering function
@@ -728,71 +1093,19 @@ ADE_FUNC(renderTechModel2,
 	if (x2 < x1 || y2 < y1)
 		return ade_set_args(L, "b", false);
 
-	weapon_info* wip = &Weapon_info[idx];
-	model_render_params render_info;
-
-	int modelNum;
-	// Load the model if it exists or exit early
-	if (VALID_FNAME(wip->tech_model)) {
-		modelNum = model_load(wip->tech_model, 0, nullptr, 0);
-	} else {
-		return ade_set_args(L, "b", false);
-	}
-
-	if (modelNum < 0)
-		return ade_set_args(L, "b", false);
-
 	// Handle angles
 	matrix* orient = mh->GetMatrix();
 
-	// Clip
-	gr_set_clip(x1, y1, x2 - x1, y2 - y1, GR_RESIZE_NONE);
-
-	// Handle 3D init stuff
-	g3_start_frame(1);
-	g3_set_view_matrix(&wip->closeup_pos, &vmd_identity_matrix, wip->closeup_zoom * zoom);
-
-	gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
-	gr_set_view_matrix(&Eye_position, &Eye_matrix);
-
-	// Handle light
-	light_reset();
-	vec3d light_dir = vmd_zero_vector;
-	light_dir.xyz.y = 1.0f;
-	light_add_directional(&light_dir, 0.65f, 1.0f, 1.0f, 1.0f);
-	light_rotate_all();
-
-	// Draw the ship!!
-	model_clear_instance(modelNum);
-	render_info.set_detail_level_lock(0);
-
-	uint render_flags = MR_AUTOCENTER | MR_NO_FOGGING;
-
-	if (wip->wi_flags[Weapon::Info_Flags::Mr_no_lighting])
-		render_flags |= MR_NO_LIGHTING;
-
-	render_info.set_flags(render_flags);
-
-	model_render_immediate(&render_info, modelNum, orient, &vmd_zero_vector);
-
-	// OK we're done
-	gr_end_view_matrix();
-	gr_end_proj_matrix();
-
-	// Bye!!
-	g3_end_frame();
-	gr_reset_clip();
-
-	return ade_set_args(L, "b", true);
+	return ade_set_args(L, "b", render_tech_model(TECH_WEAPON, x1, y1, x2, y2, zoom, true, idx, orient));
 }
 
 ADE_FUNC(renderSelectModel,
 	l_Weaponclass,
-	"number x, number y, [number width = 629, number height = 355, number = currentEffectSetting]",
+	"boolean restart, number x, number y, [number width = 629, number height = 355, number currentEffectSetting = default, number zoom = 0.65]",
 	"Draws the 3D select weapon model with the chosen effect at the specified coordinates. Restart should "
 	"be true on the first frame this is called and false on subsequent frames. Note that primary weapons "
 	"will not render anything if they do not have a valid pof model defined! Valid selection effects are 1 (fs1) or 2 (fs2), "
-	"defaults to the mod setting or the model's setting.",
+	"defaults to the mod setting or the model's setting. Zoom is a multiplier to the model's closeup_zoom value.",
 	"boolean",
 	"true if rendered, false if error")
 {
@@ -803,7 +1116,8 @@ ADE_FUNC(renderSelectModel,
 	int x2 = 629;
 	int y2 = 355;
 	int effect = -1;
-	if (!ade_get_args(L, "obii|iii", l_Weaponclass.Get(&idx), &restart, &x1, &y1, &x2, &y2, &effect))
+	float zoom = 0.65f;
+	if (!ade_get_args(L, "obii|iiif", l_Weaponclass.Get(&idx), &restart, &x1, &y1, &x2, &y2, &effect, &zoom))
 		return ADE_RETURN_NIL;
 
 	if (idx < 0 || idx >= weapon_info_size())
@@ -826,9 +1140,9 @@ ADE_FUNC(renderSelectModel,
 
 	int modelNum;
 	if (VALID_FNAME(wip->tech_model)) {
-		modelNum = model_load(wip->tech_model, 0, nullptr, 0);
+		modelNum = model_load(wip->tech_model, nullptr, ErrorType::WARNING);
 	} else if (wip->render_type != WRT_LASER) {
-		modelNum = model_load(wip->pofbitmap_name, 0, nullptr);
+		modelNum = model_load(wip->pofbitmap_name, nullptr, ErrorType::FATAL_ERROR);
 	} else {
 		return ade_set_args(L, "b", false);
 	}
@@ -836,6 +1150,13 @@ ADE_FUNC(renderSelectModel,
 	static float WepRot = 0.0f;
 
 	model_render_params render_info;
+
+	select_effect_params params;
+	params.effect = effect;
+	params.fs2_grid_color = wip->fs2_effect_grid_color;
+	params.fs2_scanline_color = wip->fs2_effect_scanline_color;
+	params.fs2_grid_density = wip->fs2_effect_grid_density;
+	params.fs2_wireframe_color = wip->fs2_effect_wireframe_color;
 
 	draw_model_rotating(&render_info,
 		modelNum,
@@ -845,11 +1166,11 @@ ADE_FUNC(renderSelectModel,
 		y2,
 		&WepRot,
 		&wip->closeup_pos,
-		wip->closeup_zoom * 0.65f,
+		wip->closeup_zoom * zoom,
 		REVOLUTION_RATE,
 		MR_IS_MISSILE | MR_AUTOCENTER | MR_NO_FOGGING,
 		GR_RESIZE_NONE,
-		effect);
+		params);
 
 	return ade_set_args(L, "b", true);
 }
@@ -866,7 +1187,7 @@ ADE_FUNC(getWeaponClassIndex, l_Weaponclass, NULL, "Gets the index value of the 
 	return ade_set_args(L, "i", idx + 1);
 }
 
-ADE_FUNC(isLaser, l_Weaponclass, NULL, "Return true if the weapon is a primary weapon (this includes Beams). This function is deprecated, use isPrimary instead.", "boolean", "true if the weapon is a primary, false otherwise")
+ADE_FUNC(isLaser, l_Weaponclass, nullptr, "Return true if the weapon is a 'laser' weapon, which also includes ballistic (ammo-based) weapons.  This also includes most beams, but not necessarily all of them.  See also isPrimary().", "boolean", "true if the weapon is a laser weapon, false otherwise")
 {
 	int idx;
 	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
@@ -881,7 +1202,7 @@ ADE_FUNC(isLaser, l_Weaponclass, NULL, "Return true if the weapon is a primary w
 		return ADE_RETURN_FALSE;
 }
 
-ADE_FUNC(isMissile, l_Weaponclass, NULL, "Return true if the weapon is a secondary weapon. This function is deprecated, use isSecondary instead.", "boolean", "true if the weapon is a secondary, false otherwise")
+ADE_FUNC(isMissile, l_Weaponclass, nullptr, "Return true if the weapon is a 'missile' weapon.  See also isSecondary().", "boolean", "true if the weapon is a missile weapon, false otherwise")
 {
 	int idx;
 	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
@@ -896,7 +1217,7 @@ ADE_FUNC(isMissile, l_Weaponclass, NULL, "Return true if the weapon is a seconda
 		return ADE_RETURN_FALSE;
 }
 
-ADE_FUNC(isPrimary, l_Weaponclass, NULL, "Return true if the weapon is a primary weapon (this includes Beams)", "boolean", "true if the weapon is a primary, false otherwise")
+ADE_FUNC(isPrimary, l_Weaponclass, nullptr, "Return true if the weapon is a primary weapon.  This also includes most beams, but not necessarily all of them.  This function is equivalent to isLaser().", "boolean", "true if the weapon is a primary, false otherwise")
 {
 	int idx;
 	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
@@ -911,7 +1232,22 @@ ADE_FUNC(isPrimary, l_Weaponclass, NULL, "Return true if the weapon is a primary
 		return ADE_RETURN_FALSE;
 }
 
-ADE_FUNC(isSecondary, l_Weaponclass, NULL, "Return true if the weapon is a secondary weapon", "boolean", "true if the weapon is a secondary, false otherwise")
+ADE_FUNC(isNonBeamPrimary, l_Weaponclass, nullptr, "Return true if the weapon is a primary weapon that is not a beam.", "boolean", "true if the weapon is a non-beam primary, false otherwise")
+{
+	int idx;
+	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if(idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_FALSE;
+
+	if (Weapon_info[idx].is_non_beam_primary())
+		return ADE_RETURN_TRUE;
+	else
+		return ADE_RETURN_FALSE;
+}
+
+ADE_FUNC(isSecondary, l_Weaponclass, nullptr, "Return true if the weapon is a secondary weapon.  This function is equivalent to isMissile().", "boolean", "true if the weapon is a secondary, false otherwise")
 {
 	int idx;
 	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
@@ -926,7 +1262,7 @@ ADE_FUNC(isSecondary, l_Weaponclass, NULL, "Return true if the weapon is a secon
 		return ADE_RETURN_FALSE;
 }
 
-ADE_FUNC(isBeam, l_Weaponclass, NULL, "Return true if the weapon is a beam", "boolean", "true if the weapon is a beam, false otherwise")
+ADE_FUNC(isBeam, l_Weaponclass, nullptr, "Return true if the weapon is a beam", "boolean", "true if the weapon is a beam, false otherwise")
 {
 	int idx;
 	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
@@ -935,7 +1271,22 @@ ADE_FUNC(isBeam, l_Weaponclass, NULL, "Return true if the weapon is a beam", "bo
 	if(idx < 0 || idx >= weapon_info_size())
 		return ADE_RETURN_FALSE;
 
-	if (Weapon_info[idx].wi_flags[Weapon::Info_Flags::Beam] || Weapon_info[idx].subtype == WP_BEAM)
+	if (Weapon_info[idx].is_beam())
+		return ADE_RETURN_TRUE;
+	else
+		return ADE_RETURN_FALSE;
+}
+
+ADE_FUNC(isCountermeasure, l_Weaponclass, nullptr, "Return true if the weapon is a countermeasure", "boolean", "true if the weapon is a countermeasure, false otherwise")
+{
+	int idx;
+	if(!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if(idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_FALSE;
+
+	if (Weapon_info[idx].wi_flags[Weapon::Info_Flags::Cmeasure])
 		return ADE_RETURN_TRUE;
 	else
 		return ADE_RETURN_FALSE;
@@ -961,6 +1312,29 @@ ADE_FUNC(isWeaponRequired,
 	} else {
 		return ADE_RETURN_NIL;
 	}
+}
+
+ADE_FUNC(isPlayerAllowed,
+	l_Weaponclass,
+	nullptr,
+	"Detects whether the weapon has the player allowed flag",
+	"boolean",
+	"true if player allowed, false otherwise, nil if a syntax/type error occurs")
+{
+	int idx;
+	if (!ade_get_args(L, "o", l_Weaponclass.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if(idx < 0 || idx >= weapon_info_size())
+		return ADE_RETURN_FALSE;
+
+	weapon_info* wip = &Weapon_info[idx];
+
+	if (wip->wi_flags[Weapon::Info_Flags::Player_allowed]) {
+		return ADE_RETURN_TRUE;
+	}
+
+	return ADE_RETURN_FALSE;
 }
 
 // Checks if a weapon has been paged in (counted as used)

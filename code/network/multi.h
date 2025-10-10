@@ -45,36 +45,40 @@ class player;
 // Version #. Please put the date down when you up these values
 // NOTE: always keep SERVER_VERSION and SERVER_COMPATIBLE_VERSION the same
 //
-// version 32 - 1/29/99
-// version 33 - 2/22/99
-// version 34 - 4/8/99
-// version 35 - 4/21/99
-// version 36 - 4/28/99
-// version 37 - 4/29/99
-// version 38 - 5/17/77
-// version 39 - 7/3/99
-// version 40 - 7/7/99
-// version 41 - 7/22/99
-// version 42 - 7/26/99 (ingame join stuff)
-// version 43 - 7/30/99
-// version 44 - 8/24/99
-// version 46 - 8/30/99
-// version 47 - 11/11/2003 - (FS2OpenPXO, FS2 Open Changes - FS2Open 3.6)
+// Version 32 - 1/29/99
+// Version 33 - 2/22/99
+// Version 34 - 4/8/99
+// Version 35 - 4/21/99
+// Version 36 - 4/28/99
+// Version 37 - 4/29/99
+// Version 38 - 5/17/77
+// Version 39 - 7/3/99
+// Version 40 - 7/7/99
+// Version 41 - 7/22/99
+// Version 42 - 7/26/99 (ingame join stuff)
+// Version 43 - 7/30/99
+// Version 44 - 8/24/99
+// Version 46 - 8/30/99
+// Version 47 - 11/11/2003 - (FS2OpenPXO, FS2 Open Changes - FS2Open 3.6)
 // revert  46 - 9/7/2006 - (the 47 bump wasn't needed, reverting to retail version for compatibility reasons)
-// version 48 - 8/15/2016 - Multiple changes to the packet format for multi sexps
-// version 49 - 7/26/2020 - Addition of multilock
-// version 50 - 7/27/2020 - IPv6
-// version 51 - 9/20/2020 - Object Update Packet Upgrade: Waypoints, subsystem rotation, bandwidth improvements, bugfixes
-// version 52 - 10/9/2020 - Dumbfire Rollback, increases accuracy of high ping, or delayed packet primary fire for clients.
-// version 53 - 12/2/2020 - big set of packet fixes/upgrades
-// version 54 - 3/20/2021 - Fixes for FSO 21_2 especially better net_sig calc, better missile intercept
-// version 55 - 8/28/2021 - Adding multi-compatible animations
-// version 56 - 8/28/2021 - Fix animations for 22_0 release
-// version 57 - 6/5/2022 - Upgrade interpolation, fix multiplayer sexp handling, and enable player orders to exceed 16
-// version 58 - ??/??/?? - Submodel translation and a fixed multi_pack_unpack_subsystem_list
+// Version 48 - 8/15/2016 - Multiple changes to the packet format for multi sexps
+// Version 49 - 7/26/2020 - Addition of multilock
+// Version 50 - 7/27/2020 - IPv6
+// Version 51 - 9/20/2020 - Object Update Packet Upgrade: Waypoints, subsystem rotation, bandwidth improvements, bugfixes
+// Version 52 - 10/9/2020 - Dumbfire Rollback, increases accuracy of high ping, or delayed packet primary fire for clients.
+// Version 53 - 12/2/2020 - big set of packet fixes/upgrades
+// Version 54 - 3/20/2021 - Fixes for FSO 21_2 especially better net_sig calc, better missile intercept
+// Version 55 - 8/28/2021 - Adding multi-compatible animations
+// Version 56 - 8/28/2021 - Fix animations for 22_0 release
+// Version 57 - 6/5/2022 - Upgrade interpolation, fix multiplayer sexp handling, and enable player orders to exceed 16
+// Version 58 - 11/14/2022 - Enable turret movement on clients, and fix in-game joining
+// Version 59 - 12/9/2022 - New IDs for SEXP operators
+// Version 60 - 3/27/2023 - Added generic lua data packet
+// Version 61 - 4/17/2023 - Added compatibility for whackable asteroids (added force)
+// Version 62 - 5/26/2025 - Added some modular curve input data to turret firing packets; 5/31/2025 - Added another input
 // STANDALONE_ONLY
 
-#define MULTI_FS_SERVER_VERSION							57
+#define MULTI_FS_SERVER_VERSION							62
 
 #define MULTI_FS_SERVER_COMPATIBLE_VERSION			MULTI_FS_SERVER_VERSION
 
@@ -217,6 +221,7 @@ class player;
 #define FLAK_FIRED					0xAA		// flak gun fired
 #define SELF_DESTRUCT				0xAB		// self destruct
 #define ANIMATION_TRIGGERED			0xAC		// Lafiel - Anytime an animation starts
+#define TURRET_TRACK				0xAD		// Cyborg - When a turret's target has changed.
 
 #define JOIN							0xB1		// a join request to a server
 #define ACCEPT							0xB2		// acceptance of a join packet
@@ -276,6 +281,7 @@ class player;
 
 #define VARIABLE_UPDATE				0xF0		// Karajorma - a variable update packet from server to all clients
 #define SEXP						0xF1		// Karajorma - a general packet which can be used to update clients with changes caused by SEXPs
+#define LUA_DATA_PACKET				0xF2		// Lafiel - any generic data sent by lua
 
 #define MAX_TYPE_ID					0xFF		// better not try to send > 255 in a single byte buddy
 
@@ -299,7 +305,7 @@ class player;
 #define JOIN_DENY_JR_INGAME_JOIN		11		// join request is denied because someone else is already ingame joining
 #define JOIN_DENY_JR_BAD_VERSION		12		// incompatible version types
 #define JOIN_QUERY_RESTRICTED			13		// poll the host of the game to see if he accepts this player
-#define JOIN_DENY_JR_TYPE				14		// cannot ingame join anything but dogfight games
+#define JOIN_DENY_JR_TYPE				14		// cannot ingame join Squadwar games
 
 // repair info codes
 #define REPAIR_INFO_BEGIN			0x1		// server to client - set your REPAIRING flags
@@ -409,7 +415,7 @@ typedef struct net_player_server_info {
 	UI_TIMESTAMP	kick_timestamp;									// timestamp with which we'll disconnect a player if he hasn't reponded to a kick packet
 	int				kick_reason;										// reason he was kicked
 	UI_TIMESTAMP    voice_token_timestamp;							// timestamp set when a player loses a token (so we can prevent him from getting it again too quickly)
-	int				reliable_connect_time;							// after sending an accept packet, wait for this long for the guy to connect on the reliable socket
+	time_t				reliable_connect_time;							// after sending an accept packet, wait for this long for the guy to connect on the reliable socket
 
 	// weapon select/linking information (maintained on the server and passed on respawn to all clients)
 	char				cur_primary_bank;									// currently selected primary bank
@@ -460,7 +466,7 @@ typedef struct net_player_server_info {
 		num_last_buttons = 0;
 		xfer_handle = -1;
 		kick_reason = 0;
-		reliable_connect_time = 0;
+		reliable_connect_time = -1;
 
 		cur_primary_bank = 0;
 		cur_secondary_bank = 0;
@@ -638,7 +644,6 @@ typedef struct netgame_info {
 #define AG_FLAG_STATE_MASK						(AG_FLAG_FORMING|AG_FLAG_BRIEFING|AG_FLAG_DEBRIEF|AG_FLAG_PAUSE|AG_FLAG_IN_MISSION)
 
 typedef struct active_game {
-	active_game		*next, *prev;				// next and previous elements in the list	
 	UI_TIMESTAMP	heard_from_timer;			// when we last heard from the game
 	
 	char		name[MAX_GAMENAME_LEN+1];
@@ -651,8 +656,6 @@ typedef struct active_game {
 	ping_struct ping;								// ping time to the server
 
 	void init() {
-		next = nullptr;
-		prev = nullptr;
 		num_players = 0;
 		flags = 0;
 		version = 0;
@@ -730,7 +733,7 @@ typedef struct network_buffer {
 #define NETINFO_FLAG_ACCEPT_OBSERVER		(1<<18)		// accepted as observer
 #define NETINFO_FLAG_ACCEPT_CLIENT			(1<<19)		// accepted as client
 #define NETINFO_FLAG_WARPING_OUT			(1<<20)		// clients keep track of this for themselves to know if they should be leaving
-#define NETINFO_FLAG_HAS_CD					(1<<21)		// the player has a CD in the drive
+#define NETINFO_FLAG_UNUSED					(1<<21)		// Used to be a flag for if the player had a CD in the drive
 #define NETINFO_FLAG_RELIABLE_CONNECTED		(1<<22)		// reliable socket is now active
 #define NETINFO_FLAG_MT_GET_FAILED			(1<<23)		// set during MT stats update process indicating we didn't properly get his stats
 #define NETINFO_FLAG_MT_SEND_FAILED			(1<<24)		// set during MT stats update process indicating we didn't properly send his stats
@@ -885,10 +888,8 @@ extern int Multi_button_info_id;										// identifier of the stored button inf
 #define HEADER_LENGTH	1											// 1 byte (packet type)
 
 // misc data
-extern active_game* Active_game_head;								// linked list of active games displayed on Join screen
-extern int Active_game_count;											// for interface screens as well
+extern SCP_list<active_game> Active_games;						// list of active games displayed on the Join screen
 extern CFILE* Multi_chat_stream;										// for streaming multiplayer chat strings to a file
-extern int Multi_has_cd;												// if this machine has a cd or not (call multi_common_verify_cd() to set this)
 extern int Multi_num_players_at_start;								// the # of players present (kept track of only on the server) at the very start of the mission
 extern short Multi_id_num;												// for assigning player id #'s
 
@@ -918,6 +919,10 @@ extern char Multi_tracker_id_string[255];
 // current file checksum
 extern ushort Multi_current_file_checksum;
 extern int Multi_current_file_length;
+
+// ip address list vars
+#define IP_STRING_LEN 60
+#define MAX_IP_ADDRS 100
 
 
 // ----------------------------------------------------------------------------------------

@@ -33,8 +33,8 @@ class DecalDefinition {
 	DecalDefinition& operator=(const DecalDefinition&) = delete;
 
 	// Move constructor and operator
-	DecalDefinition(DecalDefinition&& other) noexcept;
-	DecalDefinition& operator=(DecalDefinition&& other) noexcept;
+	DecalDefinition(DecalDefinition&& other) noexcept = default;
+	DecalDefinition& operator=(DecalDefinition&& other) noexcept = default;
 
 	void parse();
 	void loadBitmaps();
@@ -50,8 +50,28 @@ class DecalDefinition {
 	bool isNormalLooping() const;
 };
 
+struct Decal {
+	//DecalDefinition idx vs immediate diffuse/glow/normal
+	std::variant<int, std::tuple<int, int, int>> definition_handle = -1;
+	object_h object;
+	int orig_obj_type = OBJ_NONE;
+	int submodel = -1;
+
+	float creation_time = -1.0f; //!< The mission time at which this decal was created
+	float lifetime = -1.0f; //!< The time this decal is active. When negative it never expires
+
+	vec3d position = vmd_zero_vector;
+	vec3d scale;
+	matrix orientation = vmd_identity_matrix;
+
+	Decal();
+
+	bool isValid() const;
+};
+
 extern SCP_vector<DecalDefinition> DecalDefinitions;
 extern bool Decal_system_active;
+extern bool Decal_option_active;
 
 
 /**
@@ -64,10 +84,11 @@ typedef int DecalReference;
  */
 struct creation_info {
 	DecalReference definition_handle = -1;
-	float radius = -1.0f;
+	util::ParsedRandomFloatRange radius = ::util::UniformFloatRange(-1.0f);
 	float width = -1.0f;
 	float height = -1.0f;
-	util::UniformFloatRange lifetime = ::util::UniformFloatRange(-1.0f);
+	util::ParsedRandomFloatRange lifetime = ::util::UniformFloatRange(-1.0f);
+	bool random_rotation = false;
 };
 
 /**
@@ -132,9 +153,11 @@ void renderAll();
  * orientation should look along the direction
  */
 void addDecal(creation_info& info,
-			  object* host,
+			  const object* host,
 			  int submodel,
 			  const vec3d& local_pos,
 			  const matrix& local_orient);
+
+void addSingleFrameDecal(Decal&& info);
 
 }

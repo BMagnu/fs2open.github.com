@@ -14,6 +14,7 @@
 
 #include "globalincs/globals.h"
 #include "globalincs/pstypes.h"
+#include "graphics/2d.h"
 
 // defined for different mission log entries
 
@@ -42,14 +43,22 @@ enum LogType {
 
 // structure definition for log entries
 
-#define MLF_ESSENTIAL						(1 << 0)	// this entry is essential for goal checking code
-#define MLF_OBSOLETE						(1 << 1)	// this entry is obsolete and will be removed
-#define MLF_HIDDEN							(1 << 2)	// entry doesn't show up in displayed log.
+#define MLF_HIDDEN							(1 << 0)	// entry doesn't show up in displayed log.
+
+// defines for log flags
+#define LOG_FLAG_GOAL_FAILED (1 << 0)
+#define LOG_FLAG_GOAL_TRUE (1 << 1)
+
+// defines for log colors
+#define LOG_COLOR_NORMAL 0
+#define LOG_COLOR_BRIGHT 1
+#define LOG_COLOR_OTHER 2
 
 struct log_entry {
 	LogType type;            // one of the log #defines in MissionLog.h
 	int flags;               // flags used for status of this log entry
 	fix timestamp;           // time in fixed seconds when entry was made from beginning of mission
+	int timer_padding;		 // the mission timer padding, in seconds, when the entry was created
 	char pname[NAME_LENGTH]; // name of primary object of this action
 	char sname[NAME_LENGTH]; // name of secondary object of this action
 	int index;               // a generic entry which can contain things like wave # (for wing arrivals), goal #, etc
@@ -62,7 +71,19 @@ struct log_entry {
 	SCP_string sname_display;
 };
 
-extern int Num_log_lines;
+struct log_text_seg {
+	SCP_vm_unique_ptr<char> text; // the text
+	int color;                    // color text should be displayed in
+	int x;                        // x offset to display text at
+	int flags;                    // used to possibly print special characters when displaying the log
+};
+
+struct log_line_complete {
+	fix timestamp;
+	int timer_padding;
+	log_text_seg objective;
+	SCP_vector<log_text_seg> segments;
+};
 
 // function prototypes
 
@@ -85,8 +106,17 @@ extern int mission_log_get_time_indexed(LogType type, const char *name, const ch
 // get the number of times an event happened
 extern int mission_log_get_count(LogType type, const char *pname, const char *sname);
 
-void message_log_init_scrollback(int pw);
-void message_log_shutdown_scrollback();
-void mission_log_scrollback(int scroll_offset, int list_x, int list_y, int list_w, int list_h);
+// get the team for a log item
+extern int mission_log_color_get_team(int msg_color);
+
+// get the actual color for a line item
+extern const color *log_line_get_color(int tag);
+
+extern void mission_log_init_scrollback(int pw, bool split_string = true);
+extern void mission_log_shutdown_scrollback();
+extern void mission_log_scrollback(int line_offset, int list_x, int list_y, int list_w, int list_h);
+
+extern int mission_log_scrollback_num_lines();
+extern const log_line_complete* mission_log_scrollback_get_line(int index);
 
 #endif

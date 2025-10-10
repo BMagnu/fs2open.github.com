@@ -41,6 +41,9 @@ static bool Timestamp_sudo_paused = false;
 static uint64_t Timestamp_microseconds_at_mission_start = 0;
 
 
+static uint64_t timestamp_get_raw(bool start_frame = false);
+
+
 static uint64_t get_performance_counter()
 {
 	Assertion(Timer_inited, "This function can only be used when the timer system is initialized!");
@@ -73,6 +76,12 @@ void timer_init()
 
 		atexit(timer_close);
 	}
+}
+
+void timer_start_frame()
+{
+	// take a snapshot of the raw timestamp at the beginning of the frame
+	timestamp_get_raw(true);
 }
 
 // ======================================== getting time ========================================
@@ -112,7 +121,7 @@ int timer_get_milliseconds()
 		return 0;
 	}
 
-	return static_cast<int>(timer_get_microseconds() / 1000);
+	return static_cast<int>(timer_get_microseconds() / MICROSECONDS_PER_MILLISECOND);
 }
 
 std::uint64_t timer_get_microseconds()
@@ -129,15 +138,21 @@ std::uint64_t timer_get_nanoseconds()
     return static_cast<uint64_t>(time * Timer_to_nanoseconds);
 }
 
-static uint64_t timestamp_get_raw()
+static uint64_t timestamp_get_raw(bool start_frame)
 {
-	uint64_t timestamp_raw;
-	if (Timestamp_is_paused) {
-		timestamp_raw = Timestamp_paused_at_counter;
-	} else {
-		timestamp_raw = get_performance_counter();
+	static uint64_t timestamp_raw = 0;
+
+	// The simulation timestamp is only updated at the beginning of the frame
+	// because we want all timestamps within a frame to be identical.
+	if (start_frame)
+	{
+		if (Timestamp_is_paused)
+			timestamp_raw = Timestamp_paused_at_counter;
+		else
+			timestamp_raw = get_performance_counter();
+
+		timestamp_raw -= Timestamp_offset_from_counter;
 	}
-	timestamp_raw -= Timestamp_offset_from_counter;
 
 	return timestamp_raw;
 }
@@ -148,7 +163,7 @@ static uint64_t timestamp_get_microseconds()
 }
 
 static int timestamp_ms() {
-	return static_cast<int>(timestamp_get_microseconds() / 1000);
+	return static_cast<int>(timestamp_get_microseconds() / MICROSECONDS_PER_MILLISECOND);
 }
 
 int timestamp() {
@@ -165,16 +180,22 @@ UI_TIMESTAMP ui_timestamp() {
 
 TIMESTAMP timestamp_delta(TIMESTAMP stamp, int delta_ms)
 {
-	if (!stamp.isValid() || stamp.isImmediate() || stamp.isNever())
+	if (!stamp.isFinite())
 		return stamp;
+
+	if (stamp.isImmediate())
+		return TIMESTAMP(timestamp_ms() + delta_ms);
 
 	return TIMESTAMP(stamp.value() + delta_ms);
 }
 
 UI_TIMESTAMP ui_timestamp_delta(UI_TIMESTAMP stamp, int delta_ms)
 {
-	if (!stamp.isValid() || stamp.isImmediate() || stamp.isNever())
+	if (!stamp.isFinite())
 		return stamp;
+
+	if (stamp.isImmediate())
+		return UI_TIMESTAMP(timer_get_milliseconds() + delta_ms);
 
 	return UI_TIMESTAMP(stamp.value() + delta_ms);
 }
@@ -284,6 +305,12 @@ UI_TIMESTAMP ui_timestamp(int delta_ms) {
 //	Negative value gives milliseconds ago that timestamp elapsed.
 int timestamp_until(int stamp)
 {
+	// handle special values
+	if (stamp <= 0)
+		return INT_MAX;
+	if (stamp == 1)
+		return 0;
+
 	// JAS: FIX
 	// HACK!! This doesn't handle rollover!
 	// (Will it ever happen?)
@@ -307,8 +334,8 @@ int timestamp_until(int stamp)
 
 int timestamp_until(TIMESTAMP stamp)
 {
-	Assertion(stamp.isValid() && !stamp.isNever(), "timestamp_until was called with a%s timestamp!", !stamp.isValid() ? "n invalid" : " Never");
-	if (!stamp.isValid() || stamp.isNever())
+	Assertion(stamp.isFinite(), "timestamp_until was called with a%s timestamp!", !stamp.isValid() ? "n invalid" : " Never");
+	if (!stamp.isFinite())
 		return INT_MAX;
 
 	if (stamp.isImmediate())
@@ -319,8 +346,8 @@ int timestamp_until(TIMESTAMP stamp)
 
 int ui_timestamp_until(UI_TIMESTAMP stamp)
 {
-	Assertion(stamp.isValid() && !stamp.isNever(), "timestamp_until was called with a%s timestamp!", !stamp.isValid() ? "n invalid" : " Never");
-	if (!stamp.isValid() || stamp.isNever())
+	Assertion(stamp.isFinite(), "timestamp_until was called with a%s timestamp!", !stamp.isValid() ? "n invalid" : " Never");
+	if (!stamp.isFinite())
 		return INT_MAX;
 
 	if (stamp.isImmediate())
@@ -331,13 +358,19 @@ int ui_timestamp_until(UI_TIMESTAMP stamp)
 
 int timestamp_since(int stamp)
 {
+	// handle special values
+	if (stamp <= 0)
+		return INT_MIN;
+	if (stamp == 1)
+		return 0;
+
 	return timestamp_ms() - stamp;
 }
 
 int timestamp_since(TIMESTAMP stamp)
 {
-	Assertion(stamp.isValid() && !stamp.isNever(), "timestamp_since was called with a%s timestamp!", !stamp.isValid() ? "n invalid" : " Never");
-	if (!stamp.isValid() || stamp.isNever())
+	Assertion(stamp.isFinite(), "timestamp_since was called with a%s timestamp!", !stamp.isValid() ? "n invalid" : " Never");
+	if (!stamp.isFinite())
 		return INT_MIN;
 
 	if (stamp.isImmediate())
@@ -348,8 +381,8 @@ int timestamp_since(TIMESTAMP stamp)
 
 int ui_timestamp_since(UI_TIMESTAMP stamp)
 {
-	Assertion(stamp.isValid() && !stamp.isNever(), "timestamp_since was called with a%s timestamp!", !stamp.isValid() ? "n invalid" : " Never");
-	if (!stamp.isValid() || stamp.isNever())
+	Assertion(stamp.isFinite(), "timestamp_since was called with a%s timestamp!", !stamp.isValid() ? "n invalid" : " Never");
+	if (!stamp.isFinite())
 		return INT_MIN;
 
 	if (stamp.isImmediate())
@@ -430,26 +463,26 @@ int ui_timestamp_compare(UI_TIMESTAMP t1, UI_TIMESTAMP t2)
 
 bool timestamp_in_between(TIMESTAMP stamp, TIMESTAMP before, TIMESTAMP after)
 {
-	Assertion(stamp.isValid() && !stamp.isNever(), "timestamp_in_between was called with a%s 'stamp' timestamp!", !stamp.isValid() ? "n invalid" : " Never");
-	Assertion(before.isValid() && !before.isNever(), "timestamp_in_between was called with a%s 'before' timestamp!", !before.isValid() ? "n invalid" : " Never");
-	Assertion(after.isValid() && !after.isNever(), "timestamp_in_between was called with a%s 'after' timestamp!", !after.isValid() ? "n invalid" : " Never");
+	Assertion(stamp.isFinite(), "timestamp_in_between was called with a%s 'stamp' timestamp!", !stamp.isValid() ? "n invalid" : " Never");
+	Assertion(before.isFinite(), "timestamp_in_between was called with a%s 'before' timestamp!", !before.isValid() ? "n invalid" : " Never");
+	Assertion(after.isFinite(), "timestamp_in_between was called with a%s 'after' timestamp!", !after.isValid() ? "n invalid" : " Never");
 
 	if (!stamp.isValid() || !before.isValid() || !after.isValid())
 		return false;
 
-	return timestamp_compare(before, stamp) >= 0 && timestamp_compare(stamp, after) >= 0;
+	return timestamp_compare(before, stamp) <= 0 && timestamp_compare(stamp, after) <= 0;
 }
 
 bool ui_timestamp_in_between(UI_TIMESTAMP stamp, UI_TIMESTAMP before, UI_TIMESTAMP after)
 {
-	Assertion(stamp.isValid() && !stamp.isNever(), "ui_timestamp_in_between was called with a%s 'stamp' timestamp!", !stamp.isValid() ? "n invalid" : " Never");
-	Assertion(before.isValid() && !before.isNever(), "ui_timestamp_in_between was called with a%s 'before' timestamp!", !before.isValid() ? "n invalid" : " Never");
-	Assertion(after.isValid() && !after.isNever(), "ui_timestamp_in_between was called with a%s 'after' timestamp!", !after.isValid() ? "n invalid" : " Never");
+	Assertion(stamp.isFinite(), "ui_timestamp_in_between was called with a%s 'stamp' timestamp!", !stamp.isValid() ? "n invalid" : " Never");
+	Assertion(before.isFinite(), "ui_timestamp_in_between was called with a%s 'before' timestamp!", !before.isValid() ? "n invalid" : " Never");
+	Assertion(after.isFinite(), "ui_timestamp_in_between was called with a%s 'after' timestamp!", !after.isValid() ? "n invalid" : " Never");
 
 	if (!stamp.isValid() || !before.isValid() || !after.isValid())
 		return false;
 
-	return ui_timestamp_compare(before, stamp) >= 0 && ui_timestamp_compare(stamp, after) >= 0;
+	return ui_timestamp_compare(before, stamp) <= 0 && ui_timestamp_compare(stamp, after) <= 0;
 }
 
 bool timestamp_elapsed(int stamp) {
@@ -461,7 +494,7 @@ bool timestamp_elapsed(int stamp) {
 }
 
 bool timestamp_elapsed(TIMESTAMP stamp) {
-	if (!stamp.isValid() || stamp.isNever()) {
+	if (!stamp.isFinite()) {
 		return false;
 	}
 	if (stamp.isImmediate()) {
@@ -472,7 +505,7 @@ bool timestamp_elapsed(TIMESTAMP stamp) {
 }
 
 bool ui_timestamp_elapsed(UI_TIMESTAMP ui_stamp) {
-	if (!ui_stamp.isValid() || ui_stamp.isNever()) {
+	if (!ui_stamp.isFinite()) {
 		return false;
 	}
 	if (ui_stamp.isImmediate()) {
@@ -480,6 +513,28 @@ bool ui_timestamp_elapsed(UI_TIMESTAMP ui_stamp) {
 	}
 
 	return timer_get_milliseconds() >= ui_stamp.value();
+}
+
+bool timestamp_elapsed_last_frame(TIMESTAMP stamp) {
+	if (!stamp.isFinite()) {
+		return false;
+	}
+	if (stamp.isImmediate()) {
+		return true;
+	}
+
+	return timestamp_ms() > stamp.value();
+}
+
+bool ui_timestamp_elapsed_last_frame(UI_TIMESTAMP ui_stamp) {
+	if (!ui_stamp.isFinite()) {
+		return false;
+	}
+	if (ui_stamp.isImmediate()) {
+		return true;
+	}
+
+	return timer_get_milliseconds() > ui_stamp.value();
 }
 
 bool timestamp_elapsed_safe(int a, int b) {
@@ -491,7 +546,7 @@ bool timestamp_elapsed_safe(int a, int b) {
 }
 
 bool timestamp_elapsed_safe(TIMESTAMP a, int b) {
-	if (!a.isValid() || a.isNever()) {
+	if (!a.isFinite()) {
 		return false;
 	}
 	if (a.isImmediate()) {
@@ -502,7 +557,7 @@ bool timestamp_elapsed_safe(TIMESTAMP a, int b) {
 }
 
 bool ui_timestamp_elapsed_safe(UI_TIMESTAMP a, int b) {
-	if (!a.isValid() || a.isNever()) {
+	if (!a.isFinite()) {
 		return false;
 	}
 	if (a.isImmediate()) {
@@ -559,7 +614,7 @@ void timestamp_adjust_pause_offset(int delta_milliseconds)
 	if (Timestamp_offset_from_counter == 0) {
 		Timestamp_offset_from_counter = get_performance_counter();
 	} else {
-		Timestamp_offset_from_counter += static_cast<uint64_t>(static_cast<uint64_t>(delta_milliseconds) * 1000 / Timer_to_microseconds);
+		Timestamp_offset_from_counter += static_cast<uint64_t>(static_cast<uint64_t>(delta_milliseconds) * MICROSECONDS_PER_MILLISECOND / Timer_to_microseconds);
 	}
 }
 
@@ -597,7 +652,9 @@ void timestamp_update_time_compression()
 	}
 
 	// grab the independent variable of the equation before we change anything
-	auto timestamp_raw = timestamp_get_raw();
+	// (we need to get the live value to be accurate, which takes a new snapshot,
+	// but this is ok since time compression is only updated at the start of the frame)
+	auto timestamp_raw = timestamp_get_raw(true);
 
 	// we need to move the counter offset to make the raw timestamp zero (so that it can start ticking with a new multiplier)
 	Timestamp_offset_from_counter += timestamp_raw;
@@ -610,6 +667,9 @@ void timestamp_update_time_compression()
 	// now we can set the new info
 	Timestamp_current_time_compression = Game_time_compression;
 	Timestamp_time_compression_multiplier = static_cast<float>(Game_time_compression) / F1_0;
+
+	// and now take a new snapshot so that the raw timestamp is correct for this frame
+	timestamp_get_raw(true);
 }
 
 // ======================================== mission-specific stuff ========================================
@@ -633,4 +693,16 @@ fix timestamp_get_mission_time()
 uint64_t timestamp_get_mission_time_in_microseconds()
 {
 	return timestamp_get_microseconds() - Timestamp_microseconds_at_mission_start;
+}
+
+int timestamp_get_mission_time_in_milliseconds()
+{
+	return static_cast<int>(timestamp_get_mission_time_in_microseconds() / MICROSECONDS_PER_MILLISECOND);
+}
+
+void timestamp_offset_mission_time(float offset)
+{
+	auto time = static_cast<uint64_t>(static_cast<long double>(offset) * MICROSECONDS_PER_SECOND);
+
+	Timestamp_microseconds_at_mission_start -= time;
 }

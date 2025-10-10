@@ -32,14 +32,16 @@
 #define ROTVEL_CAP		14.0			// Rotational velocity cap for live objects
 #define DEAD_ROTVEL_CAP	16.3			// Rotational velocity cap for dead objects
 
-#define MAX_SHIP_SPEED		500		// Maximum speed allowed after whack or shockwave
-#define RESET_SHIP_SPEED	440		// Speed that a ship is reset to after exceeding MAX_SHIP_SPEED
+constexpr float MAX_SHIP_WHACK_DELTA = 500.0f;		// Maximum change in speed allowed after whack or shockwave
+constexpr float RESET_SHIP_WHACK_DELTA = 440.0f;	// Change in speed that a ship is reset to after exceeding MAX_SHIP_WHACK_DELTA
 
 #define	REDUCED_DAMP_FACTOR	10		// increase in side_slip and acceleration time constants (scaled according to reduced damp time)
 #define	REDUCED_DAMP_VEL		30		// change in velocity at which reduced_damp_time is 2000 ms
 #define	REDUCED_DAMP_TIME		2000	// ms (2.0 sec)
 #define	WEAPON_SHAKE_TIME		500	//	ms (0.5 sec)	viewer shake time after hit by weapon (implemented via afterburner shake)
-#define	SPECIAL_WARP_T_CONST	0.651	// special warp time constant (loose 99 % of excess speed in 3 sec)
+
+const float SUPERCAP_WARP_T_CONST = 0.651f;	// special warp time constant (lose 99 % of excess speed in 3 sec)
+const float SUPERCAP_WARP_EXCESS_SPD_THRESHOLD = 5.0f;	// more than this many m/s faster than the ship's max speed and we use the above damp constant instead
 
 void update_reduced_damp_timestamp( physics_info *pi, float impulse );
 float velocity_ramp (float v_in, float v_goal, float time_const, float t);
@@ -56,7 +58,7 @@ void physics_init( physics_info * pi )
 	pi->max_vel.xyz.x = 100.0f;		//sideways
 	pi->max_vel.xyz.y = 100.0f;		//up/down
 	pi->max_vel.xyz.z = 100.0f;		//forward
-	pi->max_rear_vel = 100.0f;	//backward -- controlled seperately
+	pi->max_rear_vel = 100.0f;	//backward -- controlled separately
 
 	pi->max_rotvel = vm_vec_new(2.0f, 1.0f, 2.0f);
 
@@ -82,6 +84,8 @@ void physics_init( physics_info * pi )
 	pi->ai_desired_orient = vmd_zero_matrix; // Asteroth - initialize to the "invalid" orientation, which will be ignored by physics unless set otherwise
 
 	vm_vec_zero(&pi->acceleration);
+
+	pi->gravity_const = 0.0f;
 }
 
 
@@ -222,7 +226,6 @@ void physics_sim_rot(matrix * orient, physics_info * pi, float sim_time )
 	*orient = tmp;
 
 	vm_orthogonalize_matrix(orient);
-
 }
 
 //	-----------------------------------------------------------------------------------------------------------
@@ -268,7 +271,7 @@ void physics_sim_rot_editor(matrix * orient, physics_info * pi, float sim_time)
 
 // Adds velocity to position
 // finds velocity and displacement in local coords
-void physics_sim_vel(vec3d * position, physics_info * pi, float sim_time, matrix *orient)
+void physics_sim_vel(vec3d * position, physics_info * pi, matrix *orient, vec3d* gravity, float sim_time)
 {
 	vec3d local_disp;		// displacement in this frame
 	vec3d local_v_in;		// velocity in local coords at the start of this frame
@@ -339,40 +342,54 @@ void physics_sim_vel(vec3d * position, physics_info * pi, float sim_time, matrix
 	// warp in test - make excessive speed drop exponentially from max allowed
 	// become (0.01x in 3 sec)
 
+	vec3d grav_disp = vmd_zero_vector;
+	vec3d grav_vel = vmd_zero_vector;
 	int special_warp_in = FALSE;
 	float excess = local_v_in.xyz.z - pi->max_vel.xyz.z;
-	if (excess > 5 && (pi->flags & PF_SPECIAL_WARP_IN)) {
+	if (excess > SUPERCAP_WARP_EXCESS_SPD_THRESHOLD && (pi->flags & PF_SUPERCAP_WARP_IN)) {
 		special_warp_in = TRUE;
-		float exp_factor = float(exp(-sim_time / SPECIAL_WARP_T_CONST));
+		float exp_factor = float(exp(-sim_time / SUPERCAP_WARP_T_CONST));
 		local_v_out.xyz.z = pi->max_vel.xyz.z + excess * exp_factor;
-		local_disp.xyz.z = (pi->max_vel.xyz.z * sim_time) + excess * (float(SPECIAL_WARP_T_CONST) * (1.0f - exp_factor));
-	} else if (pi->flags & PF_SPECIAL_WARP_OUT) {
-		float exp_factor = float(exp(-sim_time / SPECIAL_WARP_T_CONST));
+		local_disp.xyz.z = (pi->max_vel.xyz.z * sim_time) + excess * (float(SUPERCAP_WARP_T_CONST) * (1.0f - exp_factor));
+	} else if (pi->flags & PF_SUPERCAP_WARP_OUT) {
+		float exp_factor = float(exp(-sim_time / SUPERCAP_WARP_T_CONST));
 		vec3d temp;
 		vm_vec_rotate(&temp, &pi->prev_ramp_vel, orient);
 		float deficeit = temp.xyz.z - local_v_in.xyz.z;
 		local_v_out.xyz.z = local_v_in.xyz.z + deficeit * (1.0f - exp_factor);
-		local_disp.xyz.z = (local_v_in.xyz.z * sim_time) + deficeit * (sim_time - (float(SPECIAL_WARP_T_CONST) * (1.0f - exp_factor)));
+		local_disp.xyz.z = (local_v_in.xyz.z * sim_time) + deficeit * (sim_time - (float(SUPERCAP_WARP_T_CONST) * (1.0f - exp_factor)));
 	} else {
 		apply_physics (damp.xyz.z, local_desired_vel.xyz.z, local_v_in.xyz.z, sim_time, &local_v_out.xyz.z, &local_disp.xyz.z);
+		if (pi->gravity_const != 0.0f) {
+			grav_vel = *gravity * sim_time * pi->gravity_const;
+			grav_disp = (grav_vel * sim_time) * 0.5; // 1/2 * at^2
+		}
 	}
 
 	// maybe turn off special warp in flag
-	if ((pi->flags & PF_SPECIAL_WARP_IN) && (excess < 5)) {
-		pi->flags &= ~(PF_SPECIAL_WARP_IN);
+	if ((pi->flags & PF_SUPERCAP_WARP_IN) && (excess < SUPERCAP_WARP_EXCESS_SPD_THRESHOLD)) {
+		pi->flags &= ~(PF_SUPERCAP_WARP_IN);
+	}
+	
+	if (!(pi->flags & PF_SCRIPTED_VELOCITY)) {
+		// update world position from local to world coords using orient
+		vec3d world_disp;
+		vm_vec_unrotate(&world_disp, &local_disp, orient);
+		*position += world_disp;
+		*position += grav_disp;
+
+		// update world velocity	
+		vm_vec_unrotate(&pi->vel, &local_v_out, orient);
+		pi->vel += grav_vel;
+	} else {
+		// velocity set by script, just trust whatever that is, at least for this frame
+		*position += pi->vel * sim_time;
+		pi->flags &= ~PF_SCRIPTED_VELOCITY;
 	}
 
-	// update world position from local to world coords using orient
-	vec3d world_disp;
-	vm_vec_unrotate (&world_disp, &local_disp, orient);
-	vm_vec_add2 (position, &world_disp);
-
-	// update world velocity
-	vm_vec_unrotate(&pi->vel, &local_v_out, orient);
-
 	// update acceleration
-	vm_vec_sub(&pi->acceleration, &pi->vel, &old_vel);
-	vm_vec_scale(&pi->acceleration, 1 / sim_time);
+	pi->acceleration = pi->vel - old_vel;
+	pi->acceleration *= 1 / sim_time;
 
 	if (special_warp_in) {
 		vm_vec_rotate(&pi->prev_ramp_vel, &pi->vel, orient);
@@ -381,21 +398,26 @@ void physics_sim_vel(vec3d * position, physics_info * pi, float sim_time, matrix
 
 //	-----------------------------------------------------------------------------------------------------------
 // Simulate a physics object for this frame
-void physics_sim(vec3d* position, matrix* orient, physics_info* pi, float sim_time)
+void physics_sim(vec3d* position, matrix* orient, physics_info* pi, vec3d* gravity, float sim_time)
 {
 	// check flag which tells us whether or not to do velocity translation
 	if (pi->flags & PF_CONST_VEL) {
-		vm_vec_scale_add2(position, &pi->vel, sim_time);
+		*position += pi->vel * sim_time;
 	}
 	else
 	{
-		physics_sim_vel(position, pi, sim_time, orient);
+		if (pi->flags & PF_BALLISTIC) {
+			*position += pi->vel * sim_time + *gravity * sim_time * sim_time * pi->gravity_const * 0.5f; // vt + 1/2 * at^2
+			pi->vel += *gravity * sim_time * pi->gravity_const;
+		} else {
+			physics_sim_vel(position, pi, orient, gravity, sim_time);
+		}
+
 		physics_sim_rot(orient, pi, sim_time);
 
 		pi->speed = vm_vec_mag(&pi->vel);							//	Note, cannot use quick version, causes cumulative error, increasing speed.
 		pi->fspeed = vm_vec_dot(&orient->vec.fvec, &pi->vel);		// instead of vector magnitude -- use only forward vector since we are only interested in forward velocity
 	}
-
 }
 
 //	-----------------------------------------------------------------------------------------------------------
@@ -404,7 +426,7 @@ void physics_sim(vec3d* position, matrix* orient, physics_info* pi, float sim_ti
 // the universal Y axis, rather than the local orientation's Y axis.  Banking is also ignored.
 void physics_sim_editor(vec3d *position, matrix * orient, physics_info * pi, float sim_time )
 {
-	physics_sim_vel(position, pi, sim_time, orient);
+	physics_sim_vel(position, pi,orient, &vmd_zero_vector, sim_time);
 	physics_sim_rot_editor(orient, pi, sim_time);
 	pi->speed = vm_vec_mag_quick(&pi->vel);
 	pi->fspeed = vm_vec_dot(&orient->vec.fvec, &pi->vel);		// instead of vector magnitude -- use only forward vector since we are only interested in forward velocity
@@ -470,7 +492,7 @@ void physics_read_flying_controls( matrix * orient, physics_info * pi, control_i
 
 	// If Framerate_independent_turning is on, AI don't use CI to turn
 	if (!Framerate_independent_turning || IS_MAT_NULL(&pi->ai_desired_orient)){
-		if (!Flight_controls_follow_eyepoint_orientation || (Player_obj == nullptr) || (Player_obj->type != OBJ_SHIP)) {
+		if (!Flight_controls_follow_eyepoint_orientation || (Player_obj == nullptr)) {
 			// Default behavior; eyepoint orientation has no effect on controls
 			pi->desired_rotvel.xyz.x = ci->pitch * pi->max_rotvel.xyz.x;
 			pi->desired_rotvel.xyz.y = ci->heading * pi->max_rotvel.xyz.y;
@@ -480,7 +502,7 @@ void physics_read_flying_controls( matrix * orient, physics_info * pi, control_i
 			vec3d tmp_vec, new_rotvel;
 			matrix tmp_mat, eyemat, rotvelmat;
 
-			ship_get_eye(&tmp_vec, &eyemat, Player_obj, false);
+			object_get_eye(&tmp_vec, &eyemat, Player_obj, false);
 
 			vm_copy_transpose(&tmp_mat, &Player_obj->orient);
 			vm_matrix_x_matrix(&rotvelmat, &tmp_mat, &eyemat);
@@ -590,7 +612,7 @@ void physics_read_flying_controls( matrix * orient, physics_info * pi, control_i
 
 		if (pi->flags & PF_SLIDE_ENABLED)  {
 			// determine the local velocity
-			// deterimine whether accelerating or decleration toward goal for x
+			// deterimine whether accelerating or deceleration toward goal for x
 			if ( goal_vel.xyz.x > 0.0f )  {
 				if ( goal_vel.xyz.x >= pi->prev_ramp_vel.xyz.x )
 					ramp_time_const = pi->slide_accel_time_const;
@@ -610,7 +632,7 @@ void physics_read_flying_controls( matrix * orient, physics_info * pi, control_i
 			}
 			pi->prev_ramp_vel.xyz.x = velocity_ramp(pi->prev_ramp_vel.xyz.x, goal_vel.xyz.x, ramp_time_const, sim_time);
 
-			// deterimine whether accelerating or decleration toward goal for y
+			// deterimine whether accelerating or deceleration toward goal for y
 			if ( goal_vel.xyz.y > 0.0f )  {
 				if ( goal_vel.xyz.y >= pi->prev_ramp_vel.xyz.y )
 					ramp_time_const = pi->slide_accel_time_const;
@@ -635,7 +657,7 @@ void physics_read_flying_controls( matrix * orient, physics_info * pi, control_i
 			pi->prev_ramp_vel.xyz.y = 0.0f;
 		}
 
-		// deterimine whether accelerating or decleration toward goal for z
+		// deterimine whether accelerating or deceleration toward goal for z
 		if ( goal_vel.xyz.z > 0.0f )  {
 			if ( goal_vel.xyz.z >= pi->prev_ramp_vel.xyz.z )  {
 				if ( pi->flags & PF_AFTERBURNER_ON )
@@ -756,6 +778,27 @@ void physics_read_flying_controls( matrix * orient, physics_info * pi, control_i
 }
 
 
+void physics_maybe_reset_speed_after_whack(physics_info *pi, const vec3d *previous_vel, const char *source)
+{
+	// for release builds
+	SCP_UNUSED(source);
+
+	if (pi->flags & PF_USE_VEL || The_mission.ai_profile->flags[AI::Profile_Flags::Dont_limit_change_in_speed_due_to_physics_whack])
+		return;
+
+	vec3d delta_vel = pi->vel - *previous_vel;
+	float speed_delta = vm_vec_mag(&delta_vel);
+
+	// Limit change in speed due to whack
+	if (speed_delta > MAX_SHIP_WHACK_DELTA)
+	{
+		// Get DaveA
+		nprintf(("Physics", "speed reset in %s [change in speed: %f; current speed: %f]\n", source, speed_delta, vm_vec_mag(&pi->vel)));
+		vm_vec_normalize(&delta_vel);
+		vm_vec_scale_add(&pi->vel, previous_vel, &delta_vel, RESET_SHIP_WHACK_DELTA);
+	}
+}
+
 #define WHACK_LIMIT 0.001f
 #define ROTVEL_WHACK_CONST 0.12f
 
@@ -767,6 +810,11 @@ bool whack_below_limit(const vec3d* impulse)
 		   (fl_abs(impulse->xyz.z) < WHACK_LIMIT);
 }
 
+bool whack_below_limit(float impulse)
+{
+	return fl_abs(impulse) < WHACK_LIMIT;
+}
+
 // ----------------------------------------------------------------------------
 // physics_calculate_and_apply_whack changes the rotaional and linear velocites of a ship due to
 // an instantaneous whack.
@@ -776,7 +824,7 @@ bool whack_below_limit(const vec3d* impulse)
 //				pi				=>		pointer to phys_info struct of object getting whacked
 //				orient		=>		orientation matrix (needed to set rotational impulse in body coords)
 //
-void physics_calculate_and_apply_whack(vec3d *impulse, vec3d *pos, physics_info *pi, matrix *orient, matrix *inv_moi)
+void physics_calculate_and_apply_whack(const vec3d *impulse, const vec3d *pos, physics_info *pi, const matrix *orient, const matrix *inv_moi)
 {
 	vec3d	local_angular_impulse, angular_impulse;
 
@@ -799,16 +847,14 @@ void physics_calculate_and_apply_whack(vec3d *impulse, vec3d *pos, physics_info 
 	physics_apply_whack(vm_vec_mag(impulse), pi, &delta_rotvel, &delta_vel, orient);
 }
 
-
 // This function applies the calculated delta rotational and linear velocities calculated by physics_calculate_and_apply_whack
 // or dock_calculate_and_apply_whack_docked_object in objectdock.cpp if it was a docked object
-void physics_apply_whack(float orig_impulse, physics_info* pi, vec3d *delta_rotvel, vec3d* delta_vel, matrix* orient)
+void physics_apply_whack(float orig_impulse, physics_info* pi, const vec3d *delta_rotvel, const vec3d* delta_vel, const matrix* orient)
 {
 	Assertion((pi != nullptr) && (delta_rotvel != nullptr) && (delta_vel != nullptr) && (orient != nullptr),
 		"physics_apply_whack_direct invalid argument(s)");
 
-	vm_vec_scale(delta_rotvel, (float)ROTVEL_WHACK_CONST);
-	vm_vec_add2(&pi->rotvel, delta_rotvel);
+	vm_vec_scale_add2(&pi->rotvel, delta_rotvel, ROTVEL_WHACK_CONST);
 
 	//mprintf(("Whack: %7.3f %7.3f %7.3f\n", pi->rotvel.xyz.x, pi->rotvel.xyz.y, pi->rotvel.xyz.z));
 
@@ -823,13 +869,10 @@ void physics_apply_whack(float orig_impulse, physics_info* pi, vec3d *delta_rotv
 		pi->afterburner_decay = timestamp( WEAPON_SHAKE_TIME );
 	}
 
+	vec3d previous_vel = pi->vel;
 	vm_vec_add2(&pi->vel, delta_vel);
-	if (!(pi->flags & PF_USE_VEL) && (vm_vec_mag_squared(&pi->vel) > MAX_SHIP_SPEED*MAX_SHIP_SPEED)) {
-		// Get DaveA
-		nprintf(("Physics", "speed reset in physics_apply_whack [speed: %f]\n", vm_vec_mag(&pi->vel)));
-		vm_vec_normalize(&pi->vel);
-		vm_vec_scale(&pi->vel, (float)RESET_SHIP_SPEED);
-	}
+
+	physics_maybe_reset_speed_after_whack(pi, &previous_vel, "physics_apply_whack");
 
 	// set so velocity will ramp starting from current speed
 	// ramped velocity is now affected by collision
@@ -1010,20 +1053,21 @@ void physics_apply_shock(vec3d *direction_vec, float pressure, physics_info *pi,
 		vm_vec_add2(&pi->rotvel, &delta_rotvel);
 	}
 
+
 	// set reduced translational damping, set flags
 	float velocity_scale = (float)MAX_VEL*scale;
 	pi->flags |= PF_REDUCED_DAMP;
 	update_reduced_damp_timestamp( pi, velocity_scale*pi->mass );
+
+	vec3d previous_vel = pi->vel;
 	vm_vec_scale_add2( &pi->vel, direction_vec, velocity_scale );
-	vm_vec_rotate(&pi->prev_ramp_vel, &pi->vel, orient);	// set so velocity will ramp starting from current speed
 
 	// check that kick from shockwave is not too large
-	if (!(pi->flags & PF_USE_VEL) && (vm_vec_mag_squared(&pi->vel) > MAX_SHIP_SPEED*MAX_SHIP_SPEED)) {
-		// Get DaveA
-		nprintf(("Physics", "speed reset in physics_apply_shock [speed: %f]\n", vm_vec_mag(&pi->vel)));
-		vm_vec_normalize(&pi->vel);
-		vm_vec_scale(&pi->vel, (float)RESET_SHIP_SPEED);
-	}
+	physics_maybe_reset_speed_after_whack(pi, &previous_vel, "physics_apply_shock");
+
+	// set so velocity will ramp starting from current speed
+	// ramped velocity is now affected by shockwave
+	vm_vec_rotate( &pi->prev_ramp_vel, &pi->vel, orient );
 }
 
 // ----------------------------------------------------------------------------
@@ -1040,7 +1084,7 @@ void physics_apply_shock(vec3d *direction_vec, float pressure, physics_info *pi,
 // Warning:  Do not change ROTVEL_COLLIDE_WHACK_CONST.  This will mess up collision physics.
 // If you need to change the rotation, change  COLLISION_ROTATION_FACTOR in collide_ship_ship.
 #define ROTVEL_COLLIDE_WHACK_CONST 1.0
-void physics_collide_whack( vec3d *impulse, vec3d *world_delta_rotvel, physics_info *pi, matrix *orient, bool is_landing )
+void physics_collide_whack( vec3d *impulse, vec3d *world_delta_rotvel, physics_info *pi, matrix *orient, bool is_landing, float max_rotvel )
 {
 	vec3d	body_delta_rotvel;
 
@@ -1052,6 +1096,14 @@ void physics_collide_whack( vec3d *impulse, vec3d *world_delta_rotvel, physics_i
 //	vm_vec_scale( &body_delta_rotvel, (float)	ROTVEL_COLLIDE_WHACK_CONST );
 	vm_vec_add2( &pi->rotvel, &body_delta_rotvel );
 
+	if (max_rotvel > 0.0f) {
+		float rotvel_mag = vm_vec_mag(&pi->rotvel);
+		if (rotvel_mag > max_rotvel) {
+			vm_vec_scale(&pi->rotvel, max_rotvel / rotvel_mag);
+		}
+	}
+
+	pi->flags |= PF_REDUCED_DAMP;
 	update_reduced_damp_timestamp( pi, vm_vec_mag(impulse) );
 
 	// find time for shake from weapon to end
@@ -1062,19 +1114,15 @@ void physics_collide_whack( vec3d *impulse, vec3d *world_delta_rotvel, physics_i
 		}
 	}
 
-	pi->flags |= PF_REDUCED_DAMP;
+	vec3d previous_vel = pi->vel;
 	vm_vec_scale_add2( &pi->vel, impulse, 1.0f / pi->mass );
+
 	// check that collision does not give ship too much speed
-	// reset if too high
-	if (!(pi->flags & PF_USE_VEL) && (vm_vec_mag_squared(&pi->vel) > MAX_SHIP_SPEED*MAX_SHIP_SPEED)) {
-		// Get DaveA
-		nprintf(("Physics", "speed reset in physics_collide_whack [speed: %f]\n", vm_vec_mag(&pi->vel)));
-		vm_vec_normalize(&pi->vel);
-		vm_vec_scale(&pi->vel, (float)RESET_SHIP_SPEED);
-	}
-	vm_vec_rotate( &pi->prev_ramp_vel, &pi->vel, orient );		// set so velocity will ramp starting from current speed
-																					// ramped velocity is now affected by collision
-	// rotate previous ramp velocity (in model coord) to be same as vel (in world coords)
+	physics_maybe_reset_speed_after_whack(pi, &previous_vel, "physics_collide_whack");
+
+	// set so velocity will ramp starting from current speed
+	// ramped velocity is now affected by collision
+	vm_vec_rotate( &pi->prev_ramp_vel, &pi->vel, orient );
 }
 
 
@@ -1171,6 +1219,44 @@ void physics_add_point_mass_moi(matrix *moi, float mass, vec3d *pos)
 	moi->a2d[2][2] += mass * (pos->xyz.x * pos->xyz.x + pos->xyz.y * pos->xyz.y);
 }
 
+// equation from https://en.wikipedia.org/wiki/Projectile_motion#Angle_%CE%B8_required_to_hit_coordinate_(x,_y)
+bool physics_lead_ballistic_trajectory(const vec3d* start, const vec3d* end_pos, const vec3d* target_vel, float weapon_speed, const vec3d* gravity, vec3d* out_direction) {
+	float best_guess_time = 0.0f;
+	*out_direction = vmd_zero_vector;
+	float time = 0.0f;
+	for (int i = 0; i < 6; i++) {
+		vec3d target = *end_pos - *start;
+		target += *target_vel * time;
+
+		vec3d gravity_dir = *gravity;
+		float gravity_accel = vm_vec_normalize(&gravity_dir);
+
+		float height = -vm_vec_dot(&target, &gravity_dir);
+		vec3d plane_pos = target + gravity_dir * height;
+		float range = vm_vec_normalize(&plane_pos);
+
+		float vel_2 = weapon_speed * weapon_speed;
+		float gx = gravity_accel * range;
+		float gy = gravity_accel * height;
+		float discriminant = vel_2 * vel_2 - (gx * gx + 2 * gy * vel_2);
+
+		if (discriminant < 0)
+			return false;
+
+		float angle = atanf((vel_2 - sqrtf(discriminant)) / gx);
+
+		*out_direction = plane_pos * cosf(angle) - (gravity_dir)*sinf(angle);
+
+		time = range / (weapon_speed * cosf(angle));
+
+		if (std::abs(time - best_guess_time) < 0.01f)
+			break;
+		else
+			best_guess_time = time;
+	}
+	return true;
+}
+
 //*************************CLASS: avd_movement*************************
 avd_movement::avd_movement() : Pc(0.0f), Vc(0.0f), TSi(0), Pi(0.0f), Vi(0.0f), Pf(0.0f), Tf(0.0f), Tai(0.0f), Taf(0.0f), Vf(0.0f), Vm(0.0f), Ai(0.0f), Af(0.0f)
 {
@@ -1254,8 +1340,24 @@ void avd_movement::setAVD(float final_position, float total_movement_time, float
 	TSi = timestamp();
 	
 	Vm = (Pf-Pi-0.5f*(Vi*Tai)-0.5f*(Vf*Taf)) / (Tf - 0.5f*Tai - 0.5f*Taf);
-	Ai = (Vm-Vi)/Tai;
-	Af = (Vf-Vm)/Taf;
+
+	// Cyborg - Many coverity dividing by zero issues were caused by this piece of low level code. Most places that called this function were also not checking inputs. 
+	// The two if blocks in this function do not guarantee that they will not be float zero (e.g. tai = 2.0 taf = 0.0 Tf = 1.0)
+	// The reason why this code used to work even when there were divisions by zero is that the NAN results were gated behind Taf > 0.0 and Tai > 0.0
+	// checks in other functions. Ai, initial Acceleration, and Af, final Acceleration, are completely meaningless and explicitly disabled if their respective
+	// time amounts are zero or less than zero. So instead of just letting some NAN's chill out in memory, waiting for someone else to unwisely access them,
+	// we are going to explicitly set them to zero, like a good engine should.
+	if (Tai <= 0.0f){
+		Ai = 0.0;
+	} else {
+		Ai = (Vm-Vi)/Tai;
+	}
+
+	if (Taf <= 0.0f){
+		Af = 0.0f;
+	} else {
+		Af = (Vf-Vm)/Taf;
+	}
 }
 
 void avd_movement::setVD(float total_movement_time, float ending_acceleration_time, float final_velocity)
@@ -1273,7 +1375,14 @@ void avd_movement::setVD(float total_movement_time, float ending_acceleration_ti
 
 	TSi = timestamp();
 	Ai = 0.0f;
-	Af = (Vf-Vm)/Taf;
+
+	// Avoid division by float zero. See the note in setAVD for more info.
+	if (Taf <= 0.0f){
+		Af = 0.0f;
+	} else {
+		Af = (Vf-Vm)/Taf;
+	}
+	
 	Pf = Pi + Pf*(Tf - Taf) + Vm*Taf + 0.5f*Af*(Taf*Taf);
 }
 

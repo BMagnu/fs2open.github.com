@@ -64,7 +64,7 @@ typedef uint PSNET_SOCKET_RELIABLE;
 
 // define values for network errors when trying to enter the ready room
 #define NETWORK_ERROR_NONE					0
-#define NETWORK_ERROR_NO_TYPE				-1
+#define NETWORK_ERROR_NO_TYPE				-1	// this is no longer used because we no longer require the user to set the connection type via the launcher
 #define NETWORK_ERROR_NO_WINSOCK			-2
 #define NETWORK_ERROR_NO_PROTOCOL		-3
 #define NETWORK_ERROR_RELIABLE			-4
@@ -87,8 +87,6 @@ extern int Psnet_failure_code;
 #define NETWORK_CONNECTION_NONE			1
 #define NETWORK_CONNECTION_DIALUP		2
 #define NETWORK_CONNECTION_LAN			3
-
-extern int Psnet_connection;
 
 extern ushort Psnet_default_port;
 
@@ -207,7 +205,7 @@ int psnet_rel_send(PSNET_SOCKET_RELIABLE socket, ubyte *data, int length, int np
 // Return codes:
 // -1 socket not connected
 // 0 No packet ready to receive
-// >0 Buffer filled with the number of bytes recieved
+// >0 Buffer filled with the number of bytes received
 int psnet_rel_get(PSNET_SOCKET_RELIABLE socket, ubyte *buffer, int max_length);
 
 // process all active reliable sockets

@@ -15,11 +15,15 @@
 
 #include "cmdline/cmdline.h"
 #include "graphics/2d.h"
+#include "io/timer.h"
 #include "lighting/lighting.h"
 #include "lighting/lighting_profiles.h"
 #include "math/bitarray.h"
 #include "render/3d.h"
 #include "util/uniform_structs.h"
+
+namespace ltp = lighting_profiles;
+using namespace ltp;
 
 // Structures
 struct gr_light
@@ -39,6 +43,12 @@ struct gr_light
 
 	int type;
 };
+
+//FADEIN STUFF
+shader Viewer_shader;
+FadeType Fade_type = FadeType::FI_NONE;
+TIMESTAMP Fade_start_timestamp = TIMESTAMP::invalid();
+TIMESTAMP Fade_end_timestamp = TIMESTAMP::invalid();
 
 // Variables
 SCP_vector<gr_light> gr_lights;
@@ -329,11 +339,21 @@ void gr_set_ambient_light(int red, int green, int blue) {
 	gr_light_ambient[3] = 1.0f;
 }
 void gr_get_ambient_light(vec3d* light_vector) {
-	auto abv = lighting_profile::current()->ambient_light_brightness;
-	auto over = lighting_profile::current()->overall_brightness;
+	const auto& abv = ltp::current()->ambient_light_brightness;
+	const auto& over = ltp::current()->overall_brightness;
 	light_vector->xyz.x = over.handle(abv.handle(gr_light_ambient[0]));
 	light_vector->xyz.y = over.handle(abv.handle(gr_light_ambient[1]));
 	light_vector->xyz.z = over.handle(abv.handle(gr_light_ambient[2]));
+
+	//AmbientFactor^2 due to legacy OpenGL behaviour
+	*light_vector *= *light_vector;
+
+	//For some reason, emissive is in here as well...
+	if (Cmdline_emissive) {
+		light_vector->xyz.x += gr_light_emission[0];
+		light_vector->xyz.y += gr_light_emission[1];
+		light_vector->xyz.z += gr_light_emission[2];
+	}
 }
 
 void gr_lighting_fill_uniforms(void* data_out, size_t buffer_size) {

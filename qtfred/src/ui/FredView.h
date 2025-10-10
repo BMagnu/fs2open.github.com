@@ -19,6 +19,11 @@ namespace fred {
 class Editor;
 class RenderWidget;
 
+namespace dialogs {
+class ShipEditorDialog;
+class WingEditorDialog;
+}
+
 namespace Ui {
 class FredView;
 }
@@ -39,9 +44,12 @@ class FredView: public QMainWindow, public IDialogProvider {
 	void showContextMenu(const QPoint& globalPos);
 
  public slots:
-	void openLoadMissionDIalog();
+	void openLoadMissionDialog();
 
 	void newMission();
+
+	// this can be triggered by the loadout dialog and so needs to be public
+	void on_actionVariables_triggered(bool);
 
  private slots:
 	 void on_actionSave_As_triggered(bool);
@@ -62,6 +70,9 @@ class FredView: public QMainWindow, public IDialogProvider {
 	void on_actionHide_Marked_Objects_triggered(bool enabled);
 	void on_actionShow_All_Hidden_Objects_triggered(bool enabled);
 
+	void on_actionLock_Marked_Objects_triggered(bool enabled);
+	void on_actionUnlock_All_Objects_triggered(bool enabled);
+
 	void on_actionx1_triggered(bool enabled);
 	void on_actionx2_triggered(bool enabled);
 	void on_actionx3_triggered(bool enabled);
@@ -80,15 +91,22 @@ class FredView: public QMainWindow, public IDialogProvider {
 	void on_actionCamera_triggered(bool enabled);
 	void on_actionCurrent_Ship_triggered(bool enabled);
 
-	void on_actionEvents_triggered(bool);
+	void on_actionMission_Events_triggered(bool);
+	void on_actionMission_Cutscenes_triggered(bool);
 	void on_actionAsteroid_Field_triggered(bool);
+	void on_actionVolumetric_Nebula_triggered(bool);
 	void on_actionBriefing_triggered(bool);
 	void on_actionMission_Specs_triggered(bool);
 	void on_actionWaypoint_Paths_triggered(bool);
+	void on_actionJump_Nodes_triggered(bool);
 	void on_actionObjects_triggered(bool);
 	void on_actionShips_triggered(bool);
+	void on_actionWings_triggered(bool);
+	void on_actionCampaign_triggered(bool);
 	void on_actionCommand_Briefing_triggered(bool);
+	void on_actionDebriefing_triggered(bool);
 	void on_actionReinforcements_triggered(bool);
+	void on_actionLoadout_triggered(bool);
 
 	void on_actionSelectionLock_triggered(bool enabled);
 
@@ -124,14 +142,19 @@ class FredView: public QMainWindow, public IDialogProvider {
 
 	void on_actionMove_Ships_When_Undocking_triggered(bool);
 
+	void on_actionAlways_Save_Display_Names_triggered(bool);
+	void on_actionError_Checker_Checks_Potential_Issues_triggered(bool);
 	void on_actionError_Checker_triggered(bool);
 
 	void on_actionAbout_triggered(bool);
 	void on_actionBackground_triggered(bool);
 	void on_actionShield_System_triggered(bool);
+	void on_actionSet_Global_Ship_Flags_triggered(bool);
 	void on_actionVoice_Acting_Manager_triggered(bool);
 	void on_actionFiction_Viewer_triggered(bool);
-	void on_actionMission_Objectives_triggered(bool);
+	void on_actionMission_Goals_triggered(bool);
+	void on_actionMusic_Player_triggered(bool);
+	void on_actionCalculate_Relative_Coordinates_triggered(bool);
  signals:
 	/**
 	 * @brief Special version of FredApplication::onIdle which is limited to the lifetime of this object
@@ -198,6 +221,9 @@ class FredView: public QMainWindow, public IDialogProvider {
 
 	Editor* fred = nullptr;
 	EditorViewport* _viewport = nullptr;
+
+	fso::fred::dialogs::ShipEditorDialog* _shipEditorDialog = nullptr;
+	fso::fred::dialogs::WingEditorDialog* _wingEditorDialog = nullptr;
 
 	bool _inKeyPressHandler = false;
 	bool _inKeyReleaseHandler = false;

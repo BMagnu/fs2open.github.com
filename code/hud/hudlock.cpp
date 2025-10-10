@@ -107,7 +107,7 @@ void hud_init_missile_lock()
 }
 
 HudGaugeLock::HudGaugeLock():
-HudGauge(HUD_OBJECT_LOCK, HUD_LEAD_INDICATOR, false, false, VM_DEAD_VIEW, 255, 255, 255)
+HudGauge3DAnchor(HUD_OBJECT_LOCK, HUD_LEAD_INDICATOR, false, false, VM_DEAD_VIEW, 255, 255, 255)
 {
 }
 
@@ -279,13 +279,26 @@ void HudGaugeLock::renderOld(float frametime)
 // lock_point_pos should be the world coordinates of the target being locked. Assuming all the 
 // necessary locking calculations are done for this frame, this function will compute 
 // where the indicator should be relative to the player's viewpoint and will render accordingly.
-void HudGaugeLock::render(float frametime)
+void HudGaugeLock::render(float frametime, bool config)
 {
-	size_t i;
-	lock_info *current_lock;
+	float scale = 1.0;
 
-	vertex lock_point;
-	int sx, sy;
+	// This gauge does not accept config settings so we don't have to render it right now.
+	// That may change in the future, in which case the code below can be restored.
+	if (config) {
+		// The coords don't really get converted here but we still get scale based on the screen size which we need
+		/* int x = 0, y = 0;
+		std::tie(x, y, scale) = hud_config_convert_coord_sys(position[0], position[1], base_w, base_h);
+
+		int w;
+		int h;
+		// Will need actual coords for the below if we activate this gauge in config
+		hud_config_set_mouse_coords(gauge_config_id, x, x + w, y, y + h);
+
+		setGaugeColor(HUD_C_NONE, config);*/
+
+		return;
+	}
 
 	// check to see if there are any missile to fire.. we don't want to show the 
 	// lock indicator if there are missiles to fire.
@@ -299,58 +312,59 @@ void HudGaugeLock::render(float frametime)
 	gr_set_screen_scale(base_w, base_h);
 
 	// go through all present lock indicators
-	for ( i = 0; i < Player_ship->missile_locks.size(); ++i ) {
-		current_lock = &Player_ship->missile_locks[i];
+	for (auto& current_lock : Player_ship->missile_locks){
 
-		if ( !current_lock->indicator_visible ) {
+		if ( !current_lock.indicator_visible ) {
 			continue;
 		}
 
 		// Get the target's current position on the screen. If he's not on there,
 		// we're not going to draw the lock indicator even if he's in front 
 		// of our ship, so bail out. 
-		g3_rotate_vertex(&lock_point, &current_lock->world_pos); 
+		vertex lock_point;
+		g3_rotate_vertex(&lock_point, &current_lock.world_pos); 
 		g3_project_vertex(&lock_point);
 
 		if (lock_point.codes & PF_OVERFLOW) {
 			continue;
 		}
 
-		hud_set_iff_color(current_lock->obj);
+		hud_set_iff_color(current_lock.obj);
 
 		// We have the coordinates of the lock indicator relative to the target in our "virtual frame" 
 		// so, we calculate where it should be drawn based on the player's viewpoint.
-		if ( current_lock->locked ) {
+		int sx, sy;
+		if ( current_lock.locked ) {
 			sx = fl2i(lock_point.screen.xyw.x); 
 			sy = fl2i(lock_point.screen.xyw.y);
 			gr_unsize_screen_pos(&sx, &sy);
 
 			// show the rotating triangles if target is locked
-			renderLockTrianglesNew(sx, sy, frametime, current_lock);
+			renderLockTrianglesNew(sx, sy, frametime, &current_lock);
 		} else {
 			const float scaling_factor = (gr_screen.clip_center_x < gr_screen.clip_center_y)
 											 ? (gr_screen.clip_center_x / VIRTUAL_FRAME_HALF_WIDTH)
 											 : (gr_screen.clip_center_y / VIRTUAL_FRAME_HALF_HEIGHT);
-			sx = fl2i(lock_point.screen.xyw.x) - fl2i(i2fl(current_lock->current_target_sx - current_lock->indicator_x) * scaling_factor);
-			sy = fl2i(lock_point.screen.xyw.y) - fl2i(i2fl(current_lock->current_target_sy - current_lock->indicator_y) * scaling_factor);
+			sx = fl2i(lock_point.screen.xyw.x) - fl2i(i2fl(current_lock.current_target_sx - current_lock.indicator_x) * scaling_factor);
+			sy = fl2i(lock_point.screen.xyw.y) - fl2i(i2fl(current_lock.current_target_sy - current_lock.indicator_y) * scaling_factor);
 			gr_unsize_screen_pos(&sx, &sy);
 		}
 
-		Lock_gauge.sx = sx - Lock_gauge_half_w;
-		Lock_gauge.sy = sy - Lock_gauge_half_h;
-		if( current_lock->locked ){
-			current_lock->lock_gauge_time_elapsed = 0.0f;
-			Lock_gauge.time_elapsed = current_lock->lock_gauge_time_elapsed;
-			hud_anim_render(&Lock_gauge, 0.0f, 1);
+		Lock_gauge.sx = sx - fl2i(Lock_gauge_half_w * scale);
+		Lock_gauge.sy = sy - fl2i(Lock_gauge_half_h * scale);
+		if( current_lock.locked ){
+			current_lock.lock_gauge_time_elapsed = 0.0f;
+			Lock_gauge.time_elapsed = current_lock.lock_gauge_time_elapsed;
+			hud_anim_render(&Lock_gauge, 0.0f, 1, 1, 0, 0, GR_RESIZE_FULL, false, scale);
 		} else {
 			// manually track the animation time, since we may have more than one lock
-			current_lock->lock_gauge_time_elapsed += frametime;
-			if (current_lock->lock_gauge_time_elapsed > Lock_gauge.total_time) {
-				current_lock->lock_gauge_time_elapsed = 0.0f;
+			current_lock.lock_gauge_time_elapsed += frametime;
+			if (current_lock.lock_gauge_time_elapsed > Lock_gauge.total_time) {
+				current_lock.lock_gauge_time_elapsed = 0.0f;
 			}
-			Lock_gauge.time_elapsed = current_lock->lock_gauge_time_elapsed;
+			Lock_gauge.time_elapsed = current_lock.lock_gauge_time_elapsed;
 
-			hud_anim_render(&Lock_gauge, 0.0f, 1);
+			hud_anim_render(&Lock_gauge, 0.0f, 1, 1, 0, 0, GR_RESIZE_FULL, false, scale);
 		}
 	}
 
@@ -506,7 +520,7 @@ int hud_lock_on_subsys_ok()
 	vm_vec_add2(&subobj_pos, &target_objp->pos);
 
 	if ( Player->subsys_in_view < 0 ) {
-		in_sight = ship_subsystem_in_sight(target_objp, subsys, &View_position, &subobj_pos);
+		in_sight = ship_subsystem_in_sight(target_objp, subsys, &View_position, &subobj_pos) ? 1 : 0;
 	} else {
 		in_sight = Player->subsys_in_view;
 	}
@@ -640,7 +654,7 @@ void hud_do_lock_indicator(float frametime)
 			vec3d subobj_pos;
 			vm_vec_unrotate(&subobj_pos, &Player->locking_subsys->system_info->pnt, &tobjp->orient);
 			vm_vec_add2(&subobj_pos, &tobjp->pos);
-			int target_subsys_in_sight = ship_subsystem_in_sight(tobjp, Player->locking_subsys, &Player_obj->pos, &subobj_pos);
+			bool target_subsys_in_sight = ship_subsystem_in_sight(tobjp, Player->locking_subsys, &Player_obj->pos, &subobj_pos);
 
 			if (!target_subsys_in_sight || Player->locking_subsys->system_info->type != SUBSYSTEM_ENGINE) {
 				Player->locking_subsys =
@@ -836,14 +850,15 @@ void hud_lock_acquire_uncaged_target(lock_info *current_lock, weapon_info *wip)
 	bool actively_locking = false;
 
 	for ( A = GET_FIRST(&obj_used_list); A !=END_OF_LIST(&obj_used_list); A = GET_NEXT(A) ) {
-		ship* sp = &Ships[A->instance];
+		if (A->flags[Object::Object_Flags::Should_be_dead])
+			continue;
 
 		if (!weapon_multilock_can_lock_on_target(Player_obj, A, wip, &dot))
 			continue;
 
 		bool in_range = weapon_secondary_world_pos_in_range(Player_obj, wip, &A->pos);
 
-		if ( Ship_info[sp->ship_info_index].is_big_or_huge() ) {
+		if ( A->type == OBJ_SHIP && Ship_info[Ships[A->instance].ship_info_index].is_big_or_huge() ) {
 			lock_info temp_lock;
 
 			temp_lock.obj = A;
@@ -917,6 +932,9 @@ void hud_lock_acquire_uncaged_target_weapon(lock_info* current_lock, weapon_info
 	bool actively_locking = false;
 
 	for (A = GET_FIRST(&obj_used_list); A != END_OF_LIST(&obj_used_list); A = GET_NEXT(A)) {
+		if (A->flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
 		if (!weapon_multilock_can_lock_on_target(Player_obj, A, wip, &dot, true))
 			continue;
 
@@ -1055,7 +1073,7 @@ void hud_lock_determine_lock_target(lock_info *lock_slot, weapon_info *wip)
 					vm_vec_unrotate(&subobj_pos, &Player->locking_subsys->system_info->pnt, &lock_slot->obj->orient);
 					vm_vec_add2(&subobj_pos, &lock_slot->obj->pos);
 
-					int target_subsys_in_sight = ship_subsystem_in_sight(lock_slot->obj, Player_ai->targeted_subsys, &Player_obj->pos, &subobj_pos);
+					bool target_subsys_in_sight = ship_subsystem_in_sight(lock_slot->obj, Player_ai->targeted_subsys, &Player_obj->pos, &subobj_pos);
 
 					if ( !target_subsys_in_sight || Player->locking_subsys->system_info->type != SUBSYSTEM_ENGINE ) {
 						lock_slot->subsys = ship_get_closest_subsys_in_sight(&Ships[lock_slot->obj->instance], SUBSYSTEM_ENGINE, &Player_obj->pos);
@@ -1106,7 +1124,7 @@ void hud_lock_determine_lock_target(lock_info *lock_slot, weapon_info *wip)
 				vm_vec_unrotate(&subobj_pos, &Player_ai->targeted_subsys->system_info->pnt, &lock_slot->obj->orient);
 				vm_vec_add2(&subobj_pos, &lock_slot->obj->pos);
 
-				int target_subsys_in_sight = ship_subsystem_in_sight(lock_slot->obj, Player_ai->targeted_subsys, &Player_obj->pos, &subobj_pos);
+				bool target_subsys_in_sight = ship_subsystem_in_sight(lock_slot->obj, Player_ai->targeted_subsys, &Player_obj->pos, &subobj_pos);
 
 				if ( !target_subsys_in_sight || Player_ai->targeted_subsys->system_info->type != SUBSYSTEM_ENGINE ) {
 					lock_slot->subsys = ship_get_closest_subsys_in_sight(&Ships[lock_slot->obj->instance], SUBSYSTEM_ENGINE, &Player_obj->pos);
@@ -1579,7 +1597,7 @@ void hud_do_lock_indicators(float frametime)
 			lock_slot->target_in_lock_cone = false;
 		}
 
-		if ( !lock_slot->locked && wip->trigger_lock && !(swp->flags[Ship::Weapon_Flags::Trigger_Lock]) ) {
+		if ( !lock_slot->locked && wip->trigger_lock && !(swp->flags[Ship::Weapon_Flags::Secondary_trigger_down]) ) {
 			// only reset locks that are not locked if this is a trigger dependent weapon 
 			// and player isn't holding down trigger
 			ship_clear_lock(lock_slot);
@@ -1689,7 +1707,7 @@ void HudGaugeLock::renderLockTrianglesOld(int center_x, int center_y, int radius
 // draw a frame of the rotating lock triangles animation
 void HudGaugeLock::renderLockTriangles(int center_x, int center_y, float frametime)
 {
-	if ( Lock_anim.first_frame == -1 ) {
+	if ( Lock_anim.first_frame < 0 ) {
 		renderLockTrianglesOld(center_x, center_y, Lock_target_box_width/2);
 	} else {
 		// render the anim
@@ -1730,7 +1748,7 @@ void HudGaugeLock::renderLockTriangles(int center_x, int center_y, float frameti
 
 void HudGaugeLock::renderLockTrianglesNew(int center_x, int center_y, float frametime, lock_info *slot)
 {
-	if ( Lock_anim.first_frame == -1 ) {
+	if ( Lock_anim.first_frame < 0 ) {
 		renderLockTrianglesOld(center_x, center_y, Lock_target_box_width/2);
 	} else {
 		// render the anim

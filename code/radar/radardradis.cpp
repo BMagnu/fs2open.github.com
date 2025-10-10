@@ -35,7 +35,7 @@
 
 HudGaugeRadarDradis::HudGaugeRadarDradis():
 HudGaugeRadar(HUD_OBJECT_RADAR_BSG, 255, 255, 255), 
-xy_plane(-1), xz_yz_plane(-1), sweep_plane(-1), target_brackets(-1), unknown_contact_icon(-1), sweep_duration(6.0), sweep_percent(0.0), scale(1.20f), sub_y_clip(false)
+xy_plane(-1), xz_yz_plane(-1), sweep_plane(-1), target_brackets(-1), unknown_contact_icon(-1), sweep_duration(6 * MILLISECONDS_PER_SECOND), sweep_angle(0.0f), scale(1.20f), sub_y_clip(false)
 {
 	vm_vec_copy_scale(&sweep_normal_x, &vmd_zero_vector, 1.0f);
 	vm_vec_copy_scale(&sweep_normal_y, &vmd_zero_vector, 1.0f);
@@ -117,29 +117,33 @@ void HudGaugeRadarDradis::plotBlip(blip* b, vec3d *pos, float *alpha)
 	*pos = b->position;
 	vm_vec_normalize(pos);
 
-	if (ship_is_tagged(b->objp)) {
+	auto objp = &Objects[b->objnum];
+
+	if (ship_is_tagged(objp)) {
 		*alpha = 1.0f;
 		return;
 	}
 
 	float fade_multi = 1.5f;
 	
-	if (b->objp->type == OBJ_SHIP) {
-		if (Ships[b->objp->instance].flags[Ship::Ship_Flags::Stealth]) {
+	if (objp->type == OBJ_SHIP) {
+		if (Ships[objp->instance].flags[Ship::Ship_Flags::Stealth]) {
 			fade_multi *= 2.0f;
 		}
 	}
+
+	auto& last_update = Blip_last_update[b->objnum];
 	
-	b->time_since_update += flFrametime;
 	// If the blip has been pinged by the local x-axis sweep, update
 	if (std::abs(vm_vec_dot(&sweep_normal_x, pos)) < 0.01f) {
-		b->time_since_update = 0.0f;
+		last_update = _timestamp();
 	}
 
-	*alpha = ((sweep_duration - b->time_since_update)/sweep_duration)*fade_multi/2.0f;
-	
-	if (*alpha < 0.0f) {
+	if (last_update.isNever()) {
 		*alpha = 0.0f;
+	} else {
+		*alpha = ((sweep_duration - timestamp_since(last_update)) / i2fl(sweep_duration)) * fade_multi / 2.0f;
+		CLAMP(*alpha, 0.0f, 1.0f);
 	}
 }
 
@@ -234,8 +238,8 @@ void HudGaugeRadarDradis::blipDrawFlicker(blip *b, vec3d *pos, float alpha)
 	
 
 	if (timestamp_elapsed(Radar_flicker_timer[flicker_index])) {
-		Radar_flicker_timer[flicker_index] = timestamp_rand(50,1000);
-		Radar_flicker_on[flicker_index] ^= 1;
+		Radar_flicker_timer[flicker_index] = _timestamp_rand(50,1000);
+		Radar_flicker_on[flicker_index] = !Radar_flicker_on[flicker_index];
 	}
 
 	if (!Radar_flicker_on[flicker_index])
@@ -379,26 +383,23 @@ void HudGaugeRadarDradis::drawSweeps()
 	if (sweep_plane == -1)
 		return;
 	
-	sweep_percent = (fmod(((float)game_get_overall_frametime() / (float)65536), sweep_duration) /  sweep_duration) * PI * 2; // convert to radians from 0 <-> 1
-	float sweep_perc_z = sweep_percent * -0.5f;
+	float modulo = fmod(f2fl(game_get_overall_frametime()) * MILLISECONDS_PER_SECOND, static_cast<float>(sweep_duration));
+	float fraction = modulo / sweep_duration;
+	sweep_angle = fraction * PI2; // convert to radians from 0 <-> 1
+	float sweep_angle_z = sweep_angle * -0.5f;
 
 	vec3d sweep_a;
 	vec3d sweep_b;
 	vec3d sweep_c;
 	
-	vm_rot_point_around_line(&sweep_a, &vmd_y_vector, sweep_percent, &vmd_zero_vector, &vmd_z_vector); // Sweep line: XZ
-	vm_rot_point_around_line(&sweep_b, &vmd_y_vector, sweep_percent, &vmd_zero_vector, &vmd_x_vector); // Sweep line: YZ
-	vm_rot_point_around_line(&sweep_c, &vmd_x_vector, sweep_perc_z, &vmd_zero_vector, &vmd_y_vector); // Sweep line: XY
+	vm_rot_point_around_line(&sweep_a, &vmd_y_vector, sweep_angle, &vmd_zero_vector, &vmd_z_vector); // Sweep line: XZ
+	vm_rot_point_around_line(&sweep_b, &vmd_y_vector, sweep_angle, &vmd_zero_vector, &vmd_x_vector); // Sweep line: YZ
+	vm_rot_point_around_line(&sweep_c, &vmd_x_vector, sweep_angle_z, &vmd_zero_vector, &vmd_y_vector); // Sweep line: XY
 	
 	vm_vec_copy_scale(&sweep_normal_x, &sweep_a, 1.0f);
 	vm_vec_copy_scale(&sweep_normal_y, &sweep_b, 1.0f);
 	
 	g3_start_instance_matrix(&vmd_zero_vector, /*&Player_obj->orient*/&vmd_identity_matrix, true);
-//		gr_set_bitmap(sweep_plane, GR_ALPHABLEND_FILTER, GR_BITBLT_MODE_NORMAL, 1.0f);
-		
-// 		g3_draw_polygon(&vmd_zero_vector, &sweep_a, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT);
-// 		g3_draw_polygon(&vmd_zero_vector, &sweep_b, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT);
-// 		g3_draw_polygon(&vmd_zero_vector, &sweep_c, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT);
 
 		material mat_params;
 		material_set_unlit(&mat_params, sweep_plane, 1.0f, true, false);
@@ -406,46 +407,13 @@ void HudGaugeRadarDradis::drawSweeps()
 		g3_render_rect_oriented(&mat_params, &vmd_zero_vector, &sweep_b, scale, scale);
 		g3_render_rect_oriented(&mat_params, &vmd_zero_vector, &sweep_c, scale, scale);
 
-		float rotation = sweep_percent;
-
-		vm_rot_point_around_line(&sweep_a, &vmd_y_vector, rotation, &vmd_zero_vector, &vmd_z_vector); // Sweep line: XZ
-		vm_rot_point_around_line(&sweep_b, &vmd_y_vector, rotation, &vmd_zero_vector, &vmd_x_vector); // Sweep line: YZ
-		vm_rot_point_around_line(&sweep_c, &vmd_x_vector,sweep_perc_z, &vmd_zero_vector, &vmd_y_vector); // Sweep line: YZ
+		vm_rot_point_around_line(&sweep_a, &vmd_y_vector, sweep_angle, &vmd_zero_vector, &vmd_z_vector); // Sweep line: XZ
+		vm_rot_point_around_line(&sweep_b, &vmd_y_vector, sweep_angle, &vmd_zero_vector, &vmd_x_vector); // Sweep line: YZ
+		vm_rot_point_around_line(&sweep_c, &vmd_x_vector, sweep_angle_z, &vmd_zero_vector, &vmd_y_vector); // Sweep line: YZ
 		
-		//gr_set_bitmap(sweep_plane, GR_ALPHABLEND_FILTER, GR_BITBLT_MODE_NORMAL);
-
-// 		g3_draw_polygon(&vmd_zero_vector, &sweep_a, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT); // Sweep line: XZ
-// 		g3_draw_polygon(&vmd_zero_vector, &sweep_b, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT); // Sweep line: YZ
-// 		g3_draw_polygon(&vmd_zero_vector, &sweep_c, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT);
-
 		g3_render_rect_oriented(&mat_params, &vmd_zero_vector, &sweep_a, scale, scale); // Sweep line: XZ
 		g3_render_rect_oriented(&mat_params, &vmd_zero_vector, &sweep_b, scale, scale); // Sweep line: YZ
 		g3_render_rect_oriented(&mat_params, &vmd_zero_vector, &sweep_c, scale, scale);
-
-		/*int dist = 90;
-
-		for(int i = 1; i < dist; i++)
-		{
-			float rotation = sweep_percent - (i * RADIANS_PER_DEGREE);
-			float alpha	= (1.0f - (float)((float)i / (float)dist)) * 0.25f;
-			
-			//if (i < 2)
-				//alpha = 1.0f;
-
-			gr_set_bitmap(sweep_plane, GR_ALPHABLEND_FILTER, GR_BITBLT_MODE_NORMAL, alpha);
-			
-			vm_rot_point_around_line(&sweep_a, &vmd_y_vector, rotation, &vmd_zero_vector, &vmd_z_vector); // Sweep line: XZ
-			vm_rot_point_around_line(&sweep_b, &vmd_y_vector, rotation, &vmd_zero_vector, &vmd_x_vector); // Sweep line: YZ
-			
-			g3_draw_polygon(&vmd_zero_vector, &sweep_a, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT); // Sweep line: XZ
-			g3_draw_polygon(&vmd_zero_vector, &sweep_b, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT); // Sweep line: YZ
-			
-			if (i < (dist * 0.5f))
-			{
-				vm_rot_point_around_line(&sweep_c, &vmd_x_vector,sweep_perc_z + (i * RADIANS_PER_DEGREE), &vmd_zero_vector, &vmd_y_vector); // Sweep line: YZ
-				g3_draw_polygon(&vmd_zero_vector, &sweep_c, scale, scale, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT);
-			}
-		}*/
 		
 	g3_done_instance(true);
 }
@@ -484,8 +452,13 @@ void HudGaugeRadarDradis::drawBlipsSorted(int distort)
 }
 
 
-void HudGaugeRadarDradis::render(float  /*frametime*/)
+void HudGaugeRadarDradis::render(float  /*frametime*/, bool config)
 {
+	// Not yet supported in config
+	if (config) {
+		return;
+	}
+	
 	float sensors_str;
 	int   ok_to_blit_radar;
 	
@@ -497,30 +470,30 @@ void HudGaugeRadarDradis::render(float  /*frametime*/)
 		sensors_str = MIN_SENSOR_STR_TO_RADAR - 1;
 
 	// note that on lowest skill level, there is no radar effects due to sensors damage
-	if ((Game_skill_level == 0) || (sensors_str > SENSOR_STR_RADAR_NO_EFFECTS))
+	if ( ((Game_skill_level == 0) || (sensors_str > SENSOR_STR_RADAR_NO_EFFECTS)) && !Sensor_static_forced )
 	{
-		Radar_static_playing = 0;
-		Radar_static_next = 0;
-		Radar_death_timer = 0;
-		Radar_avail_prev_frame = 1;
+		Radar_static_playing = false;
+		Radar_static_next = TIMESTAMP::never();
+		Radar_death_timer = TIMESTAMP::never();
+		Radar_avail_prev_frame = true;
 	}
 	else
 		if (sensors_str < MIN_SENSOR_STR_TO_RADAR)
 		{
 			if (Radar_avail_prev_frame)
 			{
-				Radar_death_timer = timestamp(2000);
-				Radar_static_next = 1;
+				Radar_death_timer = _timestamp(2000);
+				Radar_static_next = TIMESTAMP::immediate();
 			}
 
-			Radar_avail_prev_frame = 0;
+			Radar_avail_prev_frame = false;
 		}
 		else
 		{
-			Radar_death_timer = 0;
+			Radar_death_timer = TIMESTAMP::never();
 
-			if (Radar_static_next == 0)
-				Radar_static_next = 1;
+			if (Radar_static_next.isNever())
+				Radar_static_next = TIMESTAMP::immediate();
 		}
 
 	if (timestamp_elapsed(Radar_death_timer))
@@ -537,13 +510,13 @@ void HudGaugeRadarDradis::render(float  /*frametime*/)
 
 	if (timestamp_elapsed(Radar_static_next))
 	{
-		Radar_static_playing ^= 1;
-		Radar_static_next = timestamp_rand(50, 750);
+		Radar_static_playing = !Radar_static_playing;
+		Radar_static_next = _timestamp_rand(50, 750);
 	}
 
 	// if the emp effect is active, always draw the radar wackily
 	if (emp_active_local())
-		Radar_static_playing = 1;
+		Radar_static_playing = true;
 
 	if (ok_to_blit_radar)
 	{
@@ -620,7 +593,7 @@ void HudGaugeRadarDradis::doBeeps()
 
 	if (!arrival_beep_snd.isValid() &&
 		!departure_beep_snd.isValid() &&
-		!m_stealth_arrival_snd.isValid() &&
+		!stealth_arrival_snd.isValid() &&
 		!stealth_departure_snd.isValid())
 	{
 		return;
@@ -672,13 +645,13 @@ void HudGaugeRadarDradis::doBeeps()
 		{
 			snd_play(gamesnd_get_game_sound(arrival_beep_snd));
 
-			arrival_beep_next_check = timestamp(arrival_beep_delay);
+			arrival_beep_next_check = _timestamp(arrival_beep_delay);
 		}
-		else if (m_stealth_arrival_snd.isValid() && stealth_arrival_happened)
+		else if (stealth_arrival_snd.isValid() && stealth_arrival_happened)
 		{
-			snd_play(gamesnd_get_game_sound(m_stealth_arrival_snd));
+			snd_play(gamesnd_get_game_sound(stealth_arrival_snd));
 
-			arrival_beep_next_check = timestamp(arrival_beep_delay);
+			arrival_beep_next_check = _timestamp(arrival_beep_delay);
 		}
 
 	}
@@ -689,18 +662,18 @@ void HudGaugeRadarDradis::doBeeps()
 		{
 			snd_play(gamesnd_get_game_sound(departure_beep_snd));
 
-			departure_beep_next_check = timestamp(departure_beep_delay);
+			departure_beep_next_check = _timestamp(departure_beep_delay);
 		}
 		else if (stealth_departure_snd.isValid() && stealth_departure_happened)
 		{
 			snd_play(gamesnd_get_game_sound(stealth_departure_snd));
 
-			departure_beep_next_check = timestamp(departure_beep_delay);
+			departure_beep_next_check = _timestamp(departure_beep_delay);
 		}
 	}
 }
 
-void HudGaugeRadarDradis::initSound(gamesnd_id loop_snd, float _loop_snd_volume, gamesnd_id arrival_snd, gamesnd_id departure_snd, gamesnd_id stealth_arrival_snd, gamesnd_id stealth_departue_snd, float arrival_delay, float departure_delay)
+void HudGaugeRadarDradis::initSound(gamesnd_id loop_snd, float _loop_snd_volume, gamesnd_id arrival_snd, gamesnd_id departure_snd, gamesnd_id _stealth_arrival_snd, gamesnd_id _stealth_departure_snd, float arrival_delay, float departure_delay)
 {
 	this->m_loop_snd = loop_snd;
 	this->loop_sound_handle = sound_handle::invalid();
@@ -709,8 +682,8 @@ void HudGaugeRadarDradis::initSound(gamesnd_id loop_snd, float _loop_snd_volume,
 	this->arrival_beep_snd = arrival_snd;
 	this->departure_beep_snd = departure_snd;
 
-	this->m_stealth_arrival_snd = stealth_arrival_snd;
-	this->stealth_departure_snd = stealth_departue_snd;
+	this->stealth_arrival_snd = _stealth_arrival_snd;
+	this->stealth_departure_snd = _stealth_departure_snd;
 
 	this->arrival_beep_delay = fl2i(arrival_delay * 1000.0f);
 	this->departure_beep_delay = fl2i(departure_delay * 1000.0f);
@@ -729,8 +702,8 @@ void HudGaugeRadarDradis::initialize()
 {
 	HudGaugeRadar::initialize();
 
-	this->arrival_beep_next_check = timestamp();
-	this->departure_beep_next_check = timestamp();
+	this->arrival_beep_next_check = _timestamp();
+	this->departure_beep_next_check = _timestamp();
 }
 
 bool HudGaugeRadarDradis::shouldDoSounds()

@@ -10,7 +10,7 @@ debrief_stage* debrief_stage_h::getStage() const
 	return stage;
 };
 
-bool debrief_stage_h::IsValid() const
+bool debrief_stage_h::isValid() const
 {
 	return stage != nullptr;
 }
@@ -86,7 +86,7 @@ ADE_FUNC(checkVisible,
 }
 
 //**********HANDLE: debriefing
-ADE_OBJ(l_Debrief, int, "debriefing", "Debriefing handle");
+ADE_OBJ_NO_MULTI(l_Debrief, int, "debriefing", "Debriefing handle");
 
 ADE_INDEXER(l_Debrief,
 	"number index",

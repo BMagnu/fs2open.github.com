@@ -73,6 +73,9 @@ namespace io
 		
 		Cursor& Cursor::operator=(Cursor&& other) noexcept
 		{
+			if (this == &other)
+				return *this;
+
 			std::swap(this->mAnimationFrames, other.mAnimationFrames);
 			
 			this->mBitmapHandle = other.mBitmapHandle;
@@ -140,6 +143,11 @@ namespace io
 					mLastFrame = frameIndex;
 				}
 			}
+		}
+
+		int Cursor::getBitmapHandle()
+		{
+			return mBitmapHandle;
 		}
 
 		CursorManager* CursorManager::mSingleton = nullptr;

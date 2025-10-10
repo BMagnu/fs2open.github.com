@@ -6,6 +6,7 @@
 #include <render/3d.h>
 #include <ship/ship.h>
 #include <io/key.h>
+#include <io/spacemouse.h>
 
 #include "object.h"
 
@@ -177,7 +178,7 @@ void EditorViewport::select_objects(const Marking_box& box) {
 	ptr = GET_FIRST(&obj_used_list);
 	while (ptr != END_OF_LIST(&obj_used_list)) {
 		valid = 1;
-		if (ptr->flags[Object::Object_Flags::Hidden]) {
+		if (ptr->flags[Object::Object_Flags::Hidden, Object::Object_Flags::Locked_from_editing]) {
 			valid = 0;
 		}
 
@@ -318,8 +319,21 @@ void EditorViewport::process_system_keys(int key) {
 }
 
 void EditorViewport::process_controls(vec3d* pos, matrix* orient, float frametime, int key, int mode) {
+	static std::unique_ptr<io::spacemouse::SpaceMouse> spacemouse = io::spacemouse::SpaceMouse::searchSpaceMice(0);
+
 	if (Flying_controls_mode) {
 		grid_read_camera_controls(&view_controls, frametime);
+
+		if (spacemouse != nullptr) {
+			auto spacemouse_movement = spacemouse->getMovement();
+			spacemouse_movement.handleNonlinearities(Fred_spacemouse_nonlinearity);
+			view_controls.pitch += spacemouse_movement.rotation.p;
+			view_controls.vertical += spacemouse_movement.translation.xyz.z;
+			view_controls.heading += spacemouse_movement.rotation.h;
+			view_controls.sideways += spacemouse_movement.translation.xyz.x;
+			view_controls.bank += spacemouse_movement.rotation.b;
+			view_controls.forward += spacemouse_movement.translation.xyz.y;
+		}
 
 		if (key_get_shift_status()) {
 			memset(&view_controls, 0, sizeof(control_info));
@@ -336,7 +350,7 @@ void EditorViewport::process_controls(vec3d* pos, matrix* orient, float frametim
 		if (mode) {
 			physics_sim_editor(pos, orient, &view_physics, frametime);
 		} else {
-			physics_sim(pos, orient, &view_physics, frametime);
+			physics_sim(pos, orient, &view_physics, &vmd_zero_vector, frametime);
 		}
 	} else {
 		vec3d movement_vec, rel_movement_vec;
@@ -344,6 +358,13 @@ void EditorViewport::process_controls(vec3d* pos, matrix* orient, float frametim
 		matrix newmat, rotmat;
 
 		process_movement_keys(key, &movement_vec, &rotangs);
+		if (spacemouse != nullptr) {
+			auto spacemouse_movement = spacemouse->getMovement();
+			spacemouse_movement.handleNonlinearities(Fred_spacemouse_nonlinearity);
+			movement_vec += spacemouse_movement.translation;
+			rotangs += spacemouse_movement.rotation;
+		}
+
 		vm_vec_rotate(&rel_movement_vec, &movement_vec, &The_grid->gmatrix);
 		vm_vec_add2(pos, &rel_movement_vec);
 
@@ -400,6 +421,9 @@ void EditorViewport::game_do_frame(const int cur_object_index) {
 		return;
 	}
 
+	// sync all timestamps across the entire frame
+	timer_start_frame();
+
 	viewer_position = my_orient.vec.fvec;
 	vm_vec_scale(&viewer_position, my_pos.xyz.z);
 
@@ -426,14 +450,16 @@ void EditorViewport::game_do_frame(const int cur_object_index) {
 		break;
 
 	case 2: // Control viewpoint object
-		process_controls(&Objects[view_obj].pos, &Objects[view_obj].orient, f2fl(Frametime), key);
-		object_moved(&Objects[view_obj]);
-		control_pos = Objects[view_obj].pos;
-		control_orient = Objects[view_obj].orient;
+		if (!Objects[view_obj].flags[Object::Object_Flags::Locked_from_editing]) {
+			process_controls(&Objects[view_obj].pos, &Objects[view_obj].orient, f2fl(Frametime), key);
+			object_moved(&Objects[view_obj]);
+			control_pos = Objects[view_obj].pos;
+			control_orient = Objects[view_obj].orient;
+		}
 		break;
 
 	case 1: //	Control the current object's location and orientation
-		if (query_valid_object(cur_object_index)) {
+		if (query_valid_object(cur_object_index) && !Objects[cur_object_index].flags[Object::Object_Flags::Locked_from_editing]) {
 			vec3d delta_pos, leader_old_pos;
 			matrix leader_orient, leader_transpose, tmp;
 			object* leader;
@@ -571,11 +597,13 @@ void EditorViewport::level_controlled() {
 		break;
 
 	case 2: // Control viewpoint object
-		level_object(&Objects[view_obj].orient);
-		object_moved(&Objects[view_obj]);
-		///! \todo Notify.
-		editor->missionChanged();
-		//FREDDoc_ptr->autosave("level object");
+		if (!Objects[view_obj].flags[Object::Object_Flags::Locked_from_editing]) {
+			level_object(&Objects[view_obj].orient);
+			object_moved(&Objects[view_obj]);
+			///! \todo Notify.
+			editor->missionChanged();
+			//FREDDoc_ptr->autosave("level object");
+		}
 		break;
 
 	case 1: //	Control the current object's location and orientation
@@ -631,11 +659,13 @@ void EditorViewport::verticalize_controlled() {
 		break;
 
 	case 2: // Control viewpoint object
-		verticalize_object(&Objects[view_obj].orient);
-		object_moved(&Objects[view_obj]);
-		///! \todo notify.
-		//FREDDoc_ptr->autosave("align object");
-		editor->missionChanged();
+		if (!Objects[view_obj].flags[Object::Object_Flags::Locked_from_editing]) {
+			verticalize_object(&Objects[view_obj].orient);
+			object_moved(&Objects[view_obj]);
+			///! \todo notify.
+			//FREDDoc_ptr->autosave("align object");
+			editor->missionChanged();
+		}
 		break;
 
 	case 1: //	Control the current object's location and orientation
@@ -694,7 +724,6 @@ void EditorViewport::level_object(matrix* orient) {
 
 int EditorViewport::object_check_collision(object* objp, vec3d* p0, vec3d* p1, vec3d* hitpos) {
 	mc_info mc;
-	mc_info_init(&mc);
 
 	if ((objp->type == OBJ_NONE) || (objp->type == OBJ_POINT)) {
 		return 0;
@@ -718,7 +747,7 @@ int EditorViewport::object_check_collision(object* objp, vec3d* p0, vec3d* p1, v
 		}
 	}
 
-	if (objp->flags[Object::Object_Flags::Hidden]) {
+	if (objp->flags[Object::Object_Flags::Hidden, Object::Object_Flags::Locked_from_editing]) {
 		return 0;
 	}
 
@@ -764,7 +793,7 @@ int EditorViewport::select_object(int cx, int cy) {
         best = Briefing_dialog->check_mouse_hit(cx, cy);
         if (best >= 0)
         {
-            if (Selection_lock && !(Objects[best].flags & OF_MARKED))
+            if ((Selection_lock && !Objects[best].flags[Object::Object_Flags::Marked])) || Objects[best].flags[Object::Object_Flags::Locked_from_editing])
             {
                 return -1;
             }
@@ -802,7 +831,7 @@ int EditorViewport::select_object(int cx, int cy) {
 	}
 
 	if (best >= 0) {
-		if (Selection_lock && !(Objects[best].flags[Object::Object_Flags::Marked])) {
+		if ((Selection_lock && !Objects[best].flags[Object::Object_Flags::Marked]) || Objects[best].flags[Object::Object_Flags::Locked_from_editing]) {
 			return -1;
 		}
 		return best;
@@ -823,7 +852,7 @@ int EditorViewport::select_object(int cx, int cy) {
 		}
 	}
 
-	if (Selection_lock && !(Objects[best].flags[Object::Object_Flags::Marked])) {
+	if ((Selection_lock && !Objects[best].flags[Object::Object_Flags::Marked]) || Objects[best].flags[Object::Object_Flags::Locked_from_editing]) {
 		return -1;
 	}
 

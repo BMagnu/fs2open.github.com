@@ -52,6 +52,8 @@ private:
 	int mission_type;  // indicates if single player(1) or multiplayer(0)
 	CView*	m_pSEView;
 	CCriticalSection CS_update;
+	int combo_index_to_ship_class(int combo_index);
+	int ship_class_to_combo_index(int ship_class);
 
 // Construction
 public:
@@ -102,8 +104,9 @@ public:
 	sexp_tree	m_arrival_tree;
 	sexp_tree	m_departure_tree;
 	CString	m_ship_name;
+	CString m_ship_display_name;
 	CString	m_cargo1;
-	int		m_ship_class;
+	int		m_ship_class_combo_index;
 	int		m_team;
 	int		m_arrival_location;
 	int		m_departure_location;
@@ -146,6 +149,7 @@ protected:
 	afx_msg void OnEndlabeleditArrivalTree(NMHDR* pNMHDR, LRESULT* pResult);
 	afx_msg void OnEndlabeleditDepartureTree(NMHDR* pNMHDR, LRESULT* pResult);
 	afx_msg void OnGoals();
+	afx_msg void OnChangeShipName();
 	afx_msg void OnSelchangeShipClass();
 	afx_msg void OnInitialStatus();
 	afx_msg void OnWeapons();

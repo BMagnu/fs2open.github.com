@@ -10,6 +10,8 @@
 
 #include <string>
 
+#include <variant>
+
 #define CAM_STATIONARY_FOV			(1<<0)
 #define CAM_STATIONARY_ORI			(1<<1)
 #define CAM_STATIONARY_POS			(1<<2)
@@ -17,6 +19,19 @@
 
 #define	EXTERN_CAM_BBOX_CONSTANT_PADDING			5.0f
 #define	EXTERN_CAM_BBOX_MULTIPLIER_PADDING			1.5f
+
+#define DEFAULT_FOV 0.75f;
+
+struct asymmetric_fov {
+	float left, right, up, down;
+	friend asymmetric_fov operator* (const asymmetric_fov&, const float&);
+	friend asymmetric_fov operator+ (const asymmetric_fov&, const float&);
+	friend asymmetric_fov operator- (const asymmetric_fov&, const float&);
+};
+using fov_t = std::variant<float, asymmetric_fov>;
+fov_t operator* (const fov_t&, const float&);
+fov_t operator+ (const fov_t&, const float&);
+fov_t operator- (const fov_t&, const float&);
 
 class camera
 {
@@ -41,7 +56,7 @@ protected:
 	avd_movement ori[9];
 
 	//Cache stuff
-	float c_fov;
+	fov_t c_fov;
 	vec3d c_pos;
 	matrix c_ori;
 public:
@@ -59,7 +74,7 @@ public:
 	void set_custom_position_function(void (*n_func_custom_position)(camera *cam, vec3d *pos));
 	void set_custom_orientation_function(void (*n_func_custom_orientation)(camera *cam, matrix *ori));
 
-	void set_fov(float in_fov, float in_fov_time = 0.0f, float in_fov_acceleration_time = 0.0f, float in_deceleration_time = 0.0f);
+	void set_fov(fov_t in_fov, float in_fov_time = 0.0f, float in_fov_acceleration_time = 0.0f, float in_deceleration_time = 0.0f);
 
 	void set_position(vec3d *in_position = NULL, float in_translation_time = 0.0f, float in_translation_acceleration_time = 0.0f, float in_translation_deceleration_time = 0.0f, float in_end_velocity = 0.0f);
 
@@ -74,7 +89,7 @@ public:
 	int get_object_host_submodel();
 	object *get_object_target();
 	int get_object_target_submodel();
-	float get_fov();
+	fov_t get_fov();
 	void get_info(vec3d *position, matrix *orientation, bool apply_camera_orientation = true);
 
 	//Is
@@ -155,8 +170,8 @@ public:
 
 //Some global stuff
 extern SCP_vector<subtitle> Subtitles;
-extern float VIEWER_ZOOM_DEFAULT;
-extern float COCKPIT_ZOOM_DEFAULT;
+extern fov_t VIEWER_ZOOM_DEFAULT;
+extern fov_t COCKPIT_ZOOM_DEFAULT;
 extern float Sexp_fov;
 
 //Helpful functions
@@ -164,7 +179,6 @@ void cam_init();
 void cam_close();
 void cam_do_frame(float frametime);
 camid cam_create(const char *n_name=NULL, vec3d *n_pos=NULL, matrix *n_ori=NULL, object *n_object=NULL, int n_submodel_parent=-1);
-camid cam_create(const char *n_name, vec3d *n_pos, vec3d *n_norm, object *n_object=NULL, int n_submodel_parent=-1);
 void cam_delete(camid cid);
 bool cam_set_camera(camid cid);
 void cam_reset_camera();

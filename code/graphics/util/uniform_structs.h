@@ -13,7 +13,8 @@ namespace graphics {
  * @file
  *
  * This file contains definitions for GPU uniform buffer structs. These structs must respect the std140 layout rules.
- * Read the OpenGL specification for the exact layout and padding rules.
+ * The complete rules for this can be found here: https://www.khronos.org/opengl/wiki/Interface_Block_(GLSL)#Explicit_variable_layout,
+ * but the TL;DR here is that everything in here must be 16-byte aligned.
  */
 
 struct deferred_global_data {
@@ -29,6 +30,7 @@ struct deferred_global_data {
 
 	float invScreenWidth;
 	float invScreenHeight;
+	float nearPlane;
 
 	float pad;
 };
@@ -79,7 +81,6 @@ struct model_uniform_data {
 	matrix4 textureMatrix;
 	matrix4 shadow_mv_matrix;
 	matrix4 shadow_proj_matrix[4];
-	matrix4 envMatrix;
 
 	vec4 color;
 
@@ -104,21 +105,12 @@ struct model_uniform_data {
 	int blend_alpha;
 
 	vec3d emissionFactor;
-	int overrideDiffuse;
-
-	vec3d diffuseClr;
-	int overrideGlow;
-
-	vec3d glowClr;
-	int overrideSpec;
-
-	vec3d specClr;
 	int alphaGloss;
 
 	int gammaSpec;
 	int envGloss;
-	int alpha_spec;
 	int effect_num;
+	int sBasemapIndex;  // moved up here to track alignment
 
 	vec4 fogColor;
 
@@ -138,17 +130,19 @@ struct model_uniform_data {
 	float middist;
 	float fardist;
 
-	vec2d normalAlphaMinMax;
-	int sBasemapIndex;
 	int sGlowmapIndex;
-
 	int sSpecmapIndex;
 	int sNormalmapIndex;
 	int sAmbientmapIndex;
-	int sMiscmapIndex;
 
+	int sMiscmapIndex;
 	float alphaMult;
+	int flags;
+	float pad;
 };
+
+const size_t model_uniform_data_size = sizeof(model_uniform_data);
+const float mud_align = model_uniform_data_size / 16.0f;
 
 enum class NanoVGShaderType: int32_t {
 	FillGradient = 0, FillImage = 1, Simple = 2, Image = 3
@@ -186,30 +180,18 @@ struct decal_globals {
 	matrix4 invViewMatrix;
 	matrix4 invProjMatrix;
 
-	vec3d ambientLight;
-	float pad0;
-
 	vec2d viewportSize;
 	float pad1[2];
 };
 
 struct decal_info {
-	matrix4 model_matrix;
-	matrix4 inv_model_matrix;
-
-	vec3d decal_direction;
-	float normal_angle_cutoff;
-
 	int diffuse_index;
 	int glow_index;
 	int normal_index;
-	float angle_fade_start;
-
-	float alpha_scale;
 	int diffuse_blend_mode;
-	int glow_blend_mode;
 
-	float pad;
+	int glow_blend_mode;
+	float pad[3];
 };
 
 struct matrix_uniforms {
@@ -310,6 +292,52 @@ struct fog_data {
 	float pad[1];
 };
 
+struct volumetric_fog_data {
+	matrix4 p_inv;
+	matrix4 v_inv;
+	
+	vec3d cameraPos;
+	float zNear;
+	
+	vec3d globalLightDirection;
+	float zFar;
+	
+	vec3d globalLightDiffuse;
+	float stepsize;
+	
+	vec3d nebPos;
+	float opacitydistance;
+	
+	vec3d nebSize;
+	float alphalimit;
+
+	float nebColor[3];
+	float udfScale;
+	
+	float emissiveSpreadFactor;
+	float emissiveIntensity;
+	float emissiveFalloff;
+	float henyeyGreensteinCoeff;
+	
+	float noiseColor[3];
+	int directionalLightSampleSteps;
+	
+	float directionalLightStepSize;
+	float noiseColorScale1;
+	float noiseColorScale2;
+	float noiseColorIntensity;
+	
+	float aspect;
+	float fov;
+	float pad[2];
+};
+
+struct msaa_data {
+	int samples;
+	float fov;
+	float pad[2];
+};
+
 struct blur_data {
 	float texSize;
 	int level;
@@ -366,6 +394,12 @@ struct post_data {
 
 	vec3d tint;
 	float dither;
+
+	vec3d custom_effect_vec3_a;
+	float custom_effect_float_a;
+
+	vec3d custom_effect_vec3_b;
+	float custom_effect_float_b;
 };
 
 struct irrmap_data {

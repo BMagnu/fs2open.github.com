@@ -20,6 +20,7 @@
 #include "localization/localize.h"
 #include "mission/missionparse.h"
 #include "parse/encrypt.h"
+#include "parse/md5_hash.h"
 #include "parse/parselo.h"
 #include "parse/sexp.h"
 #include "ship/ship.h"
@@ -28,6 +29,7 @@
 
 #include "utils/encoding.h"
 #include "utils/unicode.h"
+#include "utils/string_utils.h"
 
 #include <utf8.h>
 
@@ -59,6 +61,11 @@ SCP_vector<Bookmark> Bookmarks;	// Stack of all our previously paused parsing
 void allocate_parse_text(size_t size);
 static size_t Parse_text_size = 0;
 
+static const SCP_unordered_map<SCP_string, SCP_string> retail_hashes = {
+	{"strings.tbl", "84ab6e5392d7c54752a61161aac9f9fd"},
+	{"weapons.tbl", "ca2c7f305b1f36988c2bb8c371ab2027"}
+};
+
 
 //	Return true if this character is white space, else false.
 int is_white_space(char ch)
@@ -80,7 +87,7 @@ bool is_gray_space(unicode::codepoint_t cp) {
 	return cp == UNICODE_CHAR(' ') || cp == UNICODE_CHAR('\t');
 }
 
-int is_parenthesis(char ch)
+bool is_parenthesis(char ch)
 {
 	return ((ch == '(') || (ch == ')'));
 }
@@ -245,11 +252,12 @@ int get_line_num()
 	bool	inquote = false;
 	int		incomment = false;
 	int		multiline = false;
-	char	*stoploc;
-	char	*p;
+	char	*p = Parse_text;
+	char	*stoploc = Mp;
 
-	p = Parse_text;
-	stoploc = Mp;
+	// if there is no parse text, then we have some ad-hoc text such as provided in an evaluateSEXP call or in the debug console
+	if (Parse_text == nullptr)
+		return count;
 
 	while (p < stoploc)
 	{
@@ -277,7 +285,7 @@ int get_line_num()
 			incomment = false;
 		}
 
-		if (*p++ == EOLN) {
+		if (*p++ == EOLN) {	// in the process of parsing, all line endings are normalized to single-character EOLN
 			if ( !multiline && incomment )
 				incomment = false;
 			count++;
@@ -289,21 +297,24 @@ int get_line_num()
 
 //	Call this function to display an error message.
 //	error_level == 0 means this is just a warning.
-//	!0 means it's an error message.
+//	            == 1 means this is an error message.
+//	            == 2 means this is a release warning.
 //	Prints line number and other useful information.
-extern int Cmdline_noparseerrors;
 void error_display(int error_level, const char *format, ...)
 {
 	char type[8];
 	SCP_string error_text;
 	va_list args;
 
-	if (error_level == 0) {
+	if (error_level == 0 || error_level == 2) {
 		strcpy_s(type, "Warning");
 		Warning_count++;
-	} else {
+	} else if (error_level == 1) {
 		strcpy_s(type, "Error");
 		Error_count++;
+	} else {
+		Warning(LOCATION, "Invalid error level %d passed to error_display!", error_level);
+		error_level = 1;
 	}
 
 	va_start(args, format);
@@ -312,8 +323,10 @@ void error_display(int error_level, const char *format, ...)
 
 	nprintf((type, "%s(line %i): %s: %s\n", Current_filename, get_line_num(), type, error_text.c_str()));
 
-	if(error_level == 0 || Cmdline_noparseerrors)
+	if (error_level == 0 || Cmdline_noparseerrors)
 		Warning(LOCATION, "%s(line %i):\n%s: %s", Current_filename, get_line_num(), type, error_text.c_str());
+	else if (error_level == 2)
+		ReleaseWarning(LOCATION, "%s(line %i):\n%s: %s", Current_filename, get_line_num(), type, error_text.c_str());
 	else
 		Error(LOCATION, "%s(line %i):\n%s: %s", Current_filename, get_line_num(), type, error_text.c_str());
 }
@@ -455,6 +468,42 @@ int skip_to_start_of_string_either(const char *pstr1, const char *pstr2, const c
 	return 1;
 }
 
+int skip_to_start_of_string_one_of(const SCP_vector<SCP_string>& pstr, const char* end) {
+	size_t endlen;
+
+	ignore_white_space();
+	if (end)
+		endlen = strlen(end);
+	else
+		endlen = 0;
+
+	while (*Mp != '\0') {
+		bool foundStart = false;
+		for (const SCP_string& pstr_i : pstr) {
+			if (strnicmp(pstr_i.c_str(), Mp, pstr_i.size()) == 0) {
+				foundStart = true;
+				break;
+			}
+		}
+		if (foundStart)
+			break;
+
+		if (end && *Mp == '#')
+			return 0;
+
+		if (end && !strnicmp(end, Mp, endlen))
+			return 0;
+
+		advance_to_eoln(NULL);
+		ignore_white_space();
+	}
+
+	if (!Mp || *Mp == '\0')
+		return 0;
+
+	return 1;
+}
+
 // Find a required string.
 // If not found, display an error message, but try up to RS_MAX_TRIES times
 // to find the string.  (This is the groundwork for ignoring non-understood
@@ -483,15 +532,12 @@ int required_string(const char *pstr)
 	return 1;
 }
 
-int check_for_eof_raw()
+bool check_for_eof_raw()
 {
-	if (*Mp == '\0')
-		return 1;
-
-	return 0;
+	return (*Mp == '\0');
 }
 
-int check_for_eof()
+bool check_for_eof()
 {
 	ignore_white_space();
 
@@ -499,37 +545,64 @@ int check_for_eof()
 }
 
 /**
-Returns 1 if it finds a newline character precded by any amount of grayspace.
+Returns true if it finds a newline character precded by any amount of grayspace.
 */
-int check_for_eoln()
+bool check_for_eoln()
 {
 	ignore_gray_space();
 
-	if(*Mp == EOLN)
-		return 1;
-	else
-		return 0;
+	return (*Mp == EOLN);
 }
 
 // similar to optional_string, but just checks if next token is a match.
 // It doesn't advance Mp except to skip past white space.
-int check_for_string(const char *pstr)
+bool check_for_string(const char *pstr)
 {
 	ignore_white_space();
 
-	if (!strnicmp(pstr, Mp, strlen(pstr)))
-		return 1;
-
-	return 0;
+	return check_for_string_raw(pstr);
 }
 
 // like check for string, but doesn't skip past any whitespace
-int check_for_string_raw(const char *pstr)
+bool check_for_string_raw(const char *pstr)
 {
-	if (!strnicmp(pstr, Mp, strlen(pstr)))
-		return 1;
+	return (strnicmp(pstr, Mp, strlen(pstr)) == 0);
+}
 
-	return 0;
+int string_lookup(const char* str1, const SCP_vector<SCP_string>& strlist, const char* description, bool say_errors, bool print_list)
+{
+	return string_lookup(SCP_string(str1), strlist, description, say_errors, print_list);
+}
+
+int string_lookup(const SCP_string& str1, const SCP_vector<SCP_string>& strlist, const char* description, bool say_errors, bool print_list)
+{
+	for (size_t i = 0; i < strlist.size(); i++)
+		if (lcase_equal(str1, strlist[i]))
+			return static_cast<int>(i);
+
+	if (say_errors)
+	{
+		const char* suffix;
+		SCP_string list;
+
+		if (print_list)
+		{
+			list = ":\n";
+			for (const auto &item: list)
+			{
+				list += "    ";
+				list += item;
+				list += "\n";
+			}
+			suffix = list.c_str();
+		}
+		else
+			suffix = ".\n";
+
+		error_display(0, "Unable to find \"%s\" in %s list%s", str1.c_str(), description ? description : "unnamed", suffix);
+	}
+
+	return -1;
 }
 
 // Find an optional string.
@@ -671,17 +744,19 @@ int optional_string_fred(const char *pstr, const char *end, const char *end2)
  * @details Advances the Mp until a string is found or exceeds RS_MAX_TRIES. Once a string is found, Mp is located at
  * the start of the found string.
  */
-int required_string_either(const char *str1, const char *str2)
+int required_string_either(const char *str1, const char *str2, bool advance)
 {
 	ignore_white_space();
 
 	for (int count = 0; count < RS_MAX_TRIES; ++count) {
 		if (strnicmp(str1, Mp, strlen(str1)) == 0) {
-			// Mp += strlen(str1);
+			if (advance)
+				Mp += strlen(str1);
 			diag_printf("Found required string [%s]\n", token_found = str1);
 			return 0;
 		} else if (strnicmp(str2, Mp, strlen(str2)) == 0) {
-			// Mp += strlen(str2);
+			if (advance)
+				Mp += strlen(str2);
 			diag_printf("Found required string [%s]\n", token_found = str2);
 			return 1;
 		}
@@ -885,7 +960,7 @@ char* alloc_text_until(const char* instr, const char* endstr)
 
 	if(foundstr == NULL)
 	{
-        Error(LOCATION, "Missing [%s] in file", endstr);
+        error_display(1, "Looking for [%s], but never found it.\n", endstr);
         throw parse::ParseException("End string not found");
 	}
 	else
@@ -919,7 +994,7 @@ void copy_text_until(char *outstr, const char *instr, const char *endstr, int ma
 	auto foundstr = stristr(instr, endstr);
 
 	if (foundstr == NULL) {
-        nprintf(("Error", "Error.  Looking for [%s], but never found it.\n", endstr));
+        error_display(1, "Looking for [%s], but never found it.\n", endstr);
         throw parse::ParseException("End string not found");
 	}
 
@@ -928,9 +1003,8 @@ void copy_text_until(char *outstr, const char *instr, const char *endstr, int ma
 		outstr[foundstr - instr] = 0;
 
 	} else {
-		nprintf(("Error", "Error.  Too much text (" SIZE_T_ARG " chars, %i allowed) before %s\n",
-			foundstr - instr + strlen(endstr), max_chars, endstr));
-
+		error_display(1, "Too much text (" SIZE_T_ARG " chars, %i allowed) before %s\n",
+			foundstr - instr + strlen(endstr), max_chars, endstr);
         throw parse::ParseException("Too much text found");
 	}
 
@@ -945,7 +1019,7 @@ void copy_text_until(SCP_string &outstr, const char *instr, const char *endstr)
 	auto foundstr = stristr(instr, endstr);
 
 	if (foundstr == NULL) {
-        nprintf(("Error", "Error.  Looking for [%s], but never found it.\n", endstr));
+        error_display(1, "Looking for [%s], but never found it.\n", endstr);
         throw parse::ParseException("End string not found");
 	}
 
@@ -1042,7 +1116,7 @@ char* alloc_block(const char* startstr, const char* endstr, int extra_chars)
 	//Check that we left the file
 	if(level > 0)
 	{
-        Error(LOCATION, "Unclosed pair of \"%s\" and \"%s\" on line %d in file", startstr, endstr, get_line_num());
+        error_display(1, "Unclosed pair of \"%s\" and \"%s\"", startstr, endstr);
         throw parse::ParseException("End string not found");
 	}
 	else
@@ -1078,17 +1152,22 @@ int get_string_or_variable (char *str)
 	ignore_white_space();
 
 	// Variable
-	if (*Mp == '@')
+	if (*Mp == SEXP_VARIABLE_CHAR)
 	{
+		auto saved_Mp = Mp;
 		Mp++;
 		stuff_string_white(str);
 		int sexp_variable_index = get_index_sexp_variable_name(str);
 
 		// We only want String variables
-		Assertion (sexp_variable_index != -1, "Didn't find variable name \"%s\"", str);
-		Assert (Sexp_variables[sexp_variable_index].type & SEXP_VARIABLE_STRING);
-
-		result = PARSING_FOUND_VARIABLE;
+		if (sexp_variable_index >= 0)
+			result = PARSING_FOUND_VARIABLE;
+		else
+		{
+			Mp = saved_Mp;
+			stuff_string_white(str);
+			error_display(1, "Expected \"%s\" to be a variable", str);
+		}
 	}
 	// Quoted string
 	else if (*Mp == '"')
@@ -1099,7 +1178,7 @@ int get_string_or_variable (char *str)
 	else
 	{
 		get_string(str);
-		Error(LOCATION, "Invalid entry \"%s\"  found in get_string_or_variable. Must be a quoted string or a string variable name.", str);
+		error_display(1, "Invalid entry \"%s\" found in get_string_or_variable. Must be a quoted string or a string variable name.", str);
 	}
 
 	return result;
@@ -1113,17 +1192,22 @@ int get_string_or_variable (SCP_string &str)
 	ignore_white_space();
 
 	// Variable
-	if (*Mp == '@')
+	if (*Mp == SEXP_VARIABLE_CHAR)
 	{
+		auto saved_Mp = Mp;
 		Mp++;
 		stuff_string_white(str);
 		int sexp_variable_index = get_index_sexp_variable_name(str);
 
 		// We only want String variables
-		Assertion (sexp_variable_index != -1, "Didn't find variable name \"%s\"", str.c_str());
-		Assert (Sexp_variables[sexp_variable_index].type & SEXP_VARIABLE_STRING);
-
-		result = PARSING_FOUND_VARIABLE;
+		if (sexp_variable_index >= 0)
+			result = PARSING_FOUND_VARIABLE;
+		else
+		{
+			Mp = saved_Mp;
+			stuff_string_white(str);
+			error_display(1, "Expected \"%s\" to be a variable", str.c_str());
+		}
 	}
 	// Quoted string
 	else if (*Mp == '"')
@@ -1134,7 +1218,7 @@ int get_string_or_variable (SCP_string &str)
 	else
 	{
 		get_string(str);
-		Error(LOCATION, "Invalid entry \"%s\"  found in get_string_or_variable. Must be a quoted string or a string variable name.", str.c_str());
+		error_display(1, "Invalid entry \"%s\" found in get_string_or_variable. Must be a quoted string or a string variable name.", str.c_str());
 	}
 
 	return result;
@@ -1194,6 +1278,13 @@ void stuff_string(char *outstr, int type, int len, const char *terminators)
 		case F_PATHNAME:
 		case F_MESSAGE:
 			ignore_gray_space();
+			copy_to_eoln(read_str, terminators, Mp, read_len);
+			drop_trailing_white_space(read_str);
+			advance_to_eoln(terminators);
+			break;
+
+		case F_TRIMMED:
+			ignore_white_space();
 			copy_to_eoln(read_str, terminators, Mp, read_len);
 			drop_trailing_white_space(read_str);
 			advance_to_eoln(terminators);
@@ -1281,6 +1372,13 @@ void stuff_string(SCP_string &outstr, int type, const char *terminators)
 			advance_to_eoln(terminators);
 			break;
 
+		case F_TRIMMED:
+			ignore_white_space();
+			copy_to_eoln(read_str, terminators, Mp);
+			drop_trailing_white_space(read_str);
+			advance_to_eoln(terminators);
+			break;
+
 		case F_NOTES:
 			ignore_white_space();
 			copy_text_until(read_str, Mp, "$End Notes:");
@@ -1330,7 +1428,7 @@ void stuff_string(SCP_string &outstr, int type, const char *terminators)
 	}
 	else
 	{
-		outstr = read_str;
+		outstr = std::move(read_str);
 	}
 
 	diag_printf("Stuffed string = [%.30s]\n", outstr.c_str());
@@ -1416,6 +1514,22 @@ void stuff_malloc_string(char **dest, int type, const char *terminators)
 
 		(*dest) = new_val;
 	}
+}
+
+// Like stuff_and_malloc_string but for std::unique_ptr<char[]>
+void stuff_string(std::unique_ptr<char[]> &outstr, int type, bool null_if_empty, const char *terminators)
+{
+	SCP_string tmp_result;
+	stuff_string(tmp_result, type, terminators);
+	outstr = util::unique_copy(tmp_result.c_str(), null_if_empty);
+}
+
+// Like stuff_and_malloc_string but for SCP_vm_unique_ptr<char>
+void stuff_string(SCP_vm_unique_ptr<char> &outstr, int type, bool null_if_empty, const char *terminators)
+{
+	SCP_string tmp_result;
+	stuff_string(tmp_result, type, terminators);
+	outstr = util::vm_unique_copy(tmp_result.c_str(), null_if_empty);
 }
 
 // After reading a multitext string, you can call this function to convert any newlines into
@@ -1743,20 +1857,23 @@ size_t maybe_convert_foreign_characters(const char *in, char *out, bool add_null
 }
 
 // Goober5000
-void maybe_convert_foreign_characters(SCP_string &text)
+SCP_string maybe_convert_foreign_characters(const SCP_string &text)
 {
-	if (!Fred_running) {
-		for (SCP_string::iterator ii = text.begin(); ii != text.end(); ++ii) {
-			text.reserve(get_converted_string_length(text));
+	if (Fred_running)
+		return text;
 
-			if (*ii == SHARP_S) {
-				text.replace(ii, ii + 1, "ss");
-				++ii;
-			} else if (!Lcl_pl) {
-				*ii = (char) maybe_convert_foreign_character(*ii);
-			}
-		}
+	SCP_string new_text;
+	for (auto ch: text)
+	{
+		if (ch == SHARP_S)
+			new_text += "ss";
+		else if (!Lcl_pl)
+			new_text += i2ch(maybe_convert_foreign_character(ch));
+		else
+			new_text += ch;
 	}
+
+	return new_text;
 }
 
 // Yarn - Returns what the length of the text will be after it's processed by
@@ -2018,32 +2135,86 @@ void strip_comments(char *line, bool &in_quote, bool &in_multiline_comment_a, bo
 	}
 }
 
-int parse_get_line(char *lineout, int max_line_len, const char *start, int max_size, const char *cur)
+// Reads one line of text from the input, returning the number of input chars read. Also sets the line ending type if found;
+// and if there is a mismatch, displays a warning.
+int parse_get_line(char *lineout, int max_line_len, const char *textin, int input_len, int line_num, LineEndingType &file_line_ending_type, bool &warned_for_this_file)
 {
-	char * t = lineout;
-	int i, num_chars_read=0;
-	char c;
+	auto found_line_ending = LineEndingType::UNKNOWN;
+	char prev_c = '\0';
+	int num_chars_written = 0;
 
-	for ( i = 0; i < max_line_len-1; i++ ) {
-		do {
-			if ( (cur - start) >= max_size ) {
-				*lineout = 0;
-				if ( lineout > t ) {
-					return num_chars_read;
-				} else {
-					return 0;
-				}
+	for (int num_chars_read = 1; num_chars_read <= input_len; ++num_chars_read)
+	{
+		char c = *textin++;
+
+		if (c == '\0' || c == EOF)	// hard stop
+		{
+			input_len = num_chars_read;
+			break;
+		}
+		else if (c == EOLN)
+		{
+			if (prev_c == CARRIAGE_RETURN)
+				found_line_ending = LineEndingType::CRLF;
+			else
+				found_line_ending = LineEndingType::LF;
+		}
+		else if (c == CARRIAGE_RETURN)
+		{
+			if (*textin != EOLN)
+				found_line_ending = LineEndingType::CR;
+		}
+		else
+		{
+			if (num_chars_written == max_line_len)
+			{
+				num_chars_read--;	// back out the character we just read, since we can't write it
+
+				// terminate the string and return
+				*lineout = '\0';
+				return num_chars_read;
 			}
-			c = *cur++;
-			num_chars_read++;
-		} while ( c == 13 );
 
-		*lineout++ = c;
-		if ( c=='\n' ) break;
+			*lineout++ = c;
+			num_chars_written++;
+		}
+
+		if (found_line_ending != LineEndingType::UNKNOWN)
+		{
+			if (file_line_ending_type == LineEndingType::UNKNOWN)
+				file_line_ending_type = found_line_ending;
+			else if (found_line_ending != file_line_ending_type && !warned_for_this_file)
+			{
+				// we can't use error_display() here because we're in the middle of reading the file
+				Warning(LOCATION, "In %s, an inconsistent line ending was detected on line %d.  Please check the file for line ending errors.", Current_filename_sub, line_num);
+				warned_for_this_file = true;
+			}
+
+			// ugh, if we're at the max length, we can't write the newline, so back out the newline we read
+			if (num_chars_written == max_line_len)
+			{
+				if (found_line_ending == LineEndingType::CRLF)
+					num_chars_read -= 2;
+				else
+					num_chars_read--;
+			}
+			else
+			{
+				*lineout++ = EOLN;	// normalize line endings to single-character EOLN
+				num_chars_written++;
+			}
+
+			// terminate the string and return
+			*lineout = '\0';
+			return num_chars_read;
+		}
+
+		prev_c = c;
 	}
 
-	*lineout++ = 0;
-	return  num_chars_read;
+	// we read the entire input without reaching a newline
+	*lineout = 0;
+	return input_len;
 }
 
 //	Read mission text, stripping comments.
@@ -2052,10 +2223,11 @@ int parse_get_line(char *lineout, int max_line_len, const char *start, int max_s
 // Goober5000 - added ability to read somewhere other than Parse_text
 void read_file_text(const char *filename, int mode, char *processed_text, char *raw_text)
 {
-	// copy the filename
+	Assertion(filename, "Filename must not be null!");
 	if (!filename)
-		throw parse::ParseException("Invalid filename");
+		throw parse::FileOpenException("Filename must not be null!");
 
+	// copy the filename
 	strcpy_s(Current_filename_sub, filename);
 
 	// if we are paused then processed_text and raw_text must not be NULL!!
@@ -2080,7 +2252,8 @@ void read_file_text(const char *filename, int mode, char *processed_text, char *
 void read_file_text_from_default(const default_file& file, char *processed_text, char *raw_text)
 {
 	// we have no filename, so copy a substitute
-	strcpy_s(Current_filename_sub, "internal default file");
+	strcpy_s(Current_filename_sub, "internal default file ");
+	strcat_s(Current_filename_sub, file.filename);
 
 	// if we are paused then processed_text and raw_text must not be NULL!!
 	if ( !Bookmarks.empty() && ((processed_text == NULL) || (raw_text == NULL)) ) {
@@ -2179,21 +2352,23 @@ void read_raw_file_text(const char *filename, int mode, char *raw_text)
 	CFILE	*mf;
 	int	file_is_encrypted;
 
-	Assert(filename);
+	Assertion(filename, "Filename must not be null!");
+	if (!filename)
+		throw parse::FileOpenException("Filename must not be null!");
 
-	mf = cfopen(filename, "rb", CFILE_NORMAL, mode);
+	mf = cfopen(filename, "rb", mode);
 	if (mf == NULL)
 	{
-        nprintf(("Error", "Wokka!  Error opening file (%s)!\n", filename));
-        throw parse::ParseException("Failed to open file");
+		nprintf(("Error", "Wokka!  Error opening file (%s)!\n", filename));
+		throw parse::FileOpenException("Failed to open file");
 	}
 
 	// read the entire file in
 	int file_len = cfilelength(mf);
 
 	if(!file_len) {
-        nprintf(("Error", "Oh noes!!  File is empty! (%s)!\n", filename));
-        throw parse::ParseException("Failed to open file");
+		nprintf(("Error", "Oh noes!!  File is empty! (%s)!\n", filename));
+		throw parse::ParseException("File is empty");
 	}
 
 	// For the possible Latin1 -> UTF-8 conversion we need to reallocate the raw_text at some point and we can only do
@@ -2241,12 +2416,35 @@ void read_raw_file_text(const char *filename, int mode, char *raw_text)
 
 			// We do the additional can_reallocate check here since we need control over raw_text to reencode the file
 			if (isLatin1 && can_reallocate) {
-				// Latin1 is the encoding of retail data and for legacy reasons we convert that to UTF-8.
-				// We still output a warning though...
-				Warning(LOCATION, "Found Latin-1 encoded file %s. This file will be automatically converted to UTF-8 but "
-						"it may cause parsing issues with retail FS2 files since those contained invalid data.\n"
-						"To silence this warning you must convert the files to UTF-8, e.g. by using a program like iconv.",
+
+				// Some retail files are known to be safe to convert to utf-8 so validate that here and only warn otherwise
+				bool downgrade_warning = false;
+
+				// Compare filename by lowercase string
+				SCP_string key = filename;
+				SCP_tolower(key);
+
+				// Check for a hash
+				auto it = retail_hashes.find(key);
+				if (it != retail_hashes.end()) {
+					const auto hash = md5_hash(raw_text, strlen(raw_text));
+					if (it->second == hash) {
+						downgrade_warning = true;
+					} else {
+						mprintf(("Found Latin-1 encoded retail file %s with non-matching hash '%s'\n", filename, hash.c_str()));
+					}
+				}
+
+				// Log if a retail file was converted. Warn otherwise.
+				if (downgrade_warning) {
+					mprintf(("Found Latin-1 encoded retail file %s. The file will be automatically converted to UTF-8.\n", filename));
+				} else {
+					Warning(LOCATION, "Found Latin-1 encoded file %s. This file will be automatically converted to UTF-8 but "
+						"it may cause parsing issues with some files if they contained invalid data.\n"
+						"To silence this warning you must convert the files to UTF-8, e.g. by using a program like "
+						"iconv.",
 						filename);
+				}
 
 				// SDL2 has iconv functionality so we use that to convert from Latin1 to UTF-8
 
@@ -2325,7 +2523,7 @@ void process_raw_file_text(char* processed_text, char* raw_text)
 	bool in_quote = false;
 	bool in_multiline_comment_a = false;
 	bool in_multiline_comment_b = false;
-	int raw_text_len = (int)strlen(raw_text);
+	int raw_text_len = static_cast<int>(strlen(raw_text));
 
 	if (processed_text == NULL)
 		processed_text = Parse_text;
@@ -2341,8 +2539,14 @@ void process_raw_file_text(char* processed_text, char* raw_text)
 
 	// strip comments from raw text, reading into file_text
 	int num_chars_read = 0;
-	while ((num_chars_read = parse_get_line(outbuf, PARSE_BUF_SIZE, raw_text, raw_text_len, mp_raw)) != 0) {
+	int remaining_raw_len = raw_text_len;
+	int parsed_line_num = 1;
+	auto file_line_ending_type = LineEndingType::UNKNOWN;
+	bool warned_for_this_file = false;
+	while ((num_chars_read = parse_get_line(outbuf, PARSE_BUF_SIZE-1, mp_raw, remaining_raw_len, parsed_line_num, file_line_ending_type, warned_for_this_file)) != 0) {
 		mp_raw += num_chars_read;
+		remaining_raw_len -= num_chars_read;
+		parsed_line_num++;
 
 		// stupid hacks to make retail data work with fixed parser, per Mantis #3072
 		if (!strcmp(outbuf, parse_exception_1402.c_str())) {
@@ -2412,6 +2616,101 @@ void debug_show_mission_text()
 		printf("%c", ch);
 }
 
+// Goober5000
+void read_file_bytes(const char *filename, int mode, char *raw_bytes)
+{
+	CFILE	*mf;
+
+	Assertion(filename, "Filename must not be null!");
+	if (!filename)
+		throw parse::FileOpenException("Filename must not be null!");
+
+	// copy the filename
+	strcpy_s(Current_filename_sub, filename);
+
+	// if we are paused then raw_bytes must not be NULL!!
+	if ( !Bookmarks.empty() && (raw_bytes == nullptr) ) {
+		Error(LOCATION, "ERROR: raw_bytes may not be NULL when parsing is paused!!\n");
+	}
+
+	mf = cfopen(filename, "rb", mode);
+	if (mf == nullptr)
+	{
+		nprintf(("Error", "Wokka!  Error opening file (%s)!\n", filename));
+		throw parse::FileOpenException("Failed to open file");
+	}
+
+	// read the entire file in
+	int file_len = cfilelength(mf);
+
+	if(!file_len) {
+		nprintf(("Error", "Oh noes!!  File is empty! (%s)!\n", filename));
+		throw parse::ParseException("File is empty");
+	}
+
+	if (raw_bytes == nullptr) {
+		// allocate, or reallocate, memory for Parse_text and Parse_text_raw based on size we need now
+		allocate_parse_text((size_t) (file_len + 1));
+		// NOTE: this always has to be done *after* the allocate_mission_text() call!!
+		raw_bytes = Parse_text_raw;
+	}
+
+	cfread(raw_bytes, file_len, 1, mf);
+
+	//WMC - Slap a NULL character on here for the odd error where we forgot a #End
+	// Goober5000 - for binary files, the equivalent is an EOF
+	raw_bytes[file_len] = EOF;
+
+	cfclose(mf);
+}
+
+// Returns whether the first character encountered in str that is not whitespace is the character to look for.
+// If so, and if after_ch is non-nullptr, it will be set to point to the first character after the character to look for.
+bool check_first_non_whitespace_char(const char *str, char char_to_look_for, char **after_ch)
+{
+	auto active_ch = str;
+	while (true)
+	{
+		if (*active_ch == '\0')
+			return false;
+		if (!is_white_space(*active_ch))
+			break;
+		active_ch++;
+	}
+
+	if (*active_ch == char_to_look_for)
+	{
+		if (after_ch != nullptr)
+			*after_ch = const_cast<char*>(active_ch + 1);	// this is ugly, but strtof and strtod do the same thing
+		return true;
+	}
+
+	return false;
+}
+
+// Do the same thing for grayspace
+bool check_first_non_grayspace_char(const char *str, char char_to_look_for, char **after_ch)
+{
+	auto active_ch = str;
+	while (true)
+	{
+		if (*active_ch == '\0')
+			return false;
+		if (!is_gray_space(*active_ch))
+			break;
+		active_ch++;
+	}
+
+	if (*active_ch == char_to_look_for)
+	{
+		if (after_ch != nullptr)
+			*after_ch = const_cast<char*>(active_ch + 1);	// this is ugly, but strtof and strtod do the same thing
+		return true;
+	}
+
+	return false;
+}
+
 bool unexpected_numeric_char(char ch)
 {
 	return (ch != '\0') && (ch != ',') && (ch != ')') && !is_white_space(ch);
@@ -2446,19 +2745,19 @@ int stuff_float(float *f, bool optional)
 	if (success)
 		Mp = str_end;
 
-	// if an unexpected character is part of the number, the number parsing should fail
+	// if an unexpected character is part of the number, warn about it
 	if (success && unexpected_numeric_char(*Mp))
 	{
-		Mp = str_start;
-		success = false;
-		error_display(1, "Expected float, found [%.32s].\n", next_tokens(true));
+		error_display(0, "Expected float, found [%.32s].\n", next_tokens(true));
+		// Rather than back up to str_start, do what retail did and continue
+		// merrily parsing along at the next character.  (Optional numbers
+		// will still back up to str_start - c.f. a few lines down.)
+		if (optional)
+			success = false;
 	}
 
-	if (*Mp == ',')
-	{
+	if (check_first_non_grayspace_char(Mp, ',', &Mp))
 		comma = true;
-		Mp++;
-	}
 
 	if (optional && !success)
 		Mp = str_start;
@@ -2517,19 +2816,19 @@ int stuff_int(int *i, bool optional)
 	if (success)
 		Mp += span;
 
-	// if an unexpected character is part of the number, the number parsing should fail
+	// if an unexpected character is part of the number, warn about it
 	if (success && unexpected_numeric_char(*Mp))
 	{
-		Mp = str_start;
-		success = false;
-		error_display(1, "Expected int, found [%.32s].\n", next_tokens(true));
+		error_display(0, "Expected int, found [%.32s].\n", next_tokens(true));
+		// Rather than back up to str_start, do what retail did and continue
+		// merrily parsing along at the next character.  (Optional numbers
+		// will still back up to str_start - c.f. a few lines down.)
+		if (optional)
+			success = false;
 	}
 
-	if (*Mp == ',')
-	{
+	if (check_first_non_grayspace_char(Mp, ',', &Mp))
 		comma = true;
-		Mp++;
-	}
 
 	if (optional && !success)
 		Mp = str_start;
@@ -2588,19 +2887,19 @@ int stuff_long(long *l, bool optional)
 	if (success)
 		Mp += span;
 
-	// if an unexpected character is part of the number, the number parsing should fail
+	// if an unexpected character is part of the number, warn about it
 	if (success && unexpected_numeric_char(*Mp))
 	{
-		Mp = str_start;
-		success = false;
-		error_display(1, "Expected long, found [%.32s].\n", next_tokens(true));
+		error_display(0, "Expected long, found [%.32s].\n", next_tokens(true));
+		// Rather than back up to str_start, do what retail did and continue
+		// merrily parsing along at the next character.  (Optional numbers
+		// will still back up to str_start - c.f. a few lines down.)
+		if (optional)
+			success = false;
 	}
 
-	if (*Mp == ',')
-	{
+	if (check_first_non_grayspace_char(Mp, ',', &Mp))
 		comma = true;
-		Mp++;
-	}
 
 	if (optional && !success)
 		Mp = str_start;
@@ -2632,13 +2931,14 @@ int stuff_int_optional(int *i)
 // index of the variable in the following slot.
 void stuff_int_or_variable(int *i, int *var_index, bool need_positive_value)
 {
-	if (*Mp == '@')
+	if (*Mp == SEXP_VARIABLE_CHAR)
 	{
-		Mp++;
 		int value = -1;
 		SCP_string str;
-		stuff_string(str, F_NAME);
 
+		auto saved_Mp = Mp;
+		Mp++;
+		stuff_string(str, F_NAME);
 		int index = get_index_sexp_variable_name(str);
 
 		if (index > -1 && index < MAX_SEXP_VARIABLES)
@@ -2654,7 +2954,8 @@ void stuff_int_or_variable(int *i, int *var_index, bool need_positive_value)
 		}
 		else
 		{
-
+			Mp = saved_Mp;
+			stuff_string(str, F_NAME);
 			error_display(1, "Invalid variable name \"%s\" found.", str.c_str());
 		}
 
@@ -2702,20 +3003,35 @@ void stuff_boolean_flag(int *i, int flag, bool a_to_eol)
 // Stuffs a boolean value pointed at by Mp.
 // YES/NO (supporting 1/0 now as well)
 // Now supports localization :) -WMC
-
 void stuff_boolean(bool *b, bool a_to_eol)
 {
-	char token[32];
-	stuff_string_white(token, sizeof(token)/sizeof(char));
+	char token[NAME_LENGTH];
+	stuff_string_white(token);
 	if(a_to_eol)
 		advance_to_eoln(NULL);
 
-	if( isdigit(token[0]))
+	if (!parse_boolean(token, b))
+	{
+		*b = false;
+		error_display(0, "Boolean '%s' type unknown; assuming 'no/false'", token);
+	}
+
+	diag_printf("Stuffed bool: %s\n", (b) ? NOX("true") : NOX("false"));
+}
+
+// Parses a token into a boolean value, if the token is recognized.  If so, the boolean parameter is assigned the value and the function returns true;
+// if not, the boolean parameter is not assigned and the function returns false.
+bool parse_boolean(const char *token, bool *b)
+{
+	Assertion(token != nullptr && b != nullptr, "Parameters must not be NULL!");
+
+	if(isdigit(token[0]))
 	{
 		if(token[0] != '0')
 			*b = true;
 		else
 			*b = false;
+		return true;
 	}
 	else
 	{
@@ -2728,6 +3044,7 @@ void stuff_boolean(bool *b, bool a_to_eol)
 			|| !stricmp(token, "HIja'") || !stricmp(token, "HISlaH"))	//Klingon
 		{
 			*b = true;
+			return true;
 		}
 		else if(!stricmp(token, "no")
 			|| !stricmp(token, "false")
@@ -2740,15 +3057,12 @@ void stuff_boolean(bool *b, bool a_to_eol)
 			|| !stricmp(token, "ghobe'"))	//Klingon
 		{
 			*b = false;
-		}
-		else
-		{
-			*b = false;
-			error_display(0, "Boolean '%s' type unknown; assuming 'no/false'",token);
+			return true;
 		}
 	}
 
-	diag_printf("Stuffed bool: %s\n", (b) ? NOX("true") : NOX("false"));
+	// token not recognized
+	return false;
 }
 
 //	Stuff an integer value (cast to a ubyte) pointed at by Mp.
@@ -2761,7 +3075,7 @@ void stuff_ubyte(ubyte *i)
 }
 
 template <typename T, typename F>
-void stuff_token_list(SCP_vector<T> &list, F stuff_one_token, const char *type_as_string)
+void stuff_token_list(SCP_vector<T> &list, F stuff_one_token, const char *type_as_string, bool skip_comma = true)
 {
 	list.clear();
 
@@ -2774,30 +3088,24 @@ void stuff_token_list(SCP_vector<T> &list, F stuff_one_token, const char *type_a
 	}
 	Mp++;
 
-	ignore_white_space();
-
-	while (*Mp != ')')
+	while (!check_first_non_whitespace_char(Mp, ')', &Mp))
 	{
+		ignore_white_space();
+
 		T item;
 		if (stuff_one_token(&item))
 			list.push_back(std::move(item));
 
-		ignore_white_space();
-
-		if (*Mp == ',')
-		{
-			Mp++;
-			ignore_white_space();
-		}
+		if (skip_comma)
+			check_first_non_grayspace_char(Mp, ',', &Mp);
 	}
-	Mp++;
 }
 
 template <typename T, typename F>
-size_t stuff_token_list(T *listp, size_t list_max, F stuff_one_token, const char *type_as_string)
+size_t stuff_token_list(T *listp, size_t list_max, F stuff_one_token, const char *type_as_string, bool skip_comma = true)
 {
 	SCP_vector<T> list;
-	stuff_token_list(list, stuff_one_token, type_as_string);
+	stuff_token_list(list, stuff_one_token, type_as_string, skip_comma);
 
 	if (list_max < list.size())
 	{
@@ -2816,10 +3124,8 @@ size_t stuff_token_list(T *listp, size_t list_max, F stuff_one_token, const char
 // If this data is going to be parsed multiple times (like for mission load), then the dest variable 
 // needs to be set to zero in between parses, otherwise we keep bad data.
 // For tbm files, it must not be reset.
-void parse_string_flag_list(int *dest, flag_def_list defs[], size_t defs_size)
+void parse_string_flag_list(int &dest, flag_def_list defs[], size_t defs_size)
 {
-	Assert(dest!=NULL);	//wtf?
-
 	SCP_vector<SCP_string> slp;
 	stuff_string_list(slp);
 
@@ -2827,9 +3133,8 @@ void parse_string_flag_list(int *dest, flag_def_list defs[], size_t defs_size)
 	{
 		for (size_t j = 0; j < defs_size; j++)
 		{
-			if (!stricmp(str.c_str(), defs[j].name)) {
-				(*dest) |= defs[j].def;
-			}
+			if (!stricmp(str.c_str(), defs[j].name))
+				dest |= defs[j].def;
 		}
 	}
 }
@@ -2884,39 +3189,46 @@ size_t stuff_string_list(char slp[][NAME_LENGTH], size_t max_strings)
 	return list.size();
 }
 
-const char* get_lookup_type_name(int lookup_type)
+const char* get_lookup_type_name(ParseLookupType lookup_type)
 {
-	switch (lookup_type) {
-		case SHIP_TYPE:
-			return "Ships";
-		case SHIP_INFO_TYPE:
-			return "Ship Classes";
-		case WEAPON_POOL_TYPE:
-			return "Weapon Pool";
-		case WEAPON_LIST_TYPE:
-			return "Weapon Types";
-		case RAW_INTEGER_TYPE:
+	switch (lookup_type)
+	{
+		case ParseLookupType::RAW_INTEGER_TYPE:
 			return "Untyped integer list";
-		case MISSION_LOADOUT_SHIP_LIST:
+		case ParseLookupType::SHIP_TYPE:
+			return "Ships";
+		case ParseLookupType::SHIP_INFO_TYPE:
+			return "Ship Classes";
+		case ParseLookupType::WEAPON_LIST_TYPE:
+			return "Weapon Types";
+		case ParseLookupType::WEAPON_POOL_TYPE:
+			return "Weapon Pool";
+		case ParseLookupType::FIREBALL_INFO_TYPE:
+			return "Fireball Types";
+		case ParseLookupType::MISSION_LOADOUT_SHIP_LIST:
 			return "Mission Loadout Ships";
-		case MISSION_LOADOUT_WEAPON_LIST:
+		case ParseLookupType::MISSION_LOADOUT_WEAPON_LIST:
 			return "Mission Loadout Weapons";
-		case CAMPAIGN_LOADOUT_SHIP_LIST:
+		case ParseLookupType::CAMPAIGN_LOADOUT_SHIP_LIST:
 			return "Campaign Loadout Ships";
-		case CAMPAIGN_LOADOUT_WEAPON_LIST:
+		case ParseLookupType::CAMPAIGN_LOADOUT_WEAPON_LIST:
 			return "Campaign Loadout Weapons";
+		default:
+			return "Unknown lookup type, tell a coder!";
 	}
-
-	return "Unknown lookup type, tell a coder!";
 }
 
-//	Stuffs an integer list.
-//	This is of the form ( i* )
-//	  where i is an integer.
-// For example, (1) () (1 2 3) ( 1 ) are legal integer lists.
-size_t stuff_int_list(int *ilp, size_t max_ints, int lookup_type)
+// use a functor here so that we don't need to re-roll the parsing function for both variants of stuff_int_lists
+struct StuffIntListParser
 {
-	return stuff_token_list(ilp, max_ints, [&](int *buf)->bool {
+	ParseLookupType lookup_type;
+	bool warn_on_lookup_failure;
+
+	StuffIntListParser(ParseLookupType _lookup_type, bool _warn_on_lookup_failure)
+		: lookup_type(_lookup_type), warn_on_lookup_failure(_warn_on_lookup_failure)
+	{}
+
+	bool operator()(int* buf) {
 		if (*Mp == '"') {
 			int num = 0;
 			bool valid_negative = false;
@@ -2924,39 +3236,45 @@ size_t stuff_int_list(int *ilp, size_t max_ints, int lookup_type)
 			get_string(str);
 
 			switch (lookup_type) {
-				case SHIP_TYPE:
+				case ParseLookupType::SHIP_TYPE:
 					num = ship_name_lookup(str.c_str());	// returns index of Ship[] entry with name
-					if (num < 0)
+					if (num < 0 && warn_on_lookup_failure)
 						error_display(0, "Unable to find ship %s in stuff_int_list!", str.c_str());
 					break;
 
-				case SHIP_INFO_TYPE:
+				case ParseLookupType::SHIP_INFO_TYPE:
 					num = ship_info_lookup(str.c_str());	// returns index of Ship_info[] entry with name
-					if (num < 0)
+					if (num < 0 && warn_on_lookup_failure)
 						error_display(0, "Unable to find ship class %s in stuff_int_list!", str.c_str());
 					break;
 
-				case WEAPON_POOL_TYPE:
+				case ParseLookupType::WEAPON_POOL_TYPE:
 					num = weapon_info_lookup(str.c_str());
-					if (num < 0)
+					if (num < 0 && warn_on_lookup_failure)
 						error_display(0, "Unable to find weapon class %s in stuff_int_list!", str.c_str());
 					break;
 
-				case WEAPON_LIST_TYPE:
+				case ParseLookupType::WEAPON_LIST_TYPE:
 					num = weapon_info_lookup(str.c_str());
 					if (str.empty())
 						valid_negative = true;
-					else if (num < 0)
+					else if (num < 0 && warn_on_lookup_failure)
 						error_display(0, "Unable to find weapon class %s in stuff_int_list!", str.c_str());
 					break;
 
-				case RAW_INTEGER_TYPE:
+				case ParseLookupType::FIREBALL_INFO_TYPE:
+					num = fireball_info_lookup(str.c_str());
+					if (num < 0 && warn_on_lookup_failure)
+						error_display(0, "Unable to find fireball type %s in stuff_int_list!", str.c_str());
+					break;
+
+				case ParseLookupType::RAW_INTEGER_TYPE:
 					num = atoi(str.c_str());
 					valid_negative = true;
 					break;
 
 				default:
-					error_display(1, "Unknown lookup_type %d in stuff_int_list", lookup_type);
+					UNREACHABLE("Unsupported lookup_type %d in stuff_int_list", static_cast<int>(lookup_type));
 					break;
 			}
 
@@ -2969,12 +3287,30 @@ size_t stuff_int_list(int *ilp, size_t max_ints, int lookup_type)
 		}
 
 		return true;
-	}, get_lookup_type_name(lookup_type));
+	}
+};
+
+//	Stuffs an integer list.
+//	This is of the form ( i* )
+//	  where i is an integer.
+// For example, (1) () (1 2 3) ( 1 ) are legal integer lists.
+size_t stuff_int_list(int *ilp, size_t max_ints, ParseLookupType lookup_type, bool warn_on_lookup_failure)
+{
+	return stuff_token_list(ilp, max_ints, StuffIntListParser(lookup_type, warn_on_lookup_failure), get_lookup_type_name(lookup_type));
+}
+
+//	Stuffs an integer list.
+//	This is of the form ( i* )
+//	  where i is an integer.
+// For example, (1) () (1 2 3) ( 1 ) are legal integer lists.
+void stuff_int_list(SCP_vector<int> &ilp, ParseLookupType lookup_type, bool warn_on_lookup_failure)
+{
+	stuff_token_list(ilp, StuffIntListParser(lookup_type, warn_on_lookup_failure), get_lookup_type_name(lookup_type));
 }
 
 // Karajorma/Goober5000 - Stuffs a loadout list by parsing a list of ship or weapon choices.
 // Unlike stuff_int_list it can deal with variables
-void stuff_loadout_list(SCP_vector<loadout_row> &list, int lookup_type)
+void stuff_loadout_list(SCP_vector<loadout_row> &list, ParseLookupType lookup_type)
 {
 	stuff_token_list(list, [&](loadout_row *buf)->bool {
 		SCP_string str;
@@ -2983,7 +3319,7 @@ void stuff_loadout_list(SCP_vector<loadout_row> &list, int lookup_type)
 		// if we've got a variable get the variable index and copy its value into str so that regardless of whether we found
 		// a variable or not it now holds the name of the ship or weapon we're interested in.
 		if (variable_found) {
-			Assert(lookup_type != CAMPAIGN_LOADOUT_SHIP_LIST);
+			Assert(lookup_type != ParseLookupType::CAMPAIGN_LOADOUT_SHIP_LIST);
 			buf->index_sexp_var = get_index_sexp_variable_name(str);
 
 			if (buf->index_sexp_var < 0) {
@@ -2994,18 +3330,18 @@ void stuff_loadout_list(SCP_vector<loadout_row> &list, int lookup_type)
 		}
 
 		switch (lookup_type) {
-			case MISSION_LOADOUT_SHIP_LIST:
-			case CAMPAIGN_LOADOUT_SHIP_LIST:
+			case ParseLookupType::MISSION_LOADOUT_SHIP_LIST:
+			case ParseLookupType::CAMPAIGN_LOADOUT_SHIP_LIST:
 				buf->index = ship_info_lookup(str.c_str());
 				break;
 
-			case MISSION_LOADOUT_WEAPON_LIST:
-			case CAMPAIGN_LOADOUT_WEAPON_LIST:
+			case ParseLookupType::MISSION_LOADOUT_WEAPON_LIST:
+			case ParseLookupType::CAMPAIGN_LOADOUT_WEAPON_LIST:
 				buf->index = weapon_info_lookup(str.c_str());
 				break;
 
 			default:
-				Assertion(false, "Unsupported lookup type %d", lookup_type);
+				UNREACHABLE("Unsupported lookup_type %d in stuff_loadout_list", static_cast<int>(lookup_type));
 				return false;
 		}
 
@@ -3013,24 +3349,24 @@ void stuff_loadout_list(SCP_vector<loadout_row> &list, int lookup_type)
 
 		// Complain if this isn't a valid ship or weapon and we are loading a mission. Campaign files can be loaded containing
 		// no ships from the current tables (when swapping mods) so don't report that as an error.
-		if (buf->index < 0 && (lookup_type == MISSION_LOADOUT_SHIP_LIST || lookup_type == MISSION_LOADOUT_WEAPON_LIST)) {
+		if (buf->index < 0 && (lookup_type == ParseLookupType::MISSION_LOADOUT_SHIP_LIST || lookup_type == ParseLookupType::MISSION_LOADOUT_WEAPON_LIST)) {
 			error_display(0, "Invalid type \"%s\" found in loadout of mission file...skipping", str.c_str());
 			skip_this_entry = true;
 
 			// increment counter for release FRED builds.
 			Num_unknown_loadout_classes++;
 		}
-		else if ((Game_mode & GM_MULTIPLAYER) && (lookup_type == MISSION_LOADOUT_WEAPON_LIST) && (Weapon_info[buf->index].maximum_children_spawned > 300)){
+		else if ((Game_mode & GM_MULTIPLAYER) && (lookup_type == ParseLookupType::MISSION_LOADOUT_WEAPON_LIST) && (Weapon_info[buf->index].maximum_children_spawned > 300)){
 			Warning(LOCATION, "Weapon '%s' has more than 300 possible spawned weapons over its lifetime! This can cause issues for Multiplayer.", Weapon_info[buf->index].name);
 		}
 
 		if (!skip_this_entry) {
 			// similarly, complain if this is a valid ship or weapon class that the player can't use
-			if ((lookup_type == MISSION_LOADOUT_SHIP_LIST) && (!(Ship_info[buf->index].flags[Ship::Info_Flags::Player_ship])) ) {
+			if ((lookup_type == ParseLookupType::MISSION_LOADOUT_SHIP_LIST) && (!(Ship_info[buf->index].flags[Ship::Info_Flags::Player_ship])) ) {
 				error_display(0, "Ship type \"%s\" found in loadout of mission file. This class is not marked as a player ship...skipping", str.c_str());
 				skip_this_entry = true;
 			}
-			else if ((lookup_type == MISSION_LOADOUT_WEAPON_LIST) && (!(Weapon_info[buf->index].wi_flags[Weapon::Info_Flags::Player_allowed])) ) {
+			else if ((lookup_type == ParseLookupType::MISSION_LOADOUT_WEAPON_LIST) && (!(Weapon_info[buf->index].wi_flags[Weapon::Info_Flags::Player_allowed])) ) {
 				nprintf(("Warning",  "Warning: Weapon type %s found in loadout of mission file. This class is not marked as a player allowed weapon...skipping\n", str.c_str()));
 				if ( !Is_standalone )
 					error_display(0, "Weapon type \"%s\" found in loadout of mission file. This class is not marked as a player allowed weapon...skipping", str.c_str());
@@ -3039,7 +3375,7 @@ void stuff_loadout_list(SCP_vector<loadout_row> &list, int lookup_type)
 		}
 
 		// Loadout counts are only needed for missions
-		if (lookup_type == MISSION_LOADOUT_SHIP_LIST || lookup_type == MISSION_LOADOUT_WEAPON_LIST)
+		if (lookup_type == ParseLookupType::MISSION_LOADOUT_SHIP_LIST || lookup_type == ParseLookupType::MISSION_LOADOUT_WEAPON_LIST)
 		{
 			ignore_white_space();
 
@@ -3057,7 +3393,7 @@ size_t stuff_float_list(float* flp, size_t max_floats)
 	return stuff_token_list(flp, max_floats, [](float *f)->bool {
 		stuff_float(f);
 		return true;
-	}, "float");
+	}, "float", false);	// don't skip the comma in stuff_token_list because stuff_float also skips one
 }
 
 // ditto the above, but a vector of floats...
@@ -3066,7 +3402,14 @@ void stuff_float_list(SCP_vector<float>& flp)
 	stuff_token_list(flp, [](float* buf)->bool {
 		stuff_float(buf);
 		return true;
-		}, "float");
+	}, "float", false);	// don't skip the comma in stuff_token_list because stuff_float also skips one
+}
+
+//	Stuff a vec2d struct, which is 2 floats.
+void stuff_vec2d(vec2d* vp)
+{
+	stuff_float(&vp->x);
+	stuff_float(&vp->y);
 }
 
 //	Stuff a vec3d struct, which is 3 floats.
@@ -3084,6 +3427,26 @@ void stuff_angles_deg_phb(angles* ap) {
 	ap->p = fl_radians(ap->p);
 	ap->h = fl_radians(ap->h);
 	ap->b = fl_radians(ap->b);
+}
+
+void stuff_parenthesized_vec2d(vec2d* vp)
+{
+	ignore_white_space();
+
+	if (*Mp != '(') {
+		error_display(1, "Reading parenthesized vec2d.  Found [%c].  Expected '('.\n", *Mp);
+		throw parse::ParseException("Syntax error");
+	}
+	else {
+		Mp++;
+		stuff_vec2d(vp);
+		ignore_white_space();
+		if (*Mp != ')') {
+			error_display(1, "Reading parenthesized vec2d.  Found [%c].  Expected ')'.\n", *Mp);
+			throw parse::ParseException("Syntax error");
+		}
+		Mp++;
+	}
 }
 
 void stuff_parenthesized_vec3d(vec3d *vp)
@@ -3133,30 +3496,9 @@ void stuff_matrix(matrix *mp)
 	stuff_vec3d(&mp->vec.rvec);
 	stuff_vec3d(&mp->vec.uvec);
 	stuff_vec3d(&mp->vec.fvec);
-}
 
-/**
- * @brief Given a string, find it in a string array.
- *
- * @param str1 is the string to be found.
- * @param strlist is the list of strings to search.
- * @param max is the number of entries in *strlist to scan.
- * @param description is only used for diagnostics in case it can't be found.
- * @param say_errors @c true if errors should be reported
- * @return
- */
-int string_lookup(const char *str1, const char* const *strlist, size_t max, const char *description, bool say_errors) {
-	for (size_t i=0; i<max; i++) {
-		Assert(strlen(strlist[i]) != 0); //-V805
-
-		if (!stricmp(str1, strlist[i]))
-			return (int)i;
-	}
-
-	if (say_errors)
-		error_display(0, "Unable to find [%s] in %s list.\n", str1, description);
-
-	return -1;
+	// Make sure this matrix is well-behaved.
+	vm_fix_matrix(mp);
 }
 
 //	Find a required string (*id), then stuff the text of type f_type that
@@ -3165,7 +3507,7 @@ int string_lookup(const char *str1, const char* const *strlist, size_t max, cons
 void find_and_stuff(const char *id, int *addr, int f_type, const char *strlist[], size_t max, const char *description)
 {
 	char	token[128];
-	int checking_ship_classes = (stricmp(id, "$class:") == 0);
+	bool checking_ship_classes = (stricmp(id, "$class:") == 0);
 
 	// Goober5000 - don't say errors when we're checking classes because 1) we have more checking to do; and 2) we will say a redundant error later
 	required_string(id);
@@ -3178,7 +3520,7 @@ void find_and_stuff(const char *id, int *addr, int f_type, const char *strlist[]
 		int idx = ship_info_lookup(token);
 
 		if (idx >= 0)
-			*addr = string_lookup(Ship_info[idx].name, strlist, max, description, 0);
+			*addr = string_lookup(Ship_info[idx].name, strlist, max, description, false);
 		else
 			*addr = -1;
 	}
@@ -3191,7 +3533,7 @@ void find_and_stuff_optional(const char *id, int *addr, int f_type, const char *
 	if(optional_string(id))
 	{
 		stuff_string(token, f_type, sizeof(token));
-		*addr = string_lookup(token, strlist, max, description, 1);
+		*addr = string_lookup(token, strlist, max, description, true);
 	}
 }
 
@@ -3203,7 +3545,7 @@ int match_and_stuff(int f_type, const char * const *strlist, int max, const char
 	char	token[128];
 
 	stuff_string(token, f_type, sizeof(token));
-	return string_lookup(token, strlist, max, description, 0);
+	return string_lookup(token, strlist, max, description, false);
 }
 
 void find_and_stuff_or_add(const char *id, int *addr, int f_type, char *strlist[], int *total,
@@ -3215,7 +3557,7 @@ void find_and_stuff_or_add(const char *id, int *addr, int f_type, char *strlist[
 	required_string(id);
 	stuff_string(token, f_type, sizeof(token));
 	if (*total)
-		*addr = string_lookup(token, strlist, *total, description, 0);
+		*addr = string_lookup(token, strlist, *total, description, false);
 
 	if (*addr == -1)  // not in list, so lets try and add it.
 	{
@@ -3282,23 +3624,26 @@ void display_parse_diagnostics()
 // terminator is placed where required to make the first line <= max_pixel_w.  The remaining
 // text is returned (leading whitespace removed).  If the line doesn't need to be split,
 // NULL is returned.
-char *split_str_once(char *src, int max_pixel_w)
+char *split_str_once(char *src, int max_pixel_w, float scale)
 {
 	char *brk = nullptr;
-	int i, w, len;
 	bool last_was_white = false;
 
 	Assert(src);
-	Assert(max_pixel_w > 0);
 
-	gr_get_string_size(&w, nullptr, src);
+	if (max_pixel_w <= 0)
+		return src;  // if there's no width, skip everything else
+
+	int w;
+	gr_get_string_size(&w, nullptr, src, scale);
 	if ( (w <= max_pixel_w) && !strstr(src, "\n") ) {
 		return nullptr;  // string doesn't require a cut
 	}
 
-	len = (int)strlen(src);
+	size_t i;
+	size_t len = strlen(src);
 	for (i=0; i<len; i++) {
-		gr_get_string_size(&w, nullptr, src, i + 1);
+		gr_get_string_size(&w, nullptr, src, scale, i + 1);
 
 		if (w <= max_pixel_w) {
 			if (src[i] == '\n') {  // reached natural end of line
@@ -3628,6 +3973,208 @@ int split_str(const char *src, int max_pixel_w, SCP_vector<int> &n_chars, SCP_ve
 	return line_num;
 }
 
+// A narrower but much faster alternative to split_str(), takes a string and a max pixel length, returns a vector with
+// one pair (offset and length) per line. Does not currently support a max line count or ignoring of characters.
+SCP_vector<std::pair<size_t, size_t>> str_wrap_to_width(const SCP_string& source_string, int max_pixel_width, bool strip_leading_whitespace, size_t source_start, size_t source_length)
+{
+	auto lines = SCP_vector<std::pair<size_t, size_t>>();
+
+	if (source_length == std::string::npos)
+		source_length = source_string.length() - source_start;
+
+	Assertion(source_start + source_length <= source_string.length(), "In str_wrap_to_width(), source length must not exceed the actual length of the string!");
+
+	size_t pos_start = source_start;
+	size_t pos_end = source_start + source_length;
+
+	// Advance past leading whitespace.
+	while (strip_leading_whitespace && (pos_start < pos_end) && is_white_space(source_string[pos_start]))
+		pos_start++;
+
+	// Handle existing line breaks in the string recursively, then append the results.
+	while (pos_start < pos_end) {
+		auto newline_at = source_string.find_first_of(UNICODE_CHAR('\n'), pos_start);
+		if (newline_at == std::string::npos || newline_at >= source_length)
+			break;
+
+		if (newline_at == pos_start) {
+			// No content to split so just pushing a new string on.
+			lines.emplace_back(pos_start, 0);
+		} else {
+			auto sublines = str_wrap_to_width(source_string, max_pixel_width, strip_leading_whitespace, pos_start, (newline_at - pos_start));
+			lines.reserve(lines.size() + sublines.size());	// coverity[inefficient_reserve:FALSE]
+			std::move(sublines.begin(), sublines.end(), std::back_inserter(lines));
+		}
+
+		pos_start = newline_at + 1;
+	}
+
+	// With newlines handled, now move into actually wrapping the content.
+	while (pos_start < pos_end) {
+		auto split_at = std::string::npos;
+		// no newlines found, check length.
+		size_t stringlen = pos_end - pos_start;
+		int line_width = 0;
+		gr_get_string_size(&line_width, nullptr, source_string.c_str() + pos_start, 1.0f, stringlen);
+		if (stringlen <= 1) {
+			// in this case checking is pointless, single-character strings can't wrap.
+			// copy into the return vector and then bail.
+			lines.emplace_back(pos_start, stringlen);
+			break;
+		} else if (line_width < max_pixel_width) {
+			// The remaining string is shorter than our limit so we're done.
+			// copy into the return vector and then bail.
+			lines.emplace_back(pos_start, stringlen);
+			break;
+		} else {
+			size_t search_min = 0;
+			size_t search_max = stringlen;
+			size_t center = 0;
+			while (search_max > search_min) {
+				center = search_min + ((search_max - search_min) / 2);
+				gr_get_string_size(&line_width, nullptr, source_string.c_str() + pos_start, 1.0f, center);
+				if (line_width == max_pixel_width) {
+					search_max = center;
+					search_min = center;
+					split_at = center;
+				} else if (line_width > max_pixel_width) {
+					search_max = MIN(center, search_max - 1);
+					split_at = search_max;
+				} else {
+					search_min = MAX(center, search_min + 1);
+					split_at = search_min;
+				}
+			}
+		}
+
+		// don't split out of bounds, but it's ok to split exactly on the string boundary
+		if (split_at > stringlen) {
+			split_at = stringlen;
+		} else if (split_at < stringlen) {
+			// split_at is now the last point where we can split, but could be mid-word
+			// work backwards to find whitespace.
+			while ((split_at > 0) && !is_white_space(source_string[pos_start + split_at]))
+				split_at--;
+
+			// we need to always remove something from the current line or we're stuck
+			if (split_at == 0)
+				split_at = 1;
+		}
+
+		lines.emplace_back(pos_start, split_at);
+		pos_start += split_at;
+
+		// Trim the leading whitespace off the next line.
+		while ((pos_start < pos_end) && is_white_space(source_string[pos_start]))
+			pos_start++;
+	}
+
+	return lines;
+}
+
+SCP_vector<std::pair<size_t, size_t>> str_wrap_to_width(const char* source_string, int max_pixel_width, bool strip_leading_whitespace, size_t source_length)
+{
+	auto lines = SCP_vector<std::pair<size_t, size_t>>();
+
+	if (source_length == std::string::npos)
+		source_length = strlen(source_string);
+
+	Assertion(source_length <= strlen(source_string), "In str_wrap_to_width(), source length must not exceed the actual length of the string!");
+
+	const char* ch_start = source_string;
+	const char* ch_end = ch_start + source_length;
+
+	// Advance past leading whitespace.
+	while (strip_leading_whitespace && (ch_start < ch_end) && is_white_space(*ch_start))
+		ch_start++;
+
+	// Handle existing line breaks in the string recursively, then append the results.
+	while (ch_start < ch_end) {
+		auto newline_at = strchr(ch_start, UNICODE_CHAR('\n'));
+		if (newline_at == nullptr || newline_at >= ch_end)
+			break;
+
+		if (newline_at == ch_start) {
+			// No content to split so just pushing a new string on.
+			lines.emplace_back(ch_start - source_string, 0);
+		} else {
+			auto sublines = str_wrap_to_width(ch_start, max_pixel_width, strip_leading_whitespace, (newline_at - ch_start));
+
+			// need to adjust the positions to make them relative to the source string
+			if (ch_start != source_string)
+				for (auto& subline : sublines)
+					subline.first += (ch_start - source_string);
+
+			lines.reserve(lines.size() + sublines.size());	// coverity[inefficient_reserve:FALSE]
+			std::move(sublines.begin(), sublines.end(), std::back_inserter(lines));
+		}
+
+		ch_start = newline_at + 1;
+	}
+
+	// With newlines handled, now move into actually wrapping the content.
+	while (ch_start < ch_end) {
+		auto split_at = std::string::npos;
+		// no newlines found, check length.
+		size_t stringlen = ch_end - ch_start;
+		int line_width = 0;
+		gr_get_string_size(&line_width, nullptr, ch_start, 1.0f, stringlen);
+		if (stringlen <= 1) {
+			// in this case checking is pointless, single-character strings can't wrap.
+			// copy into the return vector and then bail.
+			lines.emplace_back(ch_start - source_string, stringlen);
+			break;
+		} else if (line_width < max_pixel_width) {
+			// The remaining string is shorter than our limit so we're done.
+			// copy into the return vector and then bail.
+			lines.emplace_back(ch_start - source_string, stringlen);
+			break;
+		} else {
+			size_t search_min = 0;
+			size_t search_max = stringlen;
+			size_t center = 0;
+			while (search_max > search_min) {
+				center = search_min + ((search_max - search_min) / 2);
+				gr_get_string_size(&line_width, nullptr, ch_start, 1.0f, center);
+				if (line_width == max_pixel_width) {
+					search_max = center;
+					search_min = center;
+					split_at = center;
+				} else if (line_width > max_pixel_width) {
+					search_max = MIN(center, search_max - 1);
+					split_at = search_max;
+				} else {
+					search_min = MAX(center, search_min + 1);
+					split_at = search_min;
+				}
+			}
+		}
+
+		// don't split out of bounds, but it's ok to split exactly on the string boundary
+		if (split_at > stringlen) {
+			split_at = stringlen;
+		} else if (split_at < stringlen) {
+			// split_at is now the last point where we can split, but could be mid-word
+			// work backwards to find whitespace.
+			while ((split_at > 0) && !is_white_space(*(ch_start + split_at)))
+				split_at--;
+
+			// we need to always remove something from the current line or we're stuck
+			if (split_at == 0)
+				split_at = 1;
+		}
+
+		lines.emplace_back(ch_start - source_string, split_at);
+		ch_start += split_at;
+
+		// Trim the leading whitespace off the next line.
+		while ((ch_start < ch_end) && is_white_space(*ch_start))
+			ch_start++;
+	}
+
+	return lines;
+}
+
 // Goober5000
 // accounts for the dumb communications != communication, etc.
 int subsystem_stricmp(const char *str1, const char *str2)
@@ -3894,7 +4441,7 @@ const char *get_pointer_to_first_hash_symbol(const char *src, bool ignore_double
 }
 
 // Goober5000
-int get_index_of_first_hash_symbol(SCP_string &src, bool ignore_doubled_hash)
+int get_index_of_first_hash_symbol(const SCP_string &src, bool ignore_doubled_hash)
 {
 	if (ignore_doubled_hash)
 	{
@@ -3905,7 +4452,7 @@ int get_index_of_first_hash_symbol(SCP_string &src, bool ignore_doubled_hash)
 				if ((ch + 1) != src.end() && *(ch + 1) == '#')
 					++ch;
 				else
-					return (int)std::distance(src.begin(), ch);
+					return static_cast<int>(std::distance(src.begin(), ch));
 			}
 		}
 		return -1;
@@ -3933,6 +4480,24 @@ void consolidate_double_characters(char *src, char ch)
 		if (src != dest)
 			*dest = *src;
 	}
+}
+
+char *three_dot_truncate(char *buffer, const char *source, size_t buffer_size)
+{
+	Assertion(buffer && source, "Arguments must not be null!");
+
+	// this would be silly
+	if (buffer_size < 6)
+	{
+		*buffer = '\0';
+		return buffer;
+	}
+
+	strncpy(buffer, source, buffer_size);
+	if (buffer[buffer_size - 1] != '\0')
+		strcpy(&buffer[buffer_size - 6], "[...]");
+
+	return buffer;
 }
 
 // Goober5000

@@ -33,16 +33,20 @@ set(FRED2_SOURCES
 	campaigntreeview.h
 	campaigntreewnd.cpp
 	campaigntreewnd.h
+	checkboxlistdlg.cpp
+	checkboxlistdlg.h
 	cmdbrief.cpp
 	cmdbrief.h
 	createwingdlg.cpp
 	createwingdlg.h
+	customdatadlg.cpp
+	customdatadlg.h
+	customstringsdlg.cpp
+	customstringsdlg.h
 	customwingnames.cpp
 	customwingnames.h
 	debriefingeditordlg.cpp
 	debriefingeditordlg.h
-	dialog1.cpp
-	dialog1.h
 	dumpstats.cpp
 	dumpstats.h
 	editcontainernamedlg.cpp
@@ -50,8 +54,6 @@ set(FRED2_SOURCES
 	editor.h
 	eventeditor.cpp
 	eventeditor.h
-	folderdlg.cpp
-	folderdlg.h
 	fred.cpp
 	fred.h
 	freddoc.cpp
@@ -69,6 +71,8 @@ set(FRED2_SOURCES
 	initialships.h
 	initialstatus.cpp
 	initialstatus.h
+	jumpnodedlg.cpp
+	jumpnodedlg.h
 	listitemchooser.cpp
 	listitemchooser.h
 	mainfrm.cpp
@@ -77,6 +81,8 @@ set(FRED2_SOURCES
 	management.h
 	messageeditordlg.cpp
 	messageeditordlg.h
+	missioncutscenesdlg.cpp
+	missioncutscenesdlg.h
 	missiongoalsdlg.cpp
 	missiongoalsdlg.h
 	missionnotesdlg.cpp
@@ -85,8 +91,12 @@ set(FRED2_SOURCES
 	missionsave.h
 	modifyvariabledlg.cpp
 	modifyvariabledlg.h
+	musicplayerdlg.cpp
+	musicplayerdlg.h
 	operatorargtypeselect.cpp
 	operatorargtypeselect.h
+	OperatorComboBox.cpp
+	OperatorComboBox.h
 	orienteditor.cpp
 	orienteditor.h
 	playerstarteditor.cpp
@@ -132,6 +142,8 @@ set(FRED2_SOURCES
 	textviewdlg.h
 	voiceactingmanager.cpp
 	voiceactingmanager.h
+	volumetricsdlg.cpp
+	volumetricsdlg.h
 	warpparamsdlg.cpp
 	warpparamsdlg.h
 	waypointpathdlg.cpp
@@ -163,6 +175,8 @@ IF(MSVC60)
 ENDIF(MSVC60)
 
 add_executable(FRED2 WIN32 ${FRED2_SOURCES})
+
+target_compile_features(FRED2 PUBLIC cxx_std_17)
 
 SET_TARGET_PROPERTIES(FRED2 PROPERTIES OUTPUT_NAME "fred2_open_${FSO_BINARY_SUFFIX}")
 

@@ -15,6 +15,8 @@
 #include "globalincs/globals.h"
 #include "globalincs/pstypes.h"
 
+#include "gamesnd/gamesnd.h"
+
 class object;
 class model_draw_list;
 
@@ -65,6 +67,7 @@ typedef struct shockwave {
 	int			delay_stamp;			// for delayed shockwaves
 	angles		rot_angles;
 	int			model_id;
+	gamesnd_id  blast_sound_id;
 } shockwave;
 
 typedef struct shockwave_create_info {
@@ -72,29 +75,35 @@ typedef struct shockwave_create_info {
 	char name[MAX_FILENAME_LEN];
 	char pof_name[MAX_FILENAME_LEN];
 
-	float inner_rad;
-	float outer_rad;
+	float inner_rad;		// max damage out to this distance
+	float outer_rad;		// 0 damage at this distance or more, outer_rad / speed is total time
 	float damage;
 	float blast;
 	float speed;
+	int radius_curve_idx;   // curve for shockwave radius over time
 	angles rot_angles;
 	bool rot_defined;		// if the modder specified rot_angles
-	bool damage_overidden;  // did this have shockwave damage specifically set or not
+	bool rot_parent_relative = false;
+	bool damage_overridden;  // did this have shockwave damage specifically set or not
 
 	int damage_type_idx;
 	int damage_type_idx_sav;	// stored value from table used to reset damage_type_idx
 
+	gamesnd_id blast_sound_id;	// allow setting unique sounds for a ship or weapon shockwave --wookieejedi
+
 } shockwave_create_info;
 
+extern bool Use_3D_shockwaves;
+
 extern void shockwave_create_info_init(shockwave_create_info *sci);
-extern void shockwave_create_info_load(shockwave_create_info *sci);
+extern void shockwave_create_info_load(const shockwave_create_info *sci);
 
 void shockwave_level_init();
 void shockwave_level_close();
-void shockwave_delete(object *objp);
+void shockwave_delete(const object *objp);
 void shockwave_move_all(float frametime);
-int  shockwave_create(int parent_objnum, vec3d *pos, shockwave_create_info *sci, int flag, int delay = -1);
-void shockwave_render(object *objp, model_draw_list *scene);
+int  shockwave_create(int parent_objnum, const vec3d *pos, const shockwave_create_info *sci, int flag, int delay = -1);
+void shockwave_render(const object *objp, model_draw_list *scene);
 int shockwave_load(const char *s_name, bool shock_3D = false);
 
 int   shockwave_get_weapon_index(int index);

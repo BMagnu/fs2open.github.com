@@ -49,6 +49,19 @@ brief_screen bscreen;
 #define BRIEF_CUPINFO_X2	639
 #define BRIEF_CUPINFO_Y2	438
 
+float Briefing_Icon_Scale_Factor = 1.0;
+
+static auto IconScaleFactor __UNUSED = options::OptionBuilder<float>("Game.BriefIconScaleFactor",
+                     std::pair<const char*, int>{"Briefing Icon Scale Factor", 1857},
+                     std::pair<const char*, int>{"Scales the size of the briefing icons", 1858})
+                     .category(std::make_pair("Game", 1824))
+                     .range(0.2f, 4.0f) //Upper limit is somewhat arbitrary
+                     .level(options::ExpertLevel::Advanced)
+                     .default_val(1.0)
+                     .bind_to(&Briefing_Icon_Scale_Factor)
+                     .importance(55)
+                     .finish();
+
 const char *Brief_static_name[GR_NUM_RESOLUTIONS] = {
 	"BriefMap",
 	"2_BriefMap"
@@ -127,14 +140,16 @@ debriefing	*Debriefing;						// pointer to correct debriefing
 
 bool Briefing_voice_enabled = true; // flag which turn on/off voice playback of briefings/debriefings
 
-static auto BriefingVoiceOption = options::OptionBuilder<bool>("Audio.BriefingVoice", "Briefing voice",
-                                                               "Enable or disable voice playback in the briefing.")
-                                      .category("Audio")
-                                      .level(options::ExpertLevel::Beginner)
-                                      .default_val(true)
-                                      .bind_to(&Briefing_voice_enabled)
-                                      .importance(4)
-                                      .finish();
+static auto BriefingVoiceOption __UNUSED = options::OptionBuilder<bool>("Audio.BriefingVoice",
+                     std::pair<const char*, int>{"Briefing voice", 1368},
+                     std::pair<const char*, int>{"Enable or disable voice playback in the briefing", 1716})
+                     .category(std::make_pair("Audio", 1826))
+                     .level(options::ExpertLevel::Beginner)
+                     .default_val(true)
+                     .bind_to(&Briefing_voice_enabled)
+                     .importance(4)
+                     .flags({options::OptionFlags::RetailBuiltinOption})
+                     .finish();
 
 // --------------------------------------------------------------------------------------
 // Module global data
@@ -243,6 +258,8 @@ typedef struct icon_fade_info
 {
 	hud_anim	fade_anim;
 	vec3d	pos;
+	float   scale_factor;
+	bool    mirror;
 	int		team;
 } fade_icon;
 
@@ -267,9 +284,9 @@ void	brief_render_icons(int stage_num, float frametime);
 void	brief_maybe_create_new_grid(grid *gridp, vec3d *pos, matrix *orient, int force = 0);
 grid	*brief_create_grid(grid *gridp, vec3d *forward, vec3d *right, vec3d *center, int nrows, int ncols, float square_size);
 grid	*brief_create_default_grid(void);
-void	brief_render_grid(grid *gridp);
+void	brief_render_grid(grid *gridp, const color& color);
 void	brief_modify_grid(grid *gridp);
-void	brief_rpd_line(vec3d *v0, vec3d *v1);
+void	brief_rpd_line(vec3d *v0, vec3d *v1, const color& color);
 void	brief_set_text_color(char color_tag);
 extern void get_camera_limits(const matrix *start_camera, const matrix *end_camera, float time, vec3d *acc_max, vec3d *w_max);
 int brief_text_wipe_finished();
@@ -345,6 +362,36 @@ void brief_icon_parse_cleanup() {
 	}
 }
 
+static size_t Num_icons_in_table = 0;
+
+// This is explicitely used to count the number of icons listed in the tbl
+// so that we can correctly parse each icon into a species without any off-by-N errors.
+// This allows modular icons.tbls to build upon the retail icons.tbl.
+void brief_pre_parse_icons()
+{
+	try {
+		read_file_text("icons.tbl", CF_TYPE_TABLES);
+		reset_parse();
+
+		required_string("#Start");
+
+		//If we're in the new format, then nothing to do!
+		if (check_for_string("$Species:"))
+			return;
+
+		char junk[MAX_FILENAME_LEN];
+		while (optional_string("$Name:")) {
+			stuff_string(junk, F_NAME, MAX_FILENAME_LEN);
+			Num_icons_in_table++;
+		}
+
+		required_string("#End");
+	} 
+	catch (const parse::ParseException& e) {
+		mprintf(("TABLES: Unable to parse '%s'!  Error message = %s.\n", "icons.tbl", e.what()));
+	}
+}
+
 // --------------------------------------------------------------------------------------
 //	brief_parse_icon_tbl()
 //
@@ -371,7 +418,7 @@ void brief_parse_icon_tbl(const char* filename)
 		}
 
 		bool new_style_parsing = false;
-		if (check_for_string("$Species:"))
+		if (Parsing_modular_table || check_for_string("$Species:")) //Do not allow modular tables to use the old format! -Mjn
 			new_style_parsing = true;
 
 		if (new_style_parsing) {
@@ -417,14 +464,34 @@ void brief_parse_icon_tbl(const char* filename)
 			}
 		}
 		else { // old style
+			
+			//Calculate how many species we're going to try to parse icons for using the pre-parsed count
+			if (Num_icons_in_table % MIN_BRIEF_ICONS != 0)
+				Warning(LOCATION,
+					"An incorrect number of icons was found in icons.tbl. There should be %i icons per species listed!",
+					MIN_BRIEF_ICONS);
+
+			size_t Num_icon_sets = Num_icons_in_table / MIN_BRIEF_ICONS;
+
+			if (Num_icon_sets % BRIEF_ICON_TYPES != 0)
+				Error(LOCATION,
+					"There was somehow a number of icons divisible by %i, but is now not divisible by %i. Get a "
+					"coder!",
+					MIN_BRIEF_ICONS,
+					BRIEF_ICON_TYPES);
+
+			size_t Num_species_in_table = Num_icon_sets / BRIEF_ICON_TYPES;
+
 			for (int icon_type = 0; icon_type < MIN_BRIEF_ICONS; icon_type++) { // NOLINT(modernize-loop-convert)
-				for (species = 0; species < unique_icons_species.size(); species++) {
+				for (species = 0; species < Num_species_in_table; species++) {
 					// if this check isn't true we're missing entries and will complain about it later in brief_icon_parse_cleanup()
-					if (check_for_string("$Name:"))
+					if (check_for_string("$Name:")) {
 						Species_info[unique_icons_species[species]].bii_indices[icon_type] = add_briefing_icons();
+					}
 				}
 			}
 
+			//This can still be reached if the above Warning is ignored-Mjn
 			const size_t max_icons = unique_icons_species.size() * MIN_BRIEF_ICONS;
 			if (!check_for_string("#End"))
 				Warning(LOCATION, "Too many icons in icons.tbl; only the first " SIZE_T_ARG " will be used", max_icons);
@@ -438,6 +505,9 @@ void brief_parse_icon_tbl(const char* filename)
 
 void brief_icons_init() {
 	Briefing_icon_info.clear();
+
+	//This is super dumb, but retail format is bad and should feel bad for making me do this-Mjn
+	brief_pre_parse_icons();
 
 	brief_parse_icon_tbl("icons.tbl");
 
@@ -636,14 +706,6 @@ void brief_init_screen(int  /*multiplayer_flag*/)
 	bscreen.resize          = GR_RESIZE_MENU;
 }
 
-// --------------------------------------------------------------------------------------
-//	brief_init_colors()
-//
-//
-void brief_init_colors()
-{
-}
-
 bool brief_special_closeup(int briefing_icon_type)
 {
 	switch (briefing_icon_type)
@@ -815,7 +877,6 @@ void brief_init_map()
 	The_grid = brief_create_default_grid();
 	brief_maybe_create_new_grid(The_grid, pos, orient, 1);
 
-	brief_init_colors();
 	brief_move_icon_reset();
 
 	brief_preload_anims();
@@ -840,6 +901,12 @@ void brief_render_fade_outs(float frametime)
 	for (i=0; i<Num_fade_icons; i++) {
 		fi = &Fading_icons[i];
 
+		float scale_factor = fi->scale_factor;
+
+		if (!Fred_running) {
+			scale_factor *= Briefing_Icon_Scale_Factor;
+		}
+
 		g3_rotate_vertex(&tv, &fi->pos);
 
 		if (!(tv.flags & PF_PROJECTED))
@@ -853,20 +920,29 @@ void brief_render_fade_outs(float frametime)
 				continue;
 			}
 
-			bm_get_info( fi->fade_anim.first_frame, &w, &h, NULL);
+			float scaled_w, scaled_h;
+
+			bm_get_info( fi->fade_anim.first_frame, &w, &h, nullptr);
 			float screenX = tv.screen.xyw.x;
 			float screenY = tv.screen.xyw.y;
-			gr_unsize_screen_posf( &screenX, &screenY, NULL, NULL, GR_RESIZE_MENU_NO_OFFSET );
 
-			bxf = screenX - w / 2.0f + 0.5f;
-			byf = screenY - h / 2.0f + 0.5f;
+			int this_resize = bscreen.resize;
+			if (bscreen.resize == GR_RESIZE_MENU) {
+				this_resize = GR_RESIZE_MENU_NO_OFFSET;
+			}
+			gr_unsize_screen_posf(&screenX, &screenY, nullptr, nullptr, this_resize);
+
+			scaled_w = w * scale_factor;
+			scaled_h = h * scale_factor;
+			bxf = screenX - scaled_w / 2.0f + 0.5f;
+			byf = screenY - scaled_h / 2.0f + 0.5f;
 			bx = fl2i(bxf);
 			by = fl2i(byf);
 
 			if ( fi->fade_anim.first_frame >= 0 ) {
 				fi->fade_anim.sx = bx;
 				fi->fade_anim.sy = by;
-				hud_anim_render(&fi->fade_anim, frametime, 1, 0, 0, 0, GR_RESIZE_MENU);
+				hud_anim_render(&fi->fade_anim, frametime, 1, 0, 0, 0, bscreen.resize, fi->mirror, scale_factor);
 			}
 		}
 	}
@@ -964,10 +1040,9 @@ void brief_render_icon_line(int stage_num, int line_num)
  * @param icon_num icon number in stage
  * @param frametime	time elapsed in seconds
  * @param selected FRED only (will be 0 or non-zero)
- * @param w_scale_factor scale icon in width by this amount (default 1.0f)
- * @param h_scale_factor scale icon in height by this amount (default 1.0f)
+ * @param scale_factor scale icon by this amount (default 1.0f)
  */
-void brief_render_icon(int stage_num, int icon_num, float frametime, int selected, float w_scale_factor, float h_scale_factor)
+void brief_render_icon(int stage_num, int icon_num, float frametime, int selected, float scale_factor)
 {
 	brief_icon	*bi, *closeup_icon;
 	generic_anim *ga;
@@ -980,7 +1055,15 @@ void brief_render_icon(int stage_num, int icon_num, float frametime, int selecte
 	Assert( Briefing != NULL );
 	
 	bi = &Briefing->stages[stage_num].icons[icon_num];
-	mirror_icon = (bi->flags & BI_MIRROR_ICON)? true:false;
+
+	mirror_icon = (bi->flags & BI_MIRROR_ICON) ? true : false;
+	if (bi->scale_factor != 1.0f) {
+		scale_factor *= bi->scale_factor;
+	}
+
+	if (!Fred_running) {
+		scale_factor *= Briefing_Icon_Scale_Factor;
+	}
 
 	icon_move_info *mi, *next;
 	int interp_pos_found = 0;
@@ -1058,22 +1141,16 @@ void brief_render_icon(int stage_num, int icon_num, float frametime, int selecte
 		}
 		gr_unsize_screen_posf(&sx, &sy, NULL, NULL, this_resize);
 	
-		scaled_w = icon_w * w_scale_factor;
-		scaled_h = icon_h * h_scale_factor;
+		scaled_w = icon_w * scale_factor;
+		scaled_h = icon_h * scale_factor;
 		bxf = sx - scaled_w / 2.0f + 0.5f;
 		byf = sy - scaled_h / 2.0f + 0.5f;
 		bx = fl2i(bxf);
 		by = fl2i(byf);
 		bc = fl2i(sx);
 
-		if ( ( (bx < 0) || (bx > gr_screen.max_w_unscaled) || (by < 0) || (by > gr_screen.max_h_unscaled) ) && !Fred_running ) {
-			bi->x = bx;
-			bi->y = by;
-			return;
-		}
-
 		// render highlight anim frame
-		if ( (bi->flags&BI_SHOWHIGHLIGHT) && (bi->flags&BI_HIGHLIGHT) ) {
+		if ( (bi->flags & BI_SHOWHIGHLIGHT) && (bi->flags & BI_HIGHLIGHT) ) {
 			hud_anim *ha = &bi->highlight_anim;
 			if ( ha->first_frame >= 0 ) {
 				ha->sx = bi->hold_x;
@@ -1086,7 +1163,7 @@ void brief_render_icon(int stage_num, int icon_num, float frametime, int selecte
 				//hud_set_iff_color(bi->team);
 				brief_set_icon_color(bi->team);
 
-				hud_anim_render(ha, frametime, 1, 0, 1, 0, bscreen.resize, mirror_icon);
+				hud_anim_render(ha, frametime, 1, 0, 1, 0, bscreen.resize, mirror_icon, scale_factor);
 
 				if (!Brief_stage_highlight_sound_handle.isValid()) {
 					if ( !Fred_running) {
@@ -1098,13 +1175,13 @@ void brief_render_icon(int stage_num, int icon_num, float frametime, int selecte
 
 		// render fade-in anim frame
 		if ( bi->flags & BI_FADEIN ) {
-			hud_anim *ha = &bi->fadein_anim;
+			hud_anim *ha = &bi->fade_anim;
 			if ( ha->first_frame >= 0 ) {
 				ha->sx = bx;
 				ha->sy = by;
 				brief_set_icon_color(bi->team);
 
-				if (hud_anim_render(ha, frametime, 1, 0, 0, 1, bscreen.resize, mirror_icon) == 0) {
+				if (hud_anim_render(ha, frametime, 1, 0, 0, 1, bscreen.resize, mirror_icon, scale_factor) == 0) {
 					bi->flags &= ~BI_FADEIN;
 				}
 			} else {
@@ -1114,7 +1191,7 @@ void brief_render_icon(int stage_num, int icon_num, float frametime, int selecte
 
 		if ( !(bi->flags & BI_FADEIN) ) {
 			gr_set_bitmap(icon_bitmap);
-			gr_aabitmap(bx, by, bscreen.resize, mirror_icon);
+			gr_aabitmap(bx, by, bscreen.resize, mirror_icon, scale_factor);
 
 			// draw text centered over the icon (make text darker)
 			if ( bi->type == ICON_FIGHTER_PLAYER || bi->type == ICON_BOMBER_PLAYER ) {
@@ -1206,6 +1283,11 @@ void brief_start_highlight_anims(int stage_num)
 			bi->highlight_anim.time_elapsed=0.0f;
 
 			bm_get_info( bi->highlight_anim.first_frame, &anim_w, &anim_h, NULL);
+			if (bi->scale_factor != 1.0f) {
+				anim_w = static_cast<int>(anim_w * bi->scale_factor);
+				anim_h = static_cast<int>(anim_h * bi->scale_factor);
+			}
+
 			x = fl2i( i2fl(bi->x) + bi->w/2.0f - anim_w/2.0f );
 			y = fl2i( i2fl(bi->y) + bi->h/2.0f - anim_h/2.0f );
 			bi->hold_x = x;
@@ -1235,7 +1317,9 @@ void brief_render_map(int stage_num, float frametime)
 	g3_set_view_matrix(&Current_cam_pos, &Current_cam_orient, Briefing_window_FOV);
 
 	brief_maybe_create_new_grid(The_grid, &Current_cam_pos, &Current_cam_orient);
-	brief_render_grid(The_grid);
+
+	if (Briefing->stages[stage_num].draw_grid)
+		brief_render_grid(The_grid, Briefing->stages[stage_num].grid_color);
 
 	brief_render_fade_outs(frametime);
 
@@ -1831,6 +1915,8 @@ int brief_set_move_list(int new_stage, int current_stage, float time)
 
 			Fading_icons[Num_fade_icons].fade_anim = bii->fade;
 			Fading_icons[Num_fade_icons].pos = cb->icons[i].pos;
+			Fading_icons[Num_fade_icons].scale_factor = cb->icons[i].scale_factor;
+			Fading_icons[Num_fade_icons].mirror = (cb->icons[i].flags & BI_MIRROR_ICON) != 0;
 			Fading_icons[Num_fade_icons].team = cb->icons[i].team;
 			Num_fade_icons++;
 		}
@@ -1852,8 +1938,8 @@ int brief_set_move_list(int new_stage, int current_stage, float time)
 			}
 
 			newb->icons[i].flags |= BI_FADEIN;
-			newb->icons[i].fadein_anim = bii->fade;
-			newb->icons[i].fadein_anim.time_elapsed = 0.0f;
+			newb->icons[i].fade_anim = bii->fade;
+			newb->icons[i].fade_anim.time_elapsed = 0.0f;
 		}
 	}
 
@@ -2195,13 +2281,13 @@ grid *brief_create_default_grid(void)
 /**
  * Rotate and project points and draw a line.
  */
-void brief_rpd_line(vec3d *v0, vec3d *v1)
+void brief_rpd_line(vec3d *v0, vec3d *v1, const color& clr)
 {
 	vertex	tv0, tv1;
 	g3_rotate_vertex(&tv0, v0);
 	g3_rotate_vertex(&tv1, v1);
 
-	gr_set_color_fast(&Color_briefing_grid);
+	gr_set_color_fast(&clr);
 	g3_draw_line(&tv0, &tv1);
 }
 
@@ -2210,7 +2296,7 @@ void brief_rpd_line(vec3d *v0, vec3d *v1)
  *
  * @param gridp Grid defined in a grid struct to render
  */
-void brief_render_grid(grid *gridp)
+void brief_render_grid(grid *gridp, const color& gridc)
 {
 	int	i, ncols, nrows;
 
@@ -2226,11 +2312,11 @@ void brief_render_grid(grid *gridp)
 
 	//	Draw the column lines.
 	for (i=0; i<=ncols; i++)
-		brief_rpd_line(&gridp->gpoints1[i], &gridp->gpoints2[i]);
+		brief_rpd_line(&gridp->gpoints1[i], &gridp->gpoints2[i], gridc);
 
 	//	Draw the row lines.
 	for (i=0; i<=nrows; i++)
-		brief_rpd_line(&gridp->gpoints3[i], &gridp->gpoints4[i]);
+		brief_rpd_line(&gridp->gpoints3[i], &gridp->gpoints4[i], gridc);
 }
 
 void brief_modify_grid(grid *gridp)

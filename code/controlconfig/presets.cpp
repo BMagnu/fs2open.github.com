@@ -1,7 +1,9 @@
 #include "controlconfig/controlsconfig.h"
 #include "controlconfig/presets.h"
+#include "gamesequence/gamesequence.h"
 #include "libs/jansson.h"
 #include "parse/parselo.h"
+#include "popup/popup.h"
 
 #include <jansson.h>
 
@@ -35,7 +37,7 @@ Section lookupSectionValue(const char* name) {
 	return Section::Invalid;
 }
 
-void load_preset_files() {
+void load_preset_files(SCP_string clone) {
 	SCP_vector<SCP_string> filelist;
 	cf_get_file_list(filelist, CF_TYPE_PLAYER_BINDS, NOX("*.json"), CF_SORT_NAME, nullptr,
 	                 CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
@@ -43,7 +45,7 @@ void load_preset_files() {
 	std::unique_ptr<PresetFileHandler> handler = nullptr;
 
 	for (const auto &file : filelist) {
-		CFILE* fp = cfopen((file + ".json").c_str(), "r", CFILE_NORMAL, CF_TYPE_PLAYER_BINDS, false,
+		CFILE* fp = cfopen((file + ".json").c_str(), "r", CF_TYPE_PLAYER_BINDS, false,
 						   CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
 
 		if (!fp) {
@@ -128,12 +130,17 @@ void load_preset_files() {
 		// Done with the file
 		auto it = preset_find_duplicate(preset);
 
-		if (it == Control_config_presets.end()) {
+		// If we just cloned the file, then allow the duplicate. Just this once.
+		if ((clone == preset.name) || (it == Control_config_presets.end())) {
 			Control_config_presets.push_back(preset);
 
 		} else if ((it->name != preset.name) || (it->type != Preset_t::pst)) {
-			// Complain and ignore if the preset names or the type differs
-			Warning(LOCATION, "PST => Preset '%s' is a duplicate of an existing preset, ignoring", preset.name.c_str());
+			if (gameseq_get_state() == GS_STATE_CONTROL_CONFIG) {
+				popup(PF_TITLE_WHITE | PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, "Preset '%s' is a duplicate of an existing preset, ignoring", preset.name.c_str());
+			} else {
+				// Complain and ignore if the preset names or the type differs
+				Warning(LOCATION, "PST => Preset '%s' is a duplicate of an existing preset, ignoring", preset.name.c_str());
+			}
 		
 		} // else, silent ignore
 	}
@@ -147,6 +154,31 @@ bool preset_file_exists(SCP_string name) {
 	return cf_exists(name.c_str(), CF_TYPE_PLAYER_BINDS) != 0;
 }
 
+bool delete_preset_file(CC_preset preset) {
+
+	// can't remove the default preset!
+	if (preset.name == "default") {
+		return false;
+	}
+
+	auto it = control_config_get_current_preset();
+
+	// can't remove the currently loaded preset either!
+	if (preset.name == it->name) {
+		return false;
+	}
+
+	SCP_string filename = preset.name + ".json";
+
+	cf_delete(filename.c_str(), CF_TYPE_PLAYER_BINDS, CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
+
+	// Reload the presets from file.
+	Control_config_presets.resize(1);
+	load_preset_files();
+
+	return true;
+}
+
 bool save_preset_file(CC_preset preset, bool overwrite) {
 	// Must have a name
 	if (preset.name.empty()) {
@@ -158,7 +190,7 @@ bool save_preset_file(CC_preset preset, bool overwrite) {
 	std::unique_ptr<PresetFileHandler> handler = nullptr;
 
 	// Check if there's a file already
-	CFILE* fp = cfopen(filename.c_str(), "r", CFILE_NORMAL, CF_TYPE_PLAYER_BINDS, false,
+	CFILE* fp = cfopen(filename.c_str(), "r", CF_TYPE_PLAYER_BINDS, false,
 	                  CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
 	
 	if ((fp != nullptr) && !overwrite) {
@@ -167,7 +199,7 @@ bool save_preset_file(CC_preset preset, bool overwrite) {
 	}
 
 	// Try opening file for write
-	fp = cfopen(filename.c_str(), "w", CFILE_NORMAL, CF_TYPE_PLAYER_BINDS, false,
+	fp = cfopen(filename.c_str(), "w", CF_TYPE_PLAYER_BINDS, false,
 					   CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
 
 	if (!fp) {

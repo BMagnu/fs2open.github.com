@@ -1,13 +1,20 @@
-#include "lab/renderer/lab_renderer.h"
-#include "lab/labv2_internal.h"
-#include "lab/wmcgui.h"
+#include "freespace.h"
+#include "asteroid/asteroid.h"
+#include "globalincs/vmallocator.h"
 #include "graphics/2d.h"
 #include "graphics/light.h"
+#include "lab/labv2_internal.h"
+#include "lab/renderer/lab_renderer.h"
 #include "lighting/lighting_profiles.h"
+#include "math/bitarray.h"
+#include "model/modelrender.h"
+#include "nebula/neb.h"
+#include "parse/parselo.h"
+#include "particle/particle.h"
 #include "starfield/starfield.h"
 #include "starfield/nebula.h"
-#include "nebula/neb.h"
-#include "freespace.h"
+
+#include "missionui/missionscreencommon.h"
 #include "tracing/tracing.h"
 
 void LabRenderer::onFrame(float frametime) {
@@ -26,10 +33,11 @@ void LabRenderer::onFrame(float frametime) {
 
 		// print out the current pof filename, to help with... something
 		if (strlen(getLabManager()->ModelFilename.c_str())) {
-			gr_get_string_size(&w, &h, getLabManager()->ModelFilename.c_str());
+			SCP_string lab_text = "POF File: " + getLabManager()->ModelFilename + " Detail Level: " + std::to_string(Lab_object_detail_level);
+			gr_get_string_size(&w, &h, lab_text.c_str());
 			gr_set_color_fast(&Color_white);
-			gr_string(gr_screen.center_offset_x + gr_screen.center_w - w,
-				gr_screen.center_offset_y + gr_screen.center_h - h, getLabManager()->ModelFilename.c_str(), GR_RESIZE_NONE);
+			gr_string(gr_screen.center_offset_x + gr_screen.center_w - w - 20, // add a little padding to the right
+				gr_screen.center_offset_y + gr_screen.center_h - h, lab_text.c_str(), GR_RESIZE_NONE);
 		}
 	}
 
@@ -37,6 +45,19 @@ void LabRenderer::onFrame(float frametime) {
 
 	// Normally, we would call gr_flip here, but because wmcgui conflates rendering and input gathering, this is done at the end of 
 	// the LabManager::onFrame method
+}
+
+namespace ltp = lighting_profiles;
+void LabRenderer::resetGraphicsSettings(gfx_options settings) {
+	
+	ltp::lab_set_ambient(settings.ambient_factor);
+	ltp::lab_set_emissive(settings.emissive_factor);
+	ltp::lab_set_exposure(settings.exposure_level);
+	ltp::lab_set_light(settings.light_factor);
+	ltp::lab_set_ppc(settings.ppcv);
+	ltp::lab_set_tonemapper(settings.tonemapper);
+	gr_set_bloom_intensity(settings.bloom_level);
+	Gr_aa_mode = settings.aa_mode;
 }
 
 void LabRenderer::renderModel(float frametime) {
@@ -48,11 +69,18 @@ void LabRenderer::renderModel(float frametime) {
 
 	light_reset();
 
+	if (currentMissionBackground == LAB_MISSION_NONE_STRING) {
+		common_setup_room_lights();
+	}
+
 	Cmdline_emissive = renderFlags[LabRenderFlag::ShowEmissiveLighting];
 
 	object* obj = &Objects[getLabManager()->CurrentObject];
 
-	obj->pos = getLabManager()->CurrentPosition;
+	// Ships && Objects stay put. Weapons are allowed to move so particle effects look correct
+	if (obj->type == OBJ_SHIP || obj->type == OBJ_ASTEROID) {
+		obj->pos = getLabManager()->CurrentPosition;
+	}
 	obj->orient = getLabManager()->CurrentOrientation;
 
 	Envmap_override = renderFlags[LabRenderFlag::NoEnvMap];
@@ -74,6 +102,7 @@ void LabRenderer::renderModel(float frametime) {
 		Ships[obj->instance].flags.set(Ship::Ship_Flags::Render_without_miscmap, renderFlags[LabRenderFlag::NoMiscMap]);
 		Ships[obj->instance].flags.set(Ship::Ship_Flags::Render_without_weapons, !renderFlags[LabRenderFlag::ShowWeapons]);
 		Ships[obj->instance].flags.set(Ship::Ship_Flags::Render_without_ambientmap, renderFlags[LabRenderFlag::NoAOMap]);
+		Ships[obj->instance].flags.set(Ship::Ship_Flags::No_insignias, !renderFlags[LabRenderFlag::ShowInsignia]);
 
 		Ships[obj->instance].team_name = currentTeamColor;
 
@@ -85,6 +114,48 @@ void LabRenderer::renderModel(float frametime) {
 		}
 	}
 
+	if (obj->type == OBJ_WEAPON) {
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Draw_as_wireframe, renderFlags[LabRenderFlag::ShowWireframe]);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_full_detail, renderFlags[LabRenderFlag::ShowFullDetail]);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_without_light,
+			renderFlags[LabRenderFlag::NoLighting] || currentMissionBackground == LAB_MISSION_NONE_STRING);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_without_diffuse, renderFlags[LabRenderFlag::NoDiffuseMap]);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_without_glowmap, renderFlags[LabRenderFlag::NoGlowMap]);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_without_normalmap, renderFlags[LabRenderFlag::NoNormalMap]);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_without_specmap, renderFlags[LabRenderFlag::NoSpecularMap]);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_without_reflectmap, renderFlags[LabRenderFlag::NoReflectMap]);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_without_heightmap, renderFlags[LabRenderFlag::NoHeightMap]);
+		Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::Render_without_ambientmap, renderFlags[LabRenderFlag::NoAOMap]);
+	}
+
+	if (obj->type == OBJ_RAW_POF) {
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Draw_as_wireframe, renderFlags[LabRenderFlag::ShowWireframe]);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_full_detail, renderFlags[LabRenderFlag::ShowFullDetail]);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_without_light,
+			renderFlags[LabRenderFlag::NoLighting] || currentMissionBackground == LAB_MISSION_NONE_STRING);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_without_diffuse, renderFlags[LabRenderFlag::NoDiffuseMap]);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_without_glowmap, renderFlags[LabRenderFlag::NoGlowMap]);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_without_normalmap, renderFlags[LabRenderFlag::NoNormalMap]);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_without_specmap, renderFlags[LabRenderFlag::NoSpecularMap]);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_without_reflectmap, renderFlags[LabRenderFlag::NoReflectMap]);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_without_heightmap, renderFlags[LabRenderFlag::NoHeightMap]);
+		Pof_objects[obj->instance].flags.set(Object::Raw_Pof_Flags::Render_without_ambientmap, renderFlags[LabRenderFlag::NoAOMap]);
+	}
+
+	if (obj->type == OBJ_ASTEROID) {
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Draw_as_wireframe, renderFlags[LabRenderFlag::ShowWireframe]);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_full_detail, renderFlags[LabRenderFlag::ShowFullDetail]);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_without_light,
+			renderFlags[LabRenderFlag::NoLighting] || currentMissionBackground == LAB_MISSION_NONE_STRING);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_without_diffuse, renderFlags[LabRenderFlag::NoDiffuseMap]);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_without_glowmap, renderFlags[LabRenderFlag::NoGlowMap]);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_without_normalmap, renderFlags[LabRenderFlag::NoNormalMap]);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_without_specmap, renderFlags[LabRenderFlag::NoSpecularMap]);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_without_reflectmap, renderFlags[LabRenderFlag::NoReflectMap]);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_without_heightmap, renderFlags[LabRenderFlag::NoHeightMap]);
+		Asteroids[obj->instance].render_flags.set(Object::Raw_Pof_Flags::Render_without_ambientmap, renderFlags[LabRenderFlag::NoAOMap]);
+	}
+
 	if (renderFlags[LabRenderFlag::ShowWireframe])
 		model_render_set_wireframe_color(&Color_white);
 
@@ -92,6 +163,8 @@ void LabRenderer::renderModel(float frametime) {
 		obj->phys_info.linear_thrust.xyz.z = 1.0f;
 		if (obj->type == OBJ_SHIP) {
 			Ships[obj->instance].flags.remove(Ship::Ship_Flags::No_thrusters);
+		} else if (obj->type == OBJ_WEAPON) {
+			Weapons[obj->instance].weapon_flags.remove(Weapon::Weapon_Flags::No_thruster);
 		}
 		if (renderFlags[LabRenderFlag::ShowAfterburners]) {
 			obj->phys_info.flags |= PF_AFTERBURNER_ON;
@@ -104,14 +177,42 @@ void LabRenderer::renderModel(float frametime) {
 	else {
 		obj->phys_info.linear_thrust.xyz.z = 0.0f;
 
-		if (obj->type == OBJ_SHIP)
+		if (obj->type == OBJ_SHIP) {
 			Ships[obj->instance].flags.set(Ship::Ship_Flags::No_thrusters);
+		} else if (obj->type == OBJ_WEAPON) {
+			Weapons[obj->instance].weapon_flags.set(Weapon::Weapon_Flags::No_thruster);
+		}
+	}
+
+	// Prevent weapons from destroying themselves
+	if (!getLabManager()->AllowWeaponDestruction) {
+		if (obj->type == OBJ_WEAPON) {
+			weapon* wep = &Weapons[obj->instance];
+			weapon_info* wip = &Weapon_info[wep->weapon_info_index];
+
+			if (wip != nullptr && !wip->wi_flags[Weapon::Info_Flags::Beam]) {
+				wep->lifeleft = wip->lifetime;
+			}
+		} else if (obj->type == OBJ_BEAM) {
+			beam* b = &Beams[obj->instance];
+			//Little hack to keep targeting beams going
+			if (b->type == BeamType::TARGETING) {
+				b->life_left = 0.1f;
+			} else {
+				b->life_left = b->life_total;
+			}
+		}
 	}
 
 	obj_move_all(frametime);
 
-	particle::move_all(frametime);
-	particle::ParticleManager::get()->doFrame(frametime);
+	// Force the camera to follow our current object
+	labCamera->updateCamera();
+
+	if (!renderFlags[LabRenderFlag::NoParticles]) {
+		particle::move_all(frametime);
+		particle::ParticleManager::get()->doFrame(frametime);
+	}
 	shockwave_move_all(frametime);
 
 	Trail_render_override = true;
@@ -250,7 +351,7 @@ void LabRenderer::useBackground(const SCP_string& mission_name) {
 	extern const char* Neb2_filenames[];
 
 	char envmap_name[MAX_FILENAME_LEN] = {0};
-
+	SCP_string ltp_name;
 	currentMissionBackground = mission_name;
 
 	stars_pre_level_init(true);
@@ -259,7 +360,7 @@ void LabRenderer::useBackground(const SCP_string& mission_name) {
 	// (DahBlount) - Remember to load the debris anims
 	stars_load_debris(false);
 
-	if (mission_name != "None") {
+	if (mission_name != LAB_MISSION_NONE_STRING) {
 		read_file_text((mission_name + ".fs2").c_str(), CF_TYPE_MISSIONS);
 		reset_parse();
 
@@ -268,9 +369,19 @@ void LabRenderer::useBackground(const SCP_string& mission_name) {
 		if (optional_string("+Flags:"))
 			stuff_flagset(&flags);
 
-		// Are we using a skybox?
-		skip_to_start_of_string_either("$Skybox Model:", "#Background bitmaps");
+		skip_to_start_of_string_one_of(SCP_vector<SCP_string>{ "+Volumetric Nebula:", "$Skybox Model:", "$Lighting Profile:", "#Background bitmaps" });
+		if (optional_string("+Volumetric Nebula:")) {
+			//Rendering usually happens in post-mission-init, just do it now in the lab
+			The_mission.volumetrics.emplace().parse_volumetric_nebula().renderVolumeBitmap();
+		}
+		else {
+			volumetrics_level_close();
+		}
 
+		// Are we using a skybox?
+		//skip will skip to the end of the file (or to the 'end' string) if any string is absent,
+		//so be sure to include any section that might be found
+		skip_to_start_of_string_one_of(SCP_vector<SCP_string>{ "$Skybox Model:", "$Lighting Profile:", "#Background bitmaps" });
 		strcpy_s(skybox_model, "");
 		if (optional_string("$Skybox Model:")) {
 			stuff_string(skybox_model, F_NAME, MAX_FILENAME_LEN);
@@ -289,8 +400,15 @@ void LabRenderer::useBackground(const SCP_string& mission_name) {
 
 			stars_set_background_model(skybox_model, nullptr, skybox_flags);
 			stars_set_background_orientation(&skybox_orientation);
+		}
 
-			skip_to_start_of_string("#Background bitmaps");
+		skip_to_start_of_string_either("$Lighting Profile:", "#Background bitmaps");
+		ltp_name = ltp::default_name();
+		if(optional_string("$Lighting Profile:")){
+			stuff_string(ltp_name,F_NAME);
+		}
+		if (ltp_name != ltp::current()->name) {
+				ltp::switch_to(ltp_name);
 		}
 
 		if (optional_string("#Background bitmaps")) {
@@ -310,7 +428,7 @@ void LabRenderer::useBackground(const SCP_string& mission_name) {
 				(ambient_light_level >> 16) & 0xff);
 
 			strcpy_s(Neb2_texture_name, "");
-			Neb2_poof_flags = ((1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5));
+			clear_all_bits(Neb2_poof_flags.get(), Poof_info.size());
 			bool nebula = false;
 			if (optional_string("+Neb2:")) {
 				nebula = true;
@@ -319,7 +437,7 @@ void LabRenderer::useBackground(const SCP_string& mission_name) {
 			if (optional_string("+Neb2Color:")) {
 				nebula = true;
 				int neb_colors[3];
-				stuff_int_list(neb_colors, 3, RAW_INTEGER_TYPE);
+				stuff_int_list(neb_colors, 3, ParseLookupType::RAW_INTEGER_TYPE);
 				Neb2_fog_color[0] = (ubyte)neb_colors[0];
 				Neb2_fog_color[1] = (ubyte)neb_colors[1];
 				Neb2_fog_color[2] = (ubyte)neb_colors[2];
@@ -327,8 +445,18 @@ void LabRenderer::useBackground(const SCP_string& mission_name) {
 			}
 
 			if (nebula){
-				required_string("+Neb2Flags:");
-				stuff_int(&Neb2_poof_flags);
+				// Obsolete and only for backwards compatibility
+				if (optional_string("+Neb2Flags:")) {
+					int temp;
+					stuff_int(&temp);
+					bit_array_set_from_int(Neb2_poof_flags.get(), Poof_info.size(), temp);
+				}
+				// Get poofs by name
+				if (optional_string("+Neb2 Poofs List:")) {
+					SCP_vector<SCP_string> poofs_list;
+					stuff_string_list(poofs_list);
+					neb2_set_poof_bits(poofs_list);
+				}
 
 				if (flags[Mission::Mission_Flags::Fullneb]) {
 					neb2_post_level_init(flags[Mission::Mission_Flags::Neb2_fog_color_override]);
@@ -400,12 +528,7 @@ void LabRenderer::useBackground(const SCP_string& mission_name) {
 					}
 				}
 
-				if (Nebula_index >= 0) {
-					nebula_init(Nebula_filenames[Nebula_index], Nebula_pitch, Nebula_bank, Nebula_heading);
-				}
-				else {
-					nebula_close();
-				}
+				nebula_init(Nebula_index, Nebula_pitch, Nebula_bank, Nebula_heading);
 			}
 
 			stars_load_debris(flags[Mission::Mission_Flags::Fullneb]);

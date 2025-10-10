@@ -32,9 +32,12 @@ typedef struct cutscene_info
 	char name[NAME_LENGTH];
 	char* description;
 	flagset<Cutscene::Cutscene_Flags> flags;
+	SCP_map<SCP_string, SCP_string> custom_data;
 } cutscene_info;
 
 extern SCP_vector<cutscene_info> Cutscenes;
+
+extern bool Movie_active;
 
 // initializa table data
 void cutscene_init();
@@ -46,5 +49,7 @@ void cutscenes_screen_close();
 void cutscenes_screen_do_frame();
 
 void cutscene_mark_viewable(const char* filename);
+
+int get_cutscene_index_by_name(const char* name);
 
 #endif

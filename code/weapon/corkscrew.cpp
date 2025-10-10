@@ -145,6 +145,13 @@ int cscrew_create(object *obj)
 	// get the "center" pointing vector
 	vec3d neg;
 	neg = obj->orient.vec.uvec;
+
+	if (wip->cs_random_angle) {
+		vm_rot_point_around_line(&neg, &neg, frand_range(0.0f, PI2), &vmd_zero_vector, &obj->orient.vec.fvec);
+	} else {
+		vm_rot_point_around_line(&neg, &neg, wip->cs_angle, &vmd_zero_vector, &obj->orient.vec.fvec);
+	}
+
 	if(Corkscrew_down_first){
 		vm_vec_negate(&neg);
 	}
@@ -234,9 +241,8 @@ void cscrew_process_post(object *objp)
 	
 		// compute a "fake" orient and store the old one for safekeeping
 		ci->real_orient = objp->orient;
-		vm_vec_sub(&dir, &objp->pos, &ci->last_corkscrew_pos);
-		vm_vec_normalize(&dir);
-		vm_vector_2_matrix(&objp->orient, &dir, NULL, NULL);	
+		vm_vec_normalized_dir(&dir, &objp->pos, &ci->last_corkscrew_pos);
+		vm_vector_2_matrix_norm(&objp->orient, &dir, nullptr, nullptr);
 		
 		// mark down this position so we can orient nicely _next_ frame
 		ci->last_corkscrew_pos = objp->pos;

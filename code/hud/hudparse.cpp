@@ -10,6 +10,7 @@
 
 #include "cmdline/cmdline.h"
 #include "graphics/font.h" //for gr_force_fit_string
+#include "graphics/openxr.h"
 #include "hud/hud.h"
 #include "hud/hudbrackets.h"
 #include "hud/hudconfig.h" // for retrieving user's hud config
@@ -41,6 +42,7 @@ extern bool Ships_inited; //Need this
 
 float Hud_unit_multiplier = 1.0f;	//Backslash
 float Hud_speed_multiplier = 1.0f;	//The E
+float Hud_global_scale = 1.0f;
 
 // Goober5000
 int Hud_reticle_style = HUD_RETICLE_STYLE_FS2;
@@ -193,7 +195,13 @@ flag_def_list Hud_gauge_types[] = {
 	{ "Missile indicator",	HUD_OBJECT_MISSILE_TRI,			0},
 	{ "Kills",				HUD_OBJECT_KILLS,				0},
 	{ "Fixed messages",		HUD_OBJECT_FIXED_MESSAGES,		0},		// Not in legacy list
-	{ "Ets retail",			HUD_OBJECT_ETS_RETAIL,			0}
+	{ "Ets retail",			HUD_OBJECT_ETS_RETAIL,			0},
+	{ "Flight path",		HUD_OBJECT_FLIGHT_PATH,			0},		// Not in legacy list
+	{ "Warhead count",		HUD_OBJECT_WARHEAD_COUNT,		0},		// Not in legacy list
+	{ "Hardpoints",			HUD_OBJECT_HARDPOINTS,			0},		// Not in legacy list
+	{ "Primary weapons",	HUD_OBJECT_PRIMARY_WEAPONS,		0},		// Not in legacy list
+	{ "Secondary weapons",	HUD_OBJECT_SECONDARY_WEAPONS,	0},		// Not in legacy list
+	{ "Scripting",			HUD_OBJECT_SCRIPTING,			0}		// Not in legacy list
 };
 int Num_hud_gauge_types = sizeof(Hud_gauge_types)/sizeof(flag_def_list);
 
@@ -208,9 +216,10 @@ int parse_ship_start()
 	return ship_index;
 }
 
+SCP_vector<std::pair<SCP_string, SCP_string>> Hud_parsed_ships;
+
 void parse_hud_gauges_tbl(const char *filename)
 {
-	int i;
 	char *saved_Mp = NULL;
 
 	int colors[3] = {255, 255, 255};
@@ -227,11 +236,106 @@ void parse_hud_gauges_tbl(const char *filename)
 		read_file_text(filename, CF_TYPE_TABLES);
 		reset_parse();
 
+		if (optional_string("#HUD Config Settings")) {
+			if (optional_string("$Show Default HUD:")) {
+				stuff_boolean(&HC_show_default_hud);
+			}
+			if (optional_string("$Head Animation:")) {
+				stuff_string(HC_head_anim_filename, F_NAME);
+			}
+
+			if (optional_string("$Shield Gauge Ship:")) {
+				SCP_string temp;
+				stuff_string(temp, F_NAME);
+
+				bool found = false;
+
+				for (const auto& ship : Ship_info) {
+					if (!stricmp(ship.name, temp.c_str())) {
+						HC_hud_shield_ships["default"][SHIELD_GAUGE_PLAYER] = ship.name;
+						found = true;
+						break;
+					}
+				}
+
+				if (!found) {
+					Warning(LOCATION, "Shield gauge ship \"%s\" not found in ships.tbl!", temp.c_str());
+				}
+			}
+
+			if (optional_string("$Shield Gauge Target Ship:")) {
+				SCP_string temp;
+				stuff_string(temp, F_NAME);
+
+				bool found = false;
+
+				for (const auto& ship : Ship_info) {
+					if (!stricmp(ship.name, temp.c_str())) {
+						HC_hud_shield_ships["default"][SHIELD_GAUGE_TARGET] = ship.name;
+						found = true;
+						break;
+					}
+				}
+
+				if (!found) {
+					Warning(LOCATION, "Shield gauge target ship \"%s\" not found in ships.tbl!", temp.c_str());
+				}
+			}
+
+			if (optional_string("$Primary Weapons:")) {
+				stuff_string_list(HC_hud_primary_weapons["default"]);
+			}
+
+			if (optional_string("$Secondary Weapons:")) {
+				stuff_string_list(HC_hud_secondary_weapons["default"]);
+			}
+
+			if (optional_string("$Example Wing Names:")) {
+				stuff_string_list(HC_wingam_gauge_status_names, MAX_SQUADRON_WINGS);
+			}
+
+			for (int i = 0; i < NUM_HUD_COLOR_PRESETS; i++) {
+				SCP_string colorPresetString = "$Color Preset " + std::to_string(i + 1) + ":";
+				SCP_string colourPresetString = "$Colour Preset " + std::to_string(i + 1) + ":";
+				if (optional_string_either(colorPresetString.c_str(), colourPresetString.c_str()) >= 0) {
+					hc_col preset;
+					required_string("+Name:");
+					stuff_string(preset.name, F_NAME);
+
+					required_string("+XSTR ID:");
+					stuff_int(&preset.xstr);
+
+					required_string_either("+Color:", "+Colour:", true);
+					int rgb[3] = {255, 255, 255};
+					stuff_int_list(rgb, 3);
+
+					for (auto& c : rgb) {
+						CLAMP(c, 0, 255);
+					}
+
+					preset.r = rgb[0];
+					preset.g = rgb[1];
+					preset.b = rgb[2];
+
+					HC_colors[i] = preset;
+					if (optional_string("+Default")) {
+						HC_default_color = i;
+					}
+				}
+			}
+
+			if (optional_string("$Default Preset File:")) {
+				stuff_string(HC_default_preset_file, F_NAME);
+			}
+		}
+
+		optional_string("#HUD Global Settings");
+
 		if (optional_string("$Load Retail Configuration:")) {
 			stuff_boolean(&Hud_retail);
 		}
 
-		if (optional_string("$Color:")) {
+		if (optional_string_either("$Color:", "$Colour:") >= 0) {
 			stuff_int_list(colors, 3);
 
 			check_color(colors);
@@ -256,11 +360,11 @@ void parse_hud_gauges_tbl(const char *filename)
 			stuff_int(&Max_escort_ships);
 		}
 
-		if (optional_string("$Length Unit Multiplier:"))	{
+		if (optional_string("$Distance Unit Multiplier:") || optional_string("$Length Unit Multiplier:"))	{
 			stuff_float(&Hud_unit_multiplier);
 
 			if (Hud_unit_multiplier <= 0.0f) {
-				Warning(LOCATION, "\"$Length Unit Multiplier:\" value of \"%f\" is invalid!  Resetting to default.", Hud_unit_multiplier);
+				Warning(LOCATION, "\"$Distance Unit Multiplier:\" (aka \"$Length Unit Multiplier:\") value of \"%f\" is invalid!  Resetting to default.", Hud_unit_multiplier);
 				Hud_unit_multiplier = 1.0f;
 			}
 		}
@@ -282,6 +386,13 @@ void parse_hud_gauges_tbl(const char *filename)
 			if ((Targetbox_wire < 0) || (Targetbox_wire > 3)) {
 				Targetbox_wire = 0;
 			}
+		}
+
+		if (optional_string_either("$Wireframe Color Override:", "$Wireframe Colour Override:") >= 0) {
+			int rgb[3];
+			stuff_int_list(rgb, 3, ParseLookupType::RAW_INTEGER_TYPE);
+			gr_init_color(&Targetbox_color, rgb[0], rgb[1], rgb[2]);
+			Targetbox_color_override = true;
 		}
 
 		if (optional_string("$Targetbox Shader Effect:")) {
@@ -326,10 +437,11 @@ void parse_hud_gauges_tbl(const char *filename)
 		SCP_vector<int> ship_classes;
 		bool retail_config = false;
 		int n_ships = 0;
+		SCP_string name;
 
 		while (optional_string("#Gauge Config")) {
 			ship_classes.clear();
-			switch (optional_string_either("$Ship:", "$Ships:")) {
+			switch (optional_string_one_of(3, "$Ship:", "$Ships:", "$Name:")) {
 			case 0:
 				mprintf(("$Ship in hud_gauges.tbl and -hdg.tbms is deprecated. Use \"$Ships: (\"Some ship class\") instead.\n"));
 
@@ -351,7 +463,7 @@ void parse_hud_gauges_tbl(const char *filename)
 						stuff_boolean(&Ship_info[ship_idx].hud_retail);
 					}
 
-					if (optional_string("$Color:")) {
+					if (optional_string_either("$Color:", "$Colour:") >= 0) {
 						stuff_int_list(colors, 3);
 
 						check_color(colors);
@@ -376,21 +488,110 @@ void parse_hud_gauges_tbl(const char *filename)
 				}
 				break;
 			case 1:
+				mprintf(("$Ships in hud_gauges.tbl and -hdg.tbms can be replaced. Gauge Config Settings can now be defined per-ship in ships.tbl. \n"));
+
 				int shiparray[256];
 
-				n_ships = (int)stuff_int_list(shiparray, 256, SHIP_INFO_TYPE);
+				n_ships = sz2i(stuff_int_list(shiparray, 256, ParseLookupType::SHIP_INFO_TYPE));
 
 				if (optional_string("$Load Retail Configuration:")) {
 					stuff_boolean(&retail_config);
 				}
 
-				for (i = 0; i < n_ships; ++i) {
+				for (int i = 0; i < n_ships; ++i) {
 					ship_classes.push_back(shiparray[i]);
 					Ship_info[shiparray[i]].hud_enabled = true;
 					Ship_info[shiparray[i]].hud_retail = retail_config;
 				}
 
-				if (optional_string("$Color:")) {
+				if (optional_string_either("$Color:", "$Colour:") >= 0) {
+					stuff_int_list(colors, 3);
+
+					check_color(colors);
+					gr_init_alphacolor(&ship_color, colors[0], colors[1], colors[2], 255);
+					ship_clr_p = &ship_color;
+				}
+
+				if (optional_string("$Font:")) {
+					ship_font = font::parse_font();
+				}
+				if (optional_string("$Chase View Only:")) {
+					stuff_boolean(&chase_view_only);
+				}
+				break;
+			case 2:
+				stuff_string(name, F_NAME);
+
+				if (optional_string("$Show in HUD Config:")) {
+					bool show = true;
+					stuff_boolean(&show);
+
+					if (!show) {
+						HC_ignored_huds.insert(name);
+					}
+				}
+
+				if (optional_string("$Shield Gauge Ship:")) {
+					SCP_string temp;
+					stuff_string(temp, F_NAME);
+
+					bool found = false;
+
+					for (const auto& ship : Ship_info) {
+						if (!stricmp(ship.name, temp.c_str())) {
+							HC_hud_shield_ships[name][SHIELD_GAUGE_PLAYER] = temp;
+							found = true;
+							break;
+						}
+					}
+
+					if (!found) {
+						Warning(LOCATION, "Shield gauge ship \"%s\" not found in ships.tbl!", temp.c_str());
+					}
+				}
+
+				if (optional_string("$Shield Gauge Target Ship:")) {
+					SCP_string temp;
+					stuff_string(temp, F_NAME);
+
+					bool found = false;
+
+					for (const auto& ship : Ship_info) {
+						if (!stricmp(ship.name, temp.c_str())) {
+							HC_hud_shield_ships[name][SHIELD_GAUGE_TARGET] = ship.name;
+							found = true;
+							break;
+						}
+					}
+
+					if (!found) {
+						Warning(LOCATION, "Shield gauge target ship \"%s\" not found in ships.tbl!", temp.c_str());
+					}
+				}
+
+				if (optional_string("$Primary Weapons:")) {
+					stuff_string_list(HC_hud_primary_weapons[name]);
+				}
+
+				if (optional_string("$Secondary Weapons:")) {
+					stuff_string_list(HC_hud_secondary_weapons[name]);
+				}
+
+				if (optional_string("$Load Retail Configuration:")) {
+					stuff_boolean(&retail_config);
+				}
+
+				// Here we add in any ships who set their HUD Config in ships.tbl
+				for (const auto& pair : Hud_parsed_ships) {
+					if (!stricmp(pair.first.c_str(), name.c_str())) {
+						int idx = ship_info_lookup(pair.second.c_str());
+						ship_classes.push_back(idx);
+						Ship_info[idx].hud_enabled = true;
+						Ship_info[idx].hud_retail = retail_config;
+					}
+				}
+
+				if (optional_string_either("$Color:", "$Colour:") >= 0) {
 					stuff_int_list(colors, 3);
 
 					check_color(colors);
@@ -431,7 +632,7 @@ void parse_hud_gauges_tbl(const char *filename)
 			required_string("$Base:");
 
 			// get the base width and height describing this HUD
-			stuff_int_list(base_res, 2, RAW_INTEGER_TYPE);
+			stuff_int_list(base_res, 2, ParseLookupType::RAW_INTEGER_TYPE);
 
 			// gauge scaling for this base res?
 			if (optional_string("$Scale Gauges:")) {
@@ -464,7 +665,7 @@ void parse_hud_gauges_tbl(const char *filename)
 			// check minimum resolution
 			if (optional_string("$Min:")) {
 				int min_res[2];
-				stuff_int_list(min_res, 2, RAW_INTEGER_TYPE);
+				stuff_int_list(min_res, 2, ParseLookupType::RAW_INTEGER_TYPE);
 
 				if (min_res[0] > gr_screen.max_w) {
 					prune_config = true;
@@ -479,7 +680,7 @@ void parse_hud_gauges_tbl(const char *filename)
 			// check maximum resolution
 			if (optional_string("$Max:")) {
 				int max_res[2];
-				stuff_int_list(max_res, 2, RAW_INTEGER_TYPE);
+				stuff_int_list(max_res, 2, ParseLookupType::RAW_INTEGER_TYPE);
 
 				if (max_res[0] < gr_screen.max_w) {
 					prune_config = true;
@@ -691,38 +892,44 @@ void init_hud() {
 
 		for(i = 0; i < num_gauges; i++) {
 			config_type = Ship_info[Player_ship->ship_info_index].hud_gauges[i]->getConfigType();
+			SCP_string config_id = Ship_info[Player_ship->ship_info_index].hud_gauges[i]->getConfigId();
 
-			if ( !Ship_info[Player_ship->ship_info_index].hud_gauges[i]->isOffbyDefault() && hud_config_show_flag_is_set(config_type) )
+			if ( !Ship_info[Player_ship->ship_info_index].hud_gauges[i]->isOffbyDefault() && HUD_config.is_gauge_visible(config_id) )
 				Ship_info[Player_ship->ship_info_index].hud_gauges[i]->updateActive(true);
 			else
 				Ship_info[Player_ship->ship_info_index].hud_gauges[i]->updateActive(false);
 
-			Ship_info[Player_ship->ship_info_index].hud_gauges[i]->updatePopUp(hud_config_popup_flag_is_set(config_type) ? true : false);
-			Ship_info[Player_ship->ship_info_index].hud_gauges[i]->updateColor(
-				HUD_config.clr[config_type].red, 
-				HUD_config.clr[config_type].green, 
-				HUD_config.clr[config_type].blue, 
-				HUD_config.clr[config_type].alpha
-				);
+			Ship_info[Player_ship->ship_info_index].hud_gauges[i]->updatePopUp(HUD_config.is_gauge_popup(config_id));
+			color clr;
+			if (config_id.empty()) {
+				const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
+				clr = HUD_config.gauge_colors[gauge_map.get_string_id_from_numeric_id(config_type)];
+			} else {
+				clr = HUD_config.get_gauge_color(config_id);
+			}
+			Ship_info[Player_ship->ship_info_index].hud_gauges[i]->updateColor(clr.red, clr.green, clr.blue, clr.alpha);
 		}
 	} else {
 		num_gauges = default_hud_gauges.size();
 
 		for(i = 0; i < num_gauges; i++) {
 			config_type = default_hud_gauges[i]->getConfigType();
+			SCP_string config_id = default_hud_gauges[i]->getConfigId();
 
-			if ( !default_hud_gauges[i]->isOffbyDefault() && hud_config_show_flag_is_set(config_type) )
+			if ( !default_hud_gauges[i]->isOffbyDefault() && HUD_config.is_gauge_visible(config_id) )
 				default_hud_gauges[i]->updateActive(true);
 			else
 				default_hud_gauges[i]->updateActive(false);
 
-			default_hud_gauges[i]->updatePopUp(hud_config_popup_flag_is_set(config_type) ? true : false);
-			default_hud_gauges[i]->updateColor(
-				HUD_config.clr[config_type].red, 
-				HUD_config.clr[config_type].green, 
-				HUD_config.clr[config_type].blue, 
-				HUD_config.clr[config_type].alpha
-				);
+			default_hud_gauges[i]->updatePopUp(HUD_config.is_gauge_popup(config_id));
+			color clr;
+			if (config_id.empty()) {
+				const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
+				clr = HUD_config.gauge_colors[gauge_map.get_string_id_from_numeric_id(config_type)];
+			} else {
+				clr = HUD_config.get_gauge_color(config_id);
+			}
+			default_hud_gauges[i]->updateColor(clr.red, clr.green, clr.blue, clr.alpha);
 		}
 	}
 }
@@ -744,40 +951,46 @@ void set_current_hud()
 		for(i = 0; i < num_gauges; i++) {
 			HudGauge* hgp = Ship_info[Player_ship->ship_info_index].hud_gauges[i].get();
 			config_type = hgp->getConfigType();
+			SCP_string config_id = hgp->getConfigId();
 
-			if ( ( (!hgp->isOffbyDefault() || hgp->isActive()) && hud_config_show_flag_is_set(config_type)) )
+			if ( ( (!hgp->isOffbyDefault() || hgp->isActive()) && HUD_config.is_gauge_visible(config_id)) )
 				hgp->updateActive(true);
 			else
 				hgp->updateActive(false);
 
 			//hgp->updateActive(hud_config_show_flag_is_set(config_type) ? true : false);
-			hgp->updatePopUp(hud_config_popup_flag_is_set(config_type) ? true : false);
-			hgp->updateColor(
-				HUD_config.clr[config_type].red, 
-				HUD_config.clr[config_type].green, 
-				HUD_config.clr[config_type].blue, 
-				HUD_config.clr[config_type].alpha
-				);
+			hgp->updatePopUp(HUD_config.is_gauge_popup(config_id));
+			color clr;
+			if (config_id.empty()) {
+				const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
+				clr = HUD_config.gauge_colors[gauge_map.get_string_id_from_numeric_id(config_type)];
+			} else {
+				clr = HUD_config.get_gauge_color(config_id);
+			}
+			hgp->updateColor(clr.red, clr.green, clr.blue, clr.alpha);
 		}
 	} else {
 		num_gauges = default_hud_gauges.size();
 
 		for(i = 0; i < num_gauges; i++) {
 			config_type = default_hud_gauges[i]->getConfigType();
+			SCP_string config_id = default_hud_gauges[i]->getConfigId();
 
-			if ( ( (!default_hud_gauges[i]->isOffbyDefault() || default_hud_gauges[i]->isActive()) && hud_config_show_flag_is_set(config_type)) )
+			if ( ( (!default_hud_gauges[i]->isOffbyDefault() || default_hud_gauges[i]->isActive()) &&HUD_config.is_gauge_visible(config_id)) )
 				default_hud_gauges[i]->updateActive(true);
 			else
 				default_hud_gauges[i]->updateActive(false);
 
 			//default_hud_gauges[i]->updateActive(hud_config_show_flag_is_set(config_type) ? true : false);
-			default_hud_gauges[i]->updatePopUp(hud_config_popup_flag_is_set(config_type) ? true : false);
-			default_hud_gauges[i]->updateColor(
-				HUD_config.clr[config_type].red, 
-				HUD_config.clr[config_type].green, 
-				HUD_config.clr[config_type].blue, 
-				HUD_config.clr[config_type].alpha
-				);
+			default_hud_gauges[i]->updatePopUp(HUD_config.is_gauge_popup(config_id));
+			color clr;
+			if (config_id.empty()) {
+				const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
+				clr = HUD_config.gauge_colors[gauge_map.get_string_id_from_numeric_id(config_type)];
+			} else {
+				clr = HUD_config.get_gauge_color(config_id);
+			}
+			default_hud_gauges[i]->updateColor(clr.red, clr.green, clr.blue, clr.alpha);
 		}
 	}
 }
@@ -1199,12 +1412,12 @@ void adjust_for_multimonitor(int *base_res, bool set_position, int *coords)
 	float scale_w = (float)gr_screen.center_w / (float)base_res[0];
 	float scale_h = (float)gr_screen.center_h / (float)base_res[1];
 
-	base_res[0] = fl2ir(base_res[0] * ((float)gr_screen.max_w / (float)gr_screen.center_w));
-	base_res[1] = fl2ir(base_res[1] * ((float)gr_screen.max_h / (float)gr_screen.center_h));
+	base_res[0] = fl2ir(base_res[0] * ((float)gr_screen.max_w / (float)gr_screen.center_w / Hud_global_scale));
+	base_res[1] = fl2ir(base_res[1] * ((float)gr_screen.max_h / (float)gr_screen.center_h / Hud_global_scale));
 
 	if (set_position) {
-		coords[0] += fl2ir(gr_screen.center_offset_x / scale_w);
-		coords[1] += fl2ir(gr_screen.center_offset_y / scale_h);
+		coords[0] += fl2ir(gr_screen.center_offset_x / scale_w + ((1.0f - Hud_global_scale) * 0.5f * (float)base_res[0]));
+		coords[1] += fl2ir(gr_screen.center_offset_y / scale_h + ((1.0f - Hud_global_scale) * 0.5f * (float)base_res[1]));
 	}
 }
 
@@ -1219,6 +1432,7 @@ std::unique_ptr<T> gauge_load_common(gauge_settings* settings, T* preAllocated =
 	int display_size[2] = {0, 0};
 	int display_offset[2] = {0, 0};
 	int canvas_size[2] = {0, 0};
+	bool visible_in_config = true;
 
 	if(check_base_res(settings->base_res)) {
 		if (settings->set_position) {
@@ -1307,7 +1521,7 @@ std::unique_ptr<T> gauge_load_common(gauge_settings* settings, T* preAllocated =
 			colors[2] = settings->use_clr->blue;
 
 			lock_color = true;
-		} else if ( optional_string("Color:") ) {
+		} else if ( optional_string_either("Color:", "Colour:") >= 0 ) {
 			stuff_int_list(colors, 3);
 
 			check_color(colors);
@@ -1350,6 +1564,10 @@ std::unique_ptr<T> gauge_load_common(gauge_settings* settings, T* preAllocated =
 		}
 	}
 
+	if (optional_string("Config:")) {
+		stuff_boolean(&visible_in_config);
+	}
+
 	std::unique_ptr<T> instance(preAllocated);
 
 	if (instance == NULL)
@@ -1374,6 +1592,12 @@ std::unique_ptr<T> gauge_load_common(gauge_settings* settings, T* preAllocated =
 		instance->lockConfigColor(lock_color);
 	}
 
+	if (openxr_requested()) {
+		//In this case, we must always slew every hud gauge, no matter what.
+		instance->initSlew(true);
+	}
+	instance->initVisible_in_config(visible_in_config);
+
 	return instance;
 }
 
@@ -1383,11 +1607,11 @@ void gauge_assign_common(const gauge_settings* settings, std::unique_ptr<T>&& hu
 		for (auto ship_index = settings->ship_idx->begin(); ship_index != settings->ship_idx->end(); ++ship_index) {
 			std::unique_ptr<T> instance(new T());
 			*instance = *hud_gauge;
-			Ship_info[*ship_index].hud_gauges.push_back(move(instance));
+			Ship_info[*ship_index].hud_gauges.push_back(std::move(instance));
 		}
 		// Previous instance goes out of scope here and is destructed
 	} else {
-		default_hud_gauges.push_back(move(hud_gauge));
+		default_hud_gauges.push_back(std::move(hud_gauge));
 	}
 }
 
@@ -1410,6 +1634,7 @@ void load_gauge_custom(gauge_settings* settings)
 	int display_size[2] = {0, 0};
 	int display_offset[2] = {0, 0};
 	int canvas_size[2] = {0, 0};
+	bool visible_in_config = true;
 
 	if(check_base_res(settings->base_res)) {
 		if(optional_string("Position:")) {
@@ -1472,7 +1697,7 @@ void load_gauge_custom(gauge_settings* settings)
 			colors[2] = settings->use_clr->blue;
 
 			lock_color = true;
-		} else if ( optional_string("Color:") ) {
+		} else if ( optional_string_either("Color:", "Colour:") >= 0 ) {
 			stuff_int_list(colors, 3);
 
 			check_color(colors);
@@ -1536,6 +1761,10 @@ void load_gauge_custom(gauge_settings* settings)
 			stuff_boolean(&settings->slew);
 		}
 
+		if (optional_string("Config:")) {
+			stuff_boolean(&visible_in_config);
+		}
+
 		if(optional_string("Active by default:")) {
 			stuff_boolean(&active_by_default);
 		}
@@ -1565,6 +1794,7 @@ void load_gauge_custom(gauge_settings* settings)
 	hud_gauge->initCockpitTarget(display_name, display_offset[0], display_offset[1], display_size[0], display_size[1], canvas_size[0], canvas_size[1]);
 	hud_gauge->initChase_view_only(settings->chase_view_only);
 	hud_gauge->initCockpit_view_choice(settings->cockpit_view_choice);
+	hud_gauge->initVisible_in_config(visible_in_config);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -1591,6 +1821,7 @@ void load_gauge_lag(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -1646,6 +1877,7 @@ void load_gauge_mini_shields(gauge_settings* settings)
 	hud_gauge->init2DigitOffsets(Mini_2digit_offsets[0], Mini_2digit_offsets[1]);
 	hud_gauge->init3DigitOffsets(Mini_3digit_offsets[0], Mini_3digit_offsets[1]);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -1742,6 +1974,7 @@ void load_gauge_weapon_energy(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initEnergyHeight(Wenergy_h);
 	hud_gauge->initTextOffsets(Wenergy_text_offsets[0], Wenergy_text_offsets[1]);
 	hud_gauge->initAlignments(text_alignment, weapon_alignment);
@@ -1895,6 +2128,7 @@ void load_gauge_escort_view(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname_top, fname_middle, fname_bottom);
+	hud_gauge->initHiRes(fname_top);
 	hud_gauge->initEntryHeight(entry_h);
 	hud_gauge->initEntryStaggerWidth(entry_stagger_w);
 	hud_gauge->initBottomBgOffset(bottom_bg_offset);
@@ -1956,6 +2190,7 @@ void load_gauge_afterburner(gauge_settings* settings)
 
 	hud_gauge->initEnergyHeight(energy_h);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -1998,6 +2233,7 @@ void load_gauge_mission_time(gauge_settings* settings)
 	hud_gauge->initTextOffsets(time_text_offsets[0], time_text_offsets[1]);
 	hud_gauge->initValueOffsets(time_val_offsets[0], time_val_offsets[1]);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -2091,6 +2327,7 @@ void load_gauge_threat_indicator(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname_arc, fname_laser, fname_lock);
+	hud_gauge->initHiRes(fname_arc);
 	hud_gauge->initLaserWarnOffsets(Laser_warn_offsets[0], Laser_warn_offsets[1]);
 	hud_gauge->initLockWarnOffsets(Lock_warn_offsets[0], Lock_warn_offsets[1]);
 
@@ -2105,6 +2342,7 @@ void load_gauge_center_reticle(gauge_settings* settings)
 	int scaleY = 10;
 	int size = 5;
 	int autoaim_frame = -1;
+	int flight_cursor_frame = -1;
 	
 	settings->origin[0] = 0.5f;
 	settings->origin[1] = 0.5f;
@@ -2154,12 +2392,17 @@ void load_gauge_center_reticle(gauge_settings* settings)
 	if (optional_string("Firepoint Y coordinate multiplier:"))
 		stuff_int(&scaleY);
 
-	if(optional_string("Autoaim Frame:"))
+	if (optional_string("Autoaim Frame:"))
 		stuff_int(&autoaim_frame);
 
+	if (optional_string("Flight Cursor Frame:"))
+		stuff_int(&flight_cursor_frame);
+
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initFirepointDisplay(firepoints, scaleX, scaleY, size);
 	hud_gauge->setAutoaimFrame(autoaim_frame);
+	hud_gauge->setFlightCursorFrame(flight_cursor_frame);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -2331,6 +2574,7 @@ void load_gauge_throttle(gauge_settings* settings)
 	hud_gauge->initGlideOffsets(glide_offset[0], glide_offset[1], custom_glide);
 	hud_gauge->initMatchSpeedOffsets(match_speed_offset[0], match_speed_offset[1], custom_match);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->showBackground(show_background);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
@@ -2415,6 +2659,7 @@ void load_gauge_ets_retail(gauge_settings* settings)
 	hud_gauge->initBottomOffsets(bottom_offsets[0], bottom_offsets[1]);
 	hud_gauge->initBarHeight(bar_h);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initGaugePositions(gauge_positions);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
@@ -2482,6 +2727,7 @@ void load_gauge_ets_weapons(gauge_settings* settings)
 	hud_gauge->initBottomOffsets(bottom_offsets[0], bottom_offsets[1]);
 	hud_gauge->initBarHeight(bar_h);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -2545,6 +2791,7 @@ void load_gauge_ets_shields(gauge_settings* settings)
 
 	hud_gauge->initBarHeight(bar_h);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initBottomOffsets(bottom_offsets[0], bottom_offsets[1]);
 	hud_gauge->initLetter(letter);
 	hud_gauge->initLetterOffsets(letter_offsets[0], letter_offsets[1]);
@@ -2613,6 +2860,7 @@ void load_gauge_ets_engines(gauge_settings* settings)
 
 	hud_gauge->initBarHeight(bar_h);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initBottomOffsets(bottom_offsets[0], bottom_offsets[1]);
 	hud_gauge->initLetter(letter);
 	hud_gauge->initLetterOffsets(letter_offsets[0], letter_offsets[1]);
@@ -2688,6 +2936,7 @@ void load_gauge_extra_target_data(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initBracketOffsets(bracket_offsets[0], bracket_offsets[1]);
 	hud_gauge->initDockOffsets(dock_offsets[0], dock_offsets[1]);
 	hud_gauge->initDockMaxWidth(dock_max_w);
@@ -2810,6 +3059,7 @@ void load_gauge_radar_std(gauge_settings* settings)
 	// Only load this if the user hasn't specified a preference
 	if (Cmdline_orb_radar == 0) {
 		hud_gauge->initBitmaps(fname);
+		hud_gauge->initHiRes(fname);
 		hud_gauge->initBlipRadius(Radar_blip_radius_normal, Radar_blip_radius_target);
 		hud_gauge->initCenterOffsets(Radar_center_offsets[0], Radar_center_offsets[1]);
 		hud_gauge->initDistanceInfinityOffsets(Radar_dist_offsets[2][0], Radar_dist_offsets[2][1]);
@@ -2906,6 +3156,7 @@ void load_gauge_radar_orb(gauge_settings* settings)
 	//only load this if the user actually wants to use the orb radar.
 	if (Cmdline_orb_radar == 1) {
 		hud_gauge->initBitmaps(fname);
+		hud_gauge->initHiRes(fname);
 		hud_gauge->initBlipRadius(Radar_blip_radius_normal, Radar_blip_radius_target);
 		hud_gauge->initCenterOffsets(Radar_center_offsets[0], Radar_center_offsets[1]);
 		hud_gauge->initDistanceInfinityOffsets(Radar_dist_offsets[2][0], Radar_dist_offsets[2][1]);
@@ -3106,6 +3357,7 @@ void load_gauge_radar_dradis(gauge_settings* settings)
 
 	hud_gauge->initRadius(Radar_radius[0], Radar_radius[1]);
 	hud_gauge->initBitmaps(xy_fname, xz_yz_fname, sweep_fname, target_fname, unknown_fname);
+	hud_gauge->initHiRes(xy_fname);
 	hud_gauge->initCockpitTarget(display_name, display_offset[0], display_offset[1], display_size[0], display_size[1], canvas_size[0], canvas_size[1]);
 	hud_gauge->initSound(loop_snd, loop_snd_volume, arrival_beep_snd, departure_beep_snd, stealth_arrival_snd, stealth_departure_snd, arrival_beep_delay, departure_beep_delay);
 	hud_gauge->initChase_view_only(settings->chase_view_only);
@@ -3160,6 +3412,10 @@ void load_gauge_target_monitor(gauge_settings* settings)
 	bool Use_disabled_status_offsets = false;
 
 	bool desaturate = false;
+
+	int wireframe = Targetbox_wire;
+	bool wirecoloroverride = Targetbox_color_override;
+	color wirecolor = Targetbox_color;
 
 	char fname_monitor[MAX_FILENAME_LEN] = "targetview1";
 	char fname_integrity[MAX_FILENAME_LEN] = "targetview2";
@@ -3289,6 +3545,15 @@ void load_gauge_target_monitor(gauge_settings* settings)
 	if ( optional_string("Desaturate:") ) {
 		stuff_boolean(&desaturate);
 	}
+	if (optional_string("Wireframe:")) {
+		stuff_int(&wireframe);
+	}
+	if (optional_string_either("Wireframe Color:", "Wireframe Colour:") >= 0) {
+		int rgb[3];
+		stuff_int_list(rgb, 3, ParseLookupType::RAW_INTEGER_TYPE);
+		gr_init_color(&wirecolor, rgb[0], rgb[1], rgb[2]);
+		wirecoloroverride = true;
+	}
 
 	hud_gauge->initViewportOffsets(Viewport_offsets[0], Viewport_offsets[1]);
 	hud_gauge->initViewportSize(Viewport_size[0], Viewport_size[1]);
@@ -3308,7 +3573,11 @@ void load_gauge_target_monitor(gauge_settings* settings)
 	hud_gauge->initSubsysIntegrityOffsets(Subsys_integrity_offsets[0], Subsys_integrity_offsets[1], Use_subsys_integrity_offsets);
 	hud_gauge->initDisabledStatusOffsets(Disabled_status_offsets[0], Disabled_status_offsets[1], Use_disabled_status_offsets);
 	hud_gauge->initDesaturate(desaturate);
+	hud_gauge->initGaugeWireframe(wireframe);
+	hud_gauge->initGaugeWirecolor(wirecolor);
+	hud_gauge->initGaugeWirecolorOverride(wirecoloroverride);
 	hud_gauge->initBitmaps(fname_monitor, fname_monitor_mask, fname_integrity, fname_static);
+	hud_gauge->initHiRes(fname_monitor);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -3326,6 +3595,7 @@ void load_gauge_squad_message(gauge_settings* settings)
 	char fname_top[MAX_FILENAME_LEN] = "message1";
 	char fname_middle[MAX_FILENAME_LEN] = "message2";
 	char fname_bottom[MAX_FILENAME_LEN] = "message3";
+	int ship_name_max_w = 200;
 	
 	settings->origin[0] = 1.0f;
 	settings->origin[1] = 0.0f;
@@ -3391,8 +3661,12 @@ void load_gauge_squad_message(gauge_settings* settings)
 	if(optional_string("Page Down Offsets:")) {
 		stuff_int_list(Pgdn_offsets, 2);
 	}
+	if (optional_string("Ship Name Max Width:")) {
+		stuff_int(&ship_name_max_w);
+	}
 
 	hud_gauge->initBitmaps(fname_top, fname_middle, fname_bottom);
+	hud_gauge->initHiRes(fname_top);
 	hud_gauge->initHeaderOffsets(Header_offsets[0], Header_offsets[1]);
 	hud_gauge->initItemStartOffsets(Item_start_offsets[0], Item_start_offsets[1]);
 	hud_gauge->initMiddleFrameStartOffsetY(Middle_frame_start_offset_y);
@@ -3401,6 +3675,7 @@ void load_gauge_squad_message(gauge_settings* settings)
 	hud_gauge->initItemOffsetX(Item_offset_x);
 	hud_gauge->initPgUpOffsets(Pgup_offsets[0], Pgup_offsets[1]);
 	hud_gauge->initPgDnOffsets(Pgdn_offsets[0], Pgdn_offsets[1]);
+	hud_gauge->initShipNameMaxWidth(ship_name_max_w);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -3465,6 +3740,7 @@ void load_gauge_objective_notify(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initObjTextOffsetY(Objective_text_offset_y);
 	hud_gauge->initObjValueOffsetY(Objective_text_val_offset_y);
 	hud_gauge->initSubspaceTextOffsetY(Subspace_text_offset_y);
@@ -3679,6 +3955,7 @@ void load_gauge_directives(gauge_settings* settings)
 	char fname_middle[MAX_FILENAME_LEN] = "directives2";
 	char fname_bottom[MAX_FILENAME_LEN] = "directives3";
 	int bottom_bg_offset = 0;
+	int key_line_x_offset = 0;
 	
 	settings->origin[0] = 0.0f;
 	settings->origin[1] = 0.5f;
@@ -3727,14 +4004,19 @@ void load_gauge_directives(gauge_settings* settings)
 	if ( optional_string("Max Line Width:") ) {
 		stuff_int(&max_line_width);
 	}
+	if (optional_string("Key Line X Offset:")) {
+		stuff_int(&key_line_x_offset);
+	}
 
 	hud_gauge->initBitmaps(fname_top, fname_middle, fname_bottom);
+	hud_gauge->initHiRes(fname_top);
 	hud_gauge->initMiddleFrameOffsetY(middle_frame_offset_y);
 	hud_gauge->initTextHeight(text_h);
 	hud_gauge->initBottomBgOffset(bottom_bg_offset);
 	hud_gauge->initTextStartOffsets(text_start_offsets[0], text_start_offsets[1]);
 	hud_gauge->initHeaderOffsets(header_offsets[0], header_offsets[1]);
 	hud_gauge->initMaxLineWidth(max_line_width);
+	hud_gauge->initKeyLineXOffset(key_line_x_offset);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -3786,6 +4068,7 @@ void load_gauge_talking_head(gauge_settings* settings)
 	hud_gauge->initAnimOffsets(Anim_offsets[0], Anim_offsets[1]);
 	hud_gauge->initAnimSizes(Anim_size[0], Anim_size[1]);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initHeaderOffsets(Header_offsets[0], Header_offsets[1]);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
@@ -3825,6 +4108,7 @@ void load_gauge_countermeasures(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initCountTextOffsets(cm_text_offset[0], cm_text_offset[1]);
 	hud_gauge->initCountValueOffsets(cm_text_val_offset[0], cm_text_val_offset[1]);
 
@@ -3873,16 +4157,17 @@ void load_gauge_auto_target(gauge_settings* settings)
 		stuff_int_list(target_text_offset, 2);
 	}
 
-	if ( optional_string("On Text Color:") ) {
+	if ( optional_string_either("On Text Color:", "On Text Colour:") >= 0 ) {
 		stuff_int_list(on_color, 4);
 	}
 
-	if ( optional_string("Off Text Color:") ) {
+	if ( optional_string_either("Off Text Color:", "Off Text Colour:") >= 0 ) {
 		stuff_int_list(off_color, 4);
 	}
 
 	hud_gauge->initAutoTextOffsets(auto_text_offset[0], auto_text_offset[1]);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initTargetTextOffsets(target_text_offset[0], target_text_offset[1]);
 	hud_gauge->initOnColor(on_color[0], on_color[1], on_color[2], on_color[3]);
 	hud_gauge->initOffColor(off_color[0], off_color[1], off_color[2], off_color[3]);
@@ -3931,16 +4216,17 @@ void load_gauge_auto_speed(gauge_settings* settings)
 		stuff_int_list(speed_text_offset, 2);
 	}
 
-	if ( optional_string("On Text Color:") ) {
+	if ( optional_string_either("On Text Color:", "On Text Colour:") >= 0 ) {
 		stuff_int_list(on_color, 4);
 	}
 
-	if ( optional_string("Off Text Color:") ) {
+	if ( optional_string_either("Off Text Color:", "Off Text Colour:") >= 0 ) {
 		stuff_int_list(off_color, 4);
 	}
 
 	hud_gauge->initAutoTextOffsets(auto_text_offset[0], auto_text_offset[1]);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initSpeedTextOffsets(speed_text_offset[0], speed_text_offset[1]);
 	hud_gauge->initOnColor(on_color[0], on_color[1], on_color[2], on_color[3]);
 	hud_gauge->initOffColor(off_color[0], off_color[1], off_color[2], off_color[3]);
@@ -4061,12 +4347,28 @@ void load_gauge_wingman_status(gauge_settings* settings)
 	}
 	
 	int grow_mode = 0; //By default, expand the gauge to the left (in -x direction)
+	int wingname_align_mode = 0; //By default, center wingnames when rendering
 
-	if(optional_string("Expansion Mode:")) {
-		if(optional_string("Right")) 
+	if (optional_string("Expansion Mode:")) {
+		if (optional_string("Left"))
+			grow_mode = 0;
+		else if (optional_string("Right"))
 			grow_mode = 1;
-		else if(optional_string("Down"))
+		else if (optional_string("Down"))
 			grow_mode = 2;
+		else
+			error_display(0, "\"Expansion Mode:\" is invalid, must be either Left, Right, or Down!  Discarding value.");
+	}
+
+	if (optional_string("Wingname Align Mode:")) {
+		if (optional_string("Center"))
+			wingname_align_mode = 0;
+		else if (optional_string("Left"))
+			wingname_align_mode = 1;
+		else if (optional_string("Right"))
+			wingname_align_mode = 2;
+		else
+			error_display(0, "\"Wingname Align Mode:\" is invalid, must be either Center, Left, or Right!  Discarding value.");
 	}
 
 	bool use_full_wingnames = false;
@@ -4075,11 +4377,12 @@ void load_gauge_wingman_status(gauge_settings* settings)
 	}
 
 	bool use_expanded_colors = false;
-	if (optional_string("Use Expanded Colors:")) {
+	if (optional_string_either("Use Expanded Colors:", "Use Expanded Colours:") >= 0) {
 		stuff_boolean(&use_expanded_colors);
 	}
 
 	hud_gauge->initBitmaps(fname_left, fname_middle, fname_right, fname_dots);
+	hud_gauge->initHiRes(fname_left);
 	hud_gauge->initHeaderOffsets(header_offsets[0], header_offsets[1]);
 	hud_gauge->initFixedHeaderPosition(fixed_header_position);
 	hud_gauge->initLeftFrameEndX(left_frame_end_x);
@@ -4095,6 +4398,7 @@ void load_gauge_wingman_status(gauge_settings* settings)
 	hud_gauge->initWingWidth(wing_width);
 	hud_gauge->initRightBgOffset(right_bg_offset);
 	hud_gauge->initGrowMode(grow_mode);
+	hud_gauge->initWingnameAlignMode(wingname_align_mode);
 	hud_gauge->initUseFullWingnames(use_full_wingnames);
 	hud_gauge->initUseExpandedColors(use_expanded_colors);
 
@@ -4114,6 +4418,7 @@ void load_gauge_damage(gauge_settings* settings)
 	char fname_top[MAX_FILENAME_LEN] = "damage1";
 	char fname_middle[MAX_FILENAME_LEN] = "damage2";
 	char fname_bottom[MAX_FILENAME_LEN] = "damage3";
+	bool always_display = false;
 	
 	settings->origin[0] = 0.5f;
 	settings->origin[1] = 0.0f;
@@ -4171,8 +4476,12 @@ void load_gauge_damage(gauge_settings* settings)
 	if(optional_string("Bottom Background Offset:")) {
 		stuff_int(&bottom_bg_offset);
 	}
+	if(optional_string("Always Display:")) {
+		stuff_boolean(&always_display);
+	}
 
 	hud_gauge->initBitmaps(fname_top, fname_middle, fname_bottom);
+	hud_gauge->initHiRes(fname_top);
 	hud_gauge->initHullIntegOffsets(hull_integ_offsets[0], hull_integ_offsets[1]);
 	hud_gauge->initHullIntegValueOffsetX(hull_integ_val_offset_x);
 	hud_gauge->initLineHeight(line_h);
@@ -4181,6 +4490,7 @@ void load_gauge_damage(gauge_settings* settings)
 	hud_gauge->initSubsysIntegValueOffsetX(subsys_integ_val_offset_x);
 	hud_gauge->initBottomBgOffset(bottom_bg_offset);
 	hud_gauge->initHeaderOffsets(header_offsets[0], header_offsets[1]);
+	hud_gauge->initDisplayValue(always_display);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -4191,6 +4501,7 @@ void load_gauge_support(gauge_settings* settings)
 	int text_val_offset_y;
 	int text_dock_offset_x;
 	int text_dock_val_offset_x;
+	bool rearm_timer_choice = Cmdline_rearm_timer;
 	char fname[MAX_FILENAME_LEN] = "support1";
 	
 	settings->origin[0] = 0.5f;
@@ -4233,12 +4544,17 @@ void load_gauge_support(gauge_settings* settings)
 	if(optional_string("Dock Time X-offset:")) {
 		stuff_int(&text_dock_val_offset_x);
 	}
+	if (optional_string("Enable Rearm Timer:")) {
+		stuff_boolean(&rearm_timer_choice);
+	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initHeaderOffsets(header_offsets[0], header_offsets[1]);
 	hud_gauge->initTextDockOffsetX(text_dock_offset_x);
 	hud_gauge->initTextDockValueOffsetX(text_dock_val_offset_x);
 	hud_gauge->initTextValueOffsetY(text_val_offset_y);
+	hud_gauge->initRearmTimer(rearm_timer_choice);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -4453,6 +4769,7 @@ void load_gauge_weapon_linking(gauge_settings* settings)
 	hud_gauge->init2SecondaryOffsets(Weapon_link_offsets[LINK_TWO_SECONDARY][0], Weapon_link_offsets[LINK_TWO_SECONDARY][1]);
 	hud_gauge->init3SecondaryOffsets(Weapon_link_offsets[LINK_THREE_SECONDARY][0], Weapon_link_offsets[LINK_THREE_SECONDARY][1]);
 	hud_gauge->initBitmaps(fname_arc, fname_primary_link_1, fname_primary_link_2, fname_secondary_link_1, fname_secondary_link_2, fname_secondary_link_3);
+	hud_gauge->initHiRes(fname_arc);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -4637,10 +4954,11 @@ void load_gauge_lock(gauge_settings* settings)
 		stuff_boolean(&loop_locked_anim);
 	}
 	if(optional_string("Blink Locked Animation:")) {
-		stuff_boolean(&loop_locked_anim);
+		stuff_boolean(&blink_locked_anim);
 	}
 
 	hud_gauge->initBitmaps(fname_lock, fname_spin);
+	hud_gauge->initHiRes(fname_lock);
 	hud_gauge->initLoopLockedAnim(loop_locked_anim);
 	hud_gauge->initBlinkLockedAnim(blink_locked_anim);
 	hud_gauge->initGaugeHalfSize(Lock_gauge_half_w, Lock_gauge_half_h);
@@ -4715,6 +5033,7 @@ void load_gauge_brackets(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initMinSubTargetBoxSizes(min_subtarget_box[0], min_subtarget_box[1]);
 	hud_gauge->initMinTargetBoxSizes(min_target_box[0], min_target_box[1]);
 
@@ -4906,6 +5225,7 @@ void load_gauge_lead(gauge_settings* settings)
 
 	hud_gauge->initHalfSize(Lead_indicator_half[0], Lead_indicator_half[1]);
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -4964,6 +5284,7 @@ void load_gauge_lead_sight(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }
@@ -5008,6 +5329,7 @@ void load_gauge_kills(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname);
+	hud_gauge->initHiRes(fname);
 	hud_gauge->initTextOffsets(text_offsets[0], text_offsets[1]);
 	hud_gauge->initTextValueOffsets(text_value_offsets[0], text_value_offsets[1]);
 
@@ -5248,6 +5570,7 @@ void load_gauge_primary_weapons(gauge_settings* settings)
 	}
 	
 	hud_gauge->initBitmaps(fname_first, fname_entry, fname_last);
+	hud_gauge->initHiRes(fname_first);
 	hud_gauge->initHeaderOffsets(header_offsets[0], header_offsets[1]);
 	hud_gauge->initHeaderText(header_text);
 	hud_gauge->initBgFirstHeight(first_bg_h);
@@ -5362,6 +5685,7 @@ void load_gauge_secondary_weapons(gauge_settings* settings)
 	}
 
 	hud_gauge->initBitmaps(fname_first, fname_entry, fname_last);
+	hud_gauge->initHiRes(fname_first);
 	hud_gauge->initHeaderOffsets(header_offsets[0], header_offsets[1]);
 	hud_gauge->initHeaderText(header_text);
 	hud_gauge->initBgFirstHeight(first_bg_h);
@@ -5389,7 +5713,13 @@ void load_gauge_scripting(gauge_settings* settings) {
 	SCP_string name;
 	stuff_string(name, F_NAME);
 
-	hud_gauge->initName(name);
+	bool active_by_default = true;
+	if (optional_string("Active by default:")) {
+		stuff_boolean(&active_by_default);
+	}
+
+	hud_gauge->initName(std::move(name));
+	hud_gauge->initRenderStatus(active_by_default);
 
 	gauge_assign_common(settings, std::move(hud_gauge));
 }

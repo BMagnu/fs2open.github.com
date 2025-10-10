@@ -15,8 +15,34 @@
 #include <memory>
 #include <stdexcept>
 
+#define MISSION_BACKUP_NAME     "Backup"
+#define MISSION_BACKUP_DEPTH    9
+
 namespace fso {
 namespace fred {
+
+enum class WingNameError {
+	None,
+	Empty,
+	TooLong,
+	DuplicateWing,
+	DuplicateShip,
+	DuplicateTargetPriority,
+	DuplicateWaypointList,
+	DuplicateJumpNode,
+};
+
+struct WingNameCheck {
+	bool ok;
+	WingNameError error;
+	std::string message; // human-readable for dialogs
+};
+
+enum class GlobalShieldStatus {
+	HasShields,
+	NoShields,
+	MixedShields
+};
 
 /*! Game editor.
  * Handles everything needed to edit the game,
@@ -36,6 +62,8 @@ class Editor : public QObject {
 
 	void createNewMission();
 
+	void maybeUseAutosave(std::string& filepath);
+
 	/*! Load a mission. */
 	bool loadMission(const std::string& filepath, int flags = 0);
 
@@ -49,7 +77,7 @@ class Editor : public QObject {
 	/* Schedules updates for all renderes */
 	void updateAllViewports();
 
-	int create_player(int num, vec3d* pos, matrix* orient, int type = -1, int init = 1);
+	int create_player(vec3d* pos, matrix* orient, int type = -1);
 
 	int create_ship(matrix* orient, vec3d* pos, int ship_type);
 
@@ -63,6 +91,9 @@ class Editor : public QObject {
 
 	void hideMarkedObjects();
 	void showHiddenObjects();
+
+	void lockMarkedObjects();
+	void unlockAllObjects();
 
 	int dup_object(object* objp);
 
@@ -127,7 +158,7 @@ class Editor : public QObject {
 	// (It's also duplicated in FS2, in post_process_mission, for setting the indexes at mission load.)
 	static void update_custom_wing_indexes();
 
-	void ai_update_goal_references(int type, const char* old_name, const char* new_name);
+	void ai_update_goal_references(sexp_ref_type type, const char* old_name, const char* new_name);
 
 	// Goober5000
 	void update_texture_replacements(const char* old_name, const char* new_name);
@@ -151,7 +182,13 @@ class Editor : public QObject {
 
 	bool query_single_wing_marked();
 
-	static bool wing_is_player_wing(int);
+	bool wing_is_player_wing(int);
+
+	static bool wing_contains_player_start(int);
+
+	static WingNameCheck validate_wing_name(const SCP_string& new_name, int ignore_wing = -1);
+
+	bool rename_wing(int wing, const SCP_string& new_name, bool rename_members = true);
 
 	/**
 	 * @brief Delete a whole wing, leaving ships intact but wingless.
@@ -172,19 +209,24 @@ class Editor : public QObject {
 
 	SCP_vector<SCP_string> get_docking_list(int model_index);
 
-	bool compareShieldSysData(const std::vector<int>& teams, const std::vector<int>& types) const;
-	void exportShieldSysData(std::vector<int>& teams, std::vector<int>& types) const;
-	void importShieldSysData(const std::vector<int>& teams, const std::vector<int>& types);
+	bool compareShieldSysData(const SCP_vector<GlobalShieldStatus>& teams, const SCP_vector<GlobalShieldStatus>& types) const;
+	void exportShieldSysData(SCP_vector<GlobalShieldStatus>& teams, SCP_vector<GlobalShieldStatus>& types) const;
+	void importShieldSysData(const SCP_vector<GlobalShieldStatus>& teams, const SCP_vector<GlobalShieldStatus>& types);
 	void normalizeShieldSysData();
 
 	static void strip_quotation_marks(SCP_string& str);
 	static void pad_with_newline(SCP_string& str, size_t max_size);
+	static void lcl_fred_replace_stuff(QString& text);
+	static SCP_string get_display_name_for_text_box(const SCP_string &orig_name);
+
+	SCP_vector<int> getStartingWingLoadoutUseCounts();
 
 	static const ai_goal_list* getAi_goal_list();
 	static int getAigoal_list_size();
 	const char* error_check_initial_orders(ai_goal* goals, int ship, int wing);
+
   private:
-	void clearMission();
+	void clearMission(bool fast_reload = false);
 
 	void initialSetup();
 
@@ -195,10 +237,8 @@ class Editor : public QObject {
 
 	int numMarked = 0;
 
-	int Default_player_model = -1;
-
-	std::vector<int> Shield_sys_teams;
-	std::vector<int> Shield_sys_types;
+	SCP_vector<GlobalShieldStatus> Shield_sys_teams;
+	SCP_vector<GlobalShieldStatus> Shield_sys_types;
 
 	int delete_flag;
 
@@ -210,19 +250,23 @@ class Editor : public QObject {
 	int obj_count = 0;
 	int g_err = 0;
 
+	// ship and weapon usage pools
+	int _ship_usage[MAX_TVT_TEAMS][MAX_SHIP_CLASSES];
+	int _weapon_usage[MAX_TVT_TEAMS][MAX_WEAPON_TYPES];
+
 	int common_object_delete(int obj);
 
-	int reference_handler(const char* name, int type, int obj);
+	int reference_handler(const char* name, sexp_ref_type type, int obj);
 
-	int sexp_reference_handler(int node, int code, const char* msg);
-	int orders_reference_handler(int code, char* msg);
+	int sexp_reference_handler(int node, sexp_src source, int source_index, const char* msg);
+	int orders_reference_handler(sexp_src source, int source_index, char* msg);
 
 	int delete_ship_from_wing(int ship);
 
-	int invalidate_references(const char* name, int type);
+	int invalidate_references(const char* name, sexp_ref_type type);
 
 	// DA 1/7/99 These ship names are not variables
-	int rename_ship(int ship, char* name);
+	int rename_ship(int ship, const char* name);
 
 	void delete_reinforcement(int num);
 
@@ -261,6 +305,8 @@ class Editor : public QObject {
 
 	void generate_team_weaponry_usage_list(int team, int* arr);
 
+	void generate_ship_usage_list(int* arr, int wing);
+
 	int get_visible_sub_system_count(ship* shipp);
 
 	int get_next_visible_subsys(ship* shipp, ship_subsys** next_subsys);
@@ -272,14 +318,16 @@ class Editor : public QObject {
 	int error(SCP_FORMAT_STRING const char* msg, ...) SCP_FORMAT_STRING_ARGS(2, 3);
 	int internal_error(SCP_FORMAT_STRING const char* msg, ...) SCP_FORMAT_STRING_ARGS(2, 3);
 
-	int fred_check_sexp(int sexp, int type, const char* msg, ...);
+	int fred_check_sexp(int sexp, int type, const char* location, ...);
 
 
 	int global_error_check_mixed_player_wing(int w);
 
 	int global_error_check_player_wings(int multi);
 
-	const char* get_order_name(int order);
+	static const char* get_order_name(ai_goal_mode order);
+
+	void updateStartingWingLoadoutUseCounts();
 };
 
 } // namespace fred

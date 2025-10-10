@@ -312,7 +312,7 @@ void multi_pinfo_popup_init(net_player *np)
 
 	// backup hardware textures setting and bash to max
 	Multi_pinfo_hardware_texture_backup = Detail.hardware_textures;
-	Detail.hardware_textures = MAX_DETAIL_LEVEL;
+	Detail.hardware_textures = MAX_DETAIL_VALUE;
 
 	// zero bitmap info
 	Mp_pilot.bitmap = -1;
@@ -683,7 +683,7 @@ void multi_pinfo_build_stats()
 	}	
 
 	// rank
-	strcpy_s(Multi_pinfo_stats_vals[MPI_RANK],Ranks[sc->rank].name);
+	strcpy_s(Multi_pinfo_stats_vals[MPI_RANK], get_rank_display_name(&Ranks[verify_rank(sc->rank)]).c_str());
 
 	// primary shots fired
 	sprintf(Multi_pinfo_stats_vals[MPI_PSHOTS_FIRED],"%u",sc->p_shots_fired);

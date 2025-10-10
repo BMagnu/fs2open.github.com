@@ -1,6 +1,7 @@
 //
 //
 
+#include "scripting/api/libs/graphics.h"
 #include "streaminganim.h"
 #include "freespace.h"
 
@@ -8,10 +9,21 @@
 namespace scripting {
 namespace api {
 
-bool streaminganim_h::IsValid() {
+bool streaminganim_h::isValid() const {
 	return (ga.num_frames > 0);
 }
-streaminganim_h::streaminganim_h(const char* filename) {
+streaminganim_h::streaminganim_h(const char* real_filename) {
+	char filename[MAX_FILENAME_LEN];
+
+	// make sure no one passed an extension
+	memset(filename, 0, MAX_FILENAME_LEN);
+	strncpy(filename, real_filename, MAX_FILENAME_LEN - 1);
+	char* p = strrchr(filename, '.');
+	if (p) {
+		mprintf(("Someone passed an extension to streaminganim_h for file '%s'\n", real_filename));
+		*p = 0;
+	}
+
 	generic_anim_init(&ga, filename);
 }
 streaminganim_h::~streaminganim_h() {
@@ -19,14 +31,16 @@ streaminganim_h::~streaminganim_h() {
 	// generic_anim_unload has safety checks
 	generic_anim_unload(&ga);
 }
-streaminganim_h::streaminganim_h(streaminganim_h&& other) noexcept {
-	// Copy the other data over to us
-	ga = other.ga;
-
+streaminganim_h::streaminganim_h(streaminganim_h&& other) noexcept
+	: ga(other.ga)
+{
 	// Reset the other instance so that we own the only instance
 	generic_anim_init(&other.ga, nullptr);
 }
 streaminganim_h& streaminganim_h::operator=(streaminganim_h&& other) noexcept {
+	if (this == &other)
+		return *this;
+
 	generic_anim_unload(&ga);
 
 	ga = other.ga;
@@ -48,7 +62,7 @@ ADE_VIRTVAR(Loop, l_streaminganim, "boolean", "Make the streaming animation loop
 	if(!ade_get_args(L, "o|b", l_streaminganim.GetPtr(&sah), &loop))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	if (ADE_SETTING_VAR) {
@@ -69,7 +83,7 @@ ADE_VIRTVAR(Pause, l_streaminganim, "boolean", "Pause the streaming animation.",
 	if(!ade_get_args(L, "o|b", l_streaminganim.GetPtr(&sah), &pause))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	if (ADE_SETTING_VAR) {
@@ -90,7 +104,7 @@ ADE_VIRTVAR(Reverse, l_streaminganim, "boolean", "Make the streaming animation p
 	if(!ade_get_args(L, "o|b", l_streaminganim.GetPtr(&sah), &reverse))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	if (ADE_SETTING_VAR) {
@@ -111,7 +125,7 @@ ADE_VIRTVAR(Grayscale, l_streaminganim, "boolean", "Whether the streaming animat
 	if (!ade_get_args(L, "o|b", l_streaminganim.GetPtr(&sah), &grayscale))
 		return ADE_RETURN_NIL;
 
-	if (!sah->IsValid())
+	if (!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	if (ADE_SETTING_VAR) {
@@ -128,7 +142,7 @@ ADE_FUNC(getFilename, l_streaminganim, NULL, "Get the filename of the animation"
 	if (!ade_get_args(L, "o", l_streaminganim.GetPtr(&sah)))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	return ade_set_args(L, "s", sah->ga.filename);
@@ -142,7 +156,7 @@ ADE_FUNC(getFrameCount, l_streaminganim, nullptr, "Get the number of frames in t
 	if (!ade_get_args(L, "o", l_streaminganim.GetPtr(&sah)))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	return ade_set_args(L, "i", sah->ga.num_frames);
@@ -156,7 +170,7 @@ ADE_FUNC(getFrameIndex, l_streaminganim, nullptr, "Get the current frame index o
 	if (!ade_get_args(L, "o", l_streaminganim.GetPtr(&sah)))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	int cframe = sah->ga.current_frame;
@@ -175,7 +189,7 @@ ADE_FUNC(getHeight, l_streaminganim, nullptr, "Get the height of the animation i
 	if (!ade_get_args(L, "o", l_streaminganim.GetPtr(&sah)))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	return ade_set_args(L, "i", sah->ga.height);
@@ -189,7 +203,7 @@ ADE_FUNC(getWidth, l_streaminganim, nullptr, "Get the width of the animation in 
 	if (!ade_get_args(L, "o", l_streaminganim.GetPtr(&sah)))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	return ade_set_args(L, "i", sah->ga.width);
@@ -201,7 +215,7 @@ ADE_FUNC(isValid, l_streaminganim, nullptr, "Detects whether handle is valid", "
 	if(!ade_get_args(L, "o", l_streaminganim.GetPtr(&sah)))
 		return ADE_RETURN_NIL;
 
-	return ade_set_args(L, "b", sah->IsValid());
+	return ade_set_args(L, "b", sah->isValid());
 }
 
 ADE_FUNC(preload, l_streaminganim, NULL, "Load all apng animations into memory, enabling apng frame cache if not already enabled", "boolean", "true if preload was successful, nil if a syntax/type error occurs")
@@ -233,7 +247,7 @@ ADE_FUNC(process, l_streaminganim, "[number x1, number y1, number x2, number y2,
 					 &ge.draw))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	if (sah->ga.use_hud_color)
@@ -257,7 +271,10 @@ ADE_FUNC(process, l_streaminganim, "[number x1, number y1, number x2, number y2,
 		if (x2 != INT_MAX) ge.width = x2 - x1;
 		if (y2 != INT_MAX) ge.height = y2 - y1;
 
-		// note; generic_anim_render will default to GR_RESIZE_NONE when ge is provided
+		// use the currently active resize mode for scripting
+		// (generic_anim_render will use this field when ge is provided)
+		ge.resize_mode = get_resize_mode();
+
 		generic_anim_render(&sah->ga, flFrametime, x1, y1, false, &ge);
 	}
 
@@ -286,7 +303,7 @@ ADE_FUNC(timeLeft, l_streaminganim, nullptr, "Get the amount of time left in the
 	if (!ade_get_args(L, "o", l_streaminganim.GetPtr(&sah)))
 		return ADE_RETURN_NIL;
 
-	if(!sah->IsValid())
+	if(!sah->isValid())
 		return ADE_RETURN_NIL;
 
 	float timeLeft = 0.0f;

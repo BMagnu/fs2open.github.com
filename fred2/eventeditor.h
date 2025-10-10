@@ -16,8 +16,6 @@
 #include "mission/missiongoals.h"
 #include "mission/missionmessage.h"
 
-#define MAX_SEARCH_MESSAGE_DEPTH		5		// maximum search number of event nodes with message text
-
 
 class event_sexp_tree : public sexp_tree
 {
@@ -32,6 +30,9 @@ public:
 protected:
 	virtual void PreSubclassWindow();
 	virtual void OnCustomDraw(NMHDR* pNMHDR, LRESULT* pResult);
+
+	CStringA m_tooltiptextA;
+	CStringW m_tooltiptextW;
 
 	DECLARE_MESSAGE_MAP()
 };
@@ -59,7 +60,7 @@ public:
 	int get_event_num(HTREEITEM handle);
 	void reset_event(int num, HTREEITEM after);
 	void save_event(int e);
-	void swap_handler(int node1, int node2);
+	void move_handler(int node1, int node2, bool insert_before);
 	void insert_handler(int old, int node);
 	int query_modified();
 	void OnOK();		// default MFC OK behavior
@@ -78,8 +79,8 @@ public:
 	//{{AFX_DATA(event_editor)
 	enum { IDD = IDD_EVENT_EDITOR };
 	event_sexp_tree	m_event_tree;
-	UINT	m_repeat_count;
-	UINT	m_trigger_count;
+	int		m_repeat_count;
+	int		m_trigger_count;
 	UINT	m_interval;
 	int		m_event_score;
 	int		m_chain_delay;
@@ -90,6 +91,7 @@ public:
 	CString	m_avi_filename;
 	CString	m_message_name;
 	CString	m_message_text;
+	CString m_message_note;
 	int		m_persona;
 	CString	m_wave_filename;
 	int		m_cur_msg, m_cur_msg_old;
@@ -139,6 +141,7 @@ protected:
 	afx_msg void OnSelchangeMessageList();
 	afx_msg void OnNewMsg();
 	afx_msg void OnDeleteMsg();
+	afx_msg void OnMsgNote();
 	afx_msg void OnBrowseAvi();
 	afx_msg void OnBrowseWave();
 	afx_msg void OnSelchangeWaveFilename();
@@ -153,10 +156,8 @@ protected:
 private:
 	int cur_event;
 	void update_cur_event();
-	int m_num_events;
-	int m_sig[MAX_MISSION_EVENTS];
-	mission_event m_events[MAX_MISSION_EVENTS];
-	int m_num_messages;
+	SCP_vector<int> m_sig;
+	SCP_vector<mission_event> m_events;
 	SCP_vector<MMessage> m_messages;
 	int m_wave_id;
 };

@@ -36,7 +36,7 @@ int Editor::delete_wing(int wing_num, int bypass)
 		}
 	}
 
-	invalidate_references(Wings[wing_num].name, REF_TYPE_WING);
+	invalidate_references(Wings[wing_num].name, sexp_ref_type::WING);
 	if (!bypass) {
 		total = Wings[wing_num].wave_count;
 		for (i = 0; i < total; i++) {
@@ -183,24 +183,9 @@ int Editor::create_wing()
 			return -1;
 		}
 
-		Wings[wing].num_waves = 1;
-		Wings[wing].threshold = 0;
-		Wings[wing].arrival_location = Wings[wing].departure_location = 0;
-		Wings[wing].arrival_distance = 0;
-		Wings[wing].arrival_anchor = -1;
-		Wings[wing].arrival_delay = 0;
+		Wings[wing].clear();
 		Wings[wing].arrival_cue = Locked_sexp_true;
-		Wings[wing].departure_delay = 0;
 		Wings[wing].departure_cue = Locked_sexp_false;
-		Wings[wing].hotkey = -1;
-		Wings[wing].flags.reset();
-		Wings[wing].wave_delay_min = 0;
-		Wings[wing].wave_delay_max = 0;
-
-		for (i = 0; i < MAX_AI_GOALS; i++) {
-			Wings[wing].ai_goals[i].ai_mode = AI_GOAL_NONE;
-			Wings[wing].ai_goals[i].priority = -1; // this sets up the priority field to be like ships
-		}
 
 		auto dlg = _lastActiveViewport->dialogProvider->createFormWingDialog();
 
@@ -445,24 +430,148 @@ bool Editor::query_single_wing_marked()
 
 bool Editor::wing_is_player_wing(int wing)
 {
-	int i;
-
 	if (wing < 0)
 		return false;
 
-	if (The_mission.game_type & MISSION_TYPE_MULTI_TEAMS) {
-		for (i = 0; i < MAX_TVT_WINGS; i++) {
-			if (wing == TVT_wings[i])
-				return true;
+	// Multiplayer wing check
+	if (The_mission.game_type & MISSION_TYPE_MULTI) {
+		if (The_mission.game_type & MISSION_TYPE_MULTI_TEAMS) {
+			for (int twing : TVT_wings) {
+				if (wing == twing)
+					return true;
+			}
+		} else {
+			for (int swing : Starting_wings) {
+				if (wing == swing)
+					return true;
+			}
 		}
+	// Single player wing check
 	} else {
-		for (i = 0; i < MAX_STARTING_WINGS; i++) {
-			if (wing == Starting_wings[i])
-				return true;
+		if (Player_start_shipnum >= 0 && Player_start_shipnum < MAX_SHIPS) {
+			const int pw = Ships[Player_start_shipnum].wingnum;
+			return pw >= 0 && pw == wing;
 		}
 	}
 
 	return false;
 }
+
+bool Editor::wing_contains_player_start(int wing)
+{
+	return wing >= 0 && Player_start_shipnum >= 0 && Player_start_shipnum < MAX_SHIPS &&
+		   Ships[Player_start_shipnum].objnum >= 0 && Ships[Player_start_shipnum].wingnum == wing;
+}
+
+WingNameCheck Editor::validate_wing_name(const SCP_string& new_name, int ignore_wing)
+{
+	WingNameCheck r{false, WingNameError::None, {}};
+	if (new_name.empty()) {
+		r.error = WingNameError::Empty;
+		r.message = "Name is empty.";
+		return r;
+	}
+
+	if (new_name.empty()) {
+		r.error = WingNameError::Empty;
+		r.message = "Name is empty.";
+		return r;
+	}
+	if (new_name.size() >= NAME_LENGTH) {
+		r.error = WingNameError::TooLong;
+		r.message = "Name is too long.";
+		return r;
+	}
+
+	// Other wings
+	for (int i = 0; i < MAX_WINGS; ++i) {
+		if (i == ignore_wing)
+			continue;
+		if (Wings[i].wave_count <= 0)
+			continue;
+		if (!stricmp(new_name.c_str(), Wings[i].name)) {
+			r.error = WingNameError::DuplicateWing;
+			r.message = "This wing name is already used by another wing.";
+			return r;
+		}
+	}
+
+	// Ships
+	for (object* ptr = GET_FIRST(&obj_used_list); ptr != END_OF_LIST(&obj_used_list); ptr = GET_NEXT(ptr)) {
+		if (ptr->type == OBJ_SHIP || ptr->type == OBJ_START) {
+			const int si = get_ship_from_obj(ptr);
+			if (!stricmp(new_name.c_str(), Ships[si].ship_name)) {
+				r.error = WingNameError::DuplicateShip;
+				r.message = "This wing name is already used by a ship.";
+				return r;
+			}
+		}
+	}
+
+	// Target priority groups
+	for (auto& ai : Ai_tp_list) {
+		if (!stricmp(new_name.c_str(), ai.name)) {
+			r.error = WingNameError::DuplicateTargetPriority;
+			r.message = "This wing name is already used by a target priority group.";
+			return r;
+		}
+	}
+
+	// Waypoint paths
+	if (find_matching_waypoint_list(new_name.c_str()) != nullptr) {
+		r.error = WingNameError::DuplicateWaypointList;
+		r.message = "This wing name is already used by a waypoint path.";
+		return r;
+	}
+
+	// Jump nodes
+	if (jumpnode_get_by_name(new_name.c_str()) != nullptr) {
+		r.error = WingNameError::DuplicateJumpNode;
+		r.message = "This wing name is already used by a jump node.";
+		return r;
+	}
+
+	r.ok = true;
+	r.message.clear();
+	return r;
+}
+
+bool Editor::rename_wing(int wing, const SCP_string& new_name, bool rename_members)
+{
+	if (wing < 0 || wing >= MAX_WINGS)
+		return false;
+	if (Wings[wing].wave_count <= 0)
+		return false;
+
+	auto check = validate_wing_name(new_name, wing);
+	if (!check.ok)
+		return false;
+
+	char old_name[NAME_LENGTH];
+	strncpy(old_name, Wings[wing].name, NAME_LENGTH - 1);
+	old_name[NAME_LENGTH - 1] = '\0';
+
+	strncpy(Wings[wing].name, new_name.c_str(), NAME_LENGTH - 1);
+	Wings[wing].name[NAME_LENGTH - 1] = '\0';
+
+	if (rename_members) {
+		for (int i = 0; i < Wings[wing].wave_count; ++i) {
+			const int ship_idx = Wings[wing].ship_index[i];
+			if (ship_idx < 0 || ship_idx >= MAX_SHIPS)
+				continue;
+			char buf[NAME_LENGTH];
+			wing_bash_ship_name(buf, Wings[wing].name, i + 1);
+			rename_ship(ship_idx, buf);
+		}
+	}
+
+	ai_update_goal_references(sexp_ref_type::WING, old_name, Wings[wing].name);
+	update_custom_wing_indexes();
+
+	missionChanged();
+	updateAllViewports();
+	return true;
+}
+
 } // namespace fred
 } // namespace fso

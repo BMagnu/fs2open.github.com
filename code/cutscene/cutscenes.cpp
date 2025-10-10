@@ -25,6 +25,8 @@
 
 extern int Cmdline_nomovies;
 
+bool Movie_active = false;
+
 
 const char* Cutscene_bitmap_name[GR_NUM_RESOLUTIONS] = {
 		"ViewFootage",
@@ -58,6 +60,18 @@ static cutscene_info *get_cutscene_pointer(char *cutscene_filename)
 
 	// Didn't find anything.
 	return NULL;
+}
+
+int get_cutscene_index_by_name(const char* name)
+{
+	for (int i = 0; i < static_cast<int>(Cutscenes.size()); i++) {
+		if (!stricmp(name, Cutscenes[i].name)) {
+			return i;
+		}
+	}
+
+	// Didn't find anything.
+	return -1;
 }
 
 static void cutscene_info_init(cutscene_info *csni)
@@ -175,6 +189,9 @@ void parse_cutscene_table(const char* filename)
 				if (flag)
 					csnp->flags.set(Cutscene::Cutscene_Flags::Never_viewable);
 			}
+			if (optional_string("$Custom data:")) {
+				parse_string_map(csnp->custom_data, "$end_custom_data", "+Val:");
+			}
 
 		}
 
@@ -219,7 +236,6 @@ void cutscene_mark_viewable(const char* filename)
 
 	// change to lower case
 	strlwr(file);
-	int i = 0;
 	for (SCP_vector<cutscene_info>::iterator cut = Cutscenes.begin(); cut != Cutscenes.end(); ++cut)
 	{
 		// change the cutscene file name to lower case
@@ -232,7 +248,6 @@ void cutscene_mark_viewable(const char* filename)
 			cut->flags.set(Cutscene::Cutscene_Flags::Viewable);
 			return;
 		}
-		i++;
 	}
 
 	Warning(LOCATION, "Could not find cutscene '%s' in listing; cannot mark it viewable...", filename);
@@ -339,32 +354,25 @@ static const char* Text_lines[MAX_TEXT_LINES];
 
 void cutscenes_screen_play()
 {
-	char name[MAX_FILENAME_LEN]; // *full_name 
-	int which_cutscene;
-
-	Assert((Selected_line >= 0) && (Selected_line < (int) Cutscene_list.size()));
-	which_cutscene = Cutscene_list[Selected_line];
-
-	strcpy_s(name, Cutscenes[which_cutscene].filename);
-//	full_name = cf_add_ext(name, NOX(".mve"));
+	Assertion(SCP_vector_inbounds(Cutscene_list, Selected_line), "Selected line %d is out of range!", Selected_line);
+	int which_cutscene = Cutscene_list[Selected_line];
 
 	main_hall_stop_music(true);
 	main_hall_stop_ambient();
-	auto rval = movie::play(name);
+	auto rval = movie::play(Cutscenes[which_cutscene].filename, true);
 	main_hall_start_music();
 
 	if (!rval)
 	{
-		char str[256];
+		SCP_string str;
 
 		if (Cmdline_nomovies)
-			strcpy_s(str, XSTR("Movies are currently disabled.", 1574));
+			str = XSTR("Movies are currently disabled.", 1574);
 		else
 			sprintf(str, XSTR("Unable to play movie %s.", 204), Cutscenes[which_cutscene].name);
 
-		popup(PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, str);
+		popup(PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, str.c_str());
 	}
-
 }
 
 void cutscenes_screen_scroll_line_up()

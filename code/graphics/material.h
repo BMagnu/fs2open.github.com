@@ -92,6 +92,8 @@ public:
 	material();
 
 	int get_shader_handle() const;
+
+	// get_shader_flags should return a full set of all flags set for this shader
 	virtual uint get_shader_flags() const;
 
 	void set_texture_map(int tex_type, int texture_num);
@@ -131,7 +133,7 @@ public:
 
 	void set_color(float red, float green, float blue, float alpha);
 	void set_color(int r, int g, int b, int a);
-	void set_color(color &clr_in);
+	void set_color(const color &clr_in);
 	const vec4& get_color() const;
 
 	void set_color_scale(float scale);
@@ -196,10 +198,6 @@ class model_material : public material
 	bool Team_color_set = false;
 	team_color Tm_color;
 
-	bool Normal_alpha = false;
-	float Normal_alpha_min = 0.0f;
-	float Normal_alpha_max = 1.0f;
-
 	fog Fog_params;
 
 	float Outline_thickness = -1.0f;
@@ -226,7 +224,9 @@ public:
 	bool is_lit() const;
 
 	void set_deferred_lighting(bool enabled);
+	bool is_deferred() const;
 	void set_high_dynamic_range(bool enabled);
+	bool is_hdr() const;
 	
 	void set_center_alpha(int center_alpha);
 	int get_center_alpha() const;
@@ -237,17 +237,12 @@ public:
 	void set_team_color(const team_color &Team_clr);
 	void set_team_color();
 	const team_color& get_team_color() const;
+	bool is_team_color_set() const;
 
 	void set_animated_effect(int effect, float time);
 	void set_animated_effect();
 	int get_animated_effect() const;
 	float get_animated_effect_time() const;
-
-	void set_normal_alpha(float min, float max);
-	void set_normal_alpha();
-	bool is_normal_alpha_active() const;
-	float get_normal_alpha_min() const;
-	float get_normal_alpha_max() const;
 
 	void set_outline_thickness(float thickness = -1.0f);
 	float get_outline_thickness() const;
@@ -257,6 +252,8 @@ public:
 	bool is_batched() const;
 
 	uint get_shader_flags() const override;
+    int get_shader_runtime_early_flags() const;
+	int get_shader_runtime_flags() const;
 
 	void set_fog(int r, int g, int b, float near, float far);
 	void set_fog();

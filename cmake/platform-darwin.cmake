@@ -11,7 +11,8 @@ endif()
 
 target_link_libraries(platform INTERFACE ${COCOA_LIBRARY})
 
-SET(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
+# To support C++17 we need to target at least 10.13. maybe 10.14 for some rare features
+SET(CMAKE_OSX_DEPLOYMENT_TARGET "10.13")
 
 SET(CMAKE_SKIP_RPATH FALSE)
 SET(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
@@ -21,6 +22,14 @@ SET(CMAKE_INSTALL_RPATH @loader_path/../Frameworks/)
 SET(LIBRAY_DESTINATION "../Frameworks")
 
 set(PLATFORM_MAC TRUE CACHE INTERNAL "" FORCE)
+
+# Maybe override arm64 setting if we are compiling for different architecture
+# If not specified, or if it's a universal build, then this should do nothing
+if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+    set(IS_ARM64 TRUE)
+elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+    set(IS_ARM64 FALSE)
+endif()
 
 # Generate and don't strip debug symbols
 # These settings don't seem to generate debug symbols for code and Freespace2

@@ -18,11 +18,13 @@
 #include <lighting/lighting.h>
 #include <starfield/starfield.h>
 #include <ship/ship.h>
+#include <ship/shipfx.h>
 #include <jumpnode/jumpnode.h>
 #include <asteroid/asteroid.h>
 #include <iff_defs/iff_defs.h>
 #include <math/fvi.h>
 #include <graphics/light.h>
+#include <mod_table/mod_table.h>
 
 #include "mission/object.h"
 #include "weapon/weapon.h"
@@ -266,8 +268,10 @@ void fredhtl_render_subsystem_bounding_box(subsys_to_render *s2r)
 	vm_vec_add2(&center_pt, &objp->pos);
 	g3_rotate_vertex(&text_center, &center_pt);
 	g3_project_vertex(&text_center);
-	gr_set_color_fast(&colour_white);
-	gr_string( (int)text_center.screen.xyw.x,  (int)text_center.screen.xyw.y, buf.c_str() );
+	if (!(text_center.flags & PF_OVERFLOW)) {
+		gr_set_color_fast(&colour_white);
+		gr_string((int)text_center.screen.xyw.x, (int)text_center.screen.xyw.y, buf.c_str());
+	}
 }
 
 void render_active_rect(bool box_marking, const Marking_box& marking_box) {
@@ -502,7 +506,8 @@ void FredRenderer::display_ship_info(int cur_object_index) {
 						else
 							strcpy_s(buf, "Briefing icon");
 					} else if (objp->type == OBJ_JUMP_NODE) {
-						strcpy_s(buf, "Jump Node");
+						CJumpNode* jnp = jumpnode_get_by_objnum(OBJ_INDEX(objp));
+						sprintf(buf, "%s\n%s", jnp->GetName(), jnp->GetDisplayName());
 					} else
 						Assert(0);
 				}
@@ -784,7 +789,7 @@ void FredRenderer::render_model_x_htl(vec3d* pos, grid* gridp, int  /*col_scheme
 void FredRenderer::render_one_model_htl(object* objp,
 										int cur_object_index,
 										bool Bg_bitmap_dialog) {
-	int j, z;
+	int z;
 	object* o2;
 
 	Assert(objp->type != OBJ_NONE);
@@ -835,11 +840,13 @@ void FredRenderer::render_one_model_htl(object* objp,
 
 	// build flags
 	if ((view().Show_ship_models || view().Show_outlines) && ((objp->type == OBJ_SHIP) || (objp->type == OBJ_START))) {
+		uint64_t flags = 0;
+
 		g3_start_instance_matrix(&Eye_position, &Eye_matrix, 0);
 		if (view().Show_ship_models) {
-			j = MR_NORMAL;
+			flags = MR_NORMAL;
 		} else {
-			j = MR_NO_POLYS;
+			flags = MR_NO_POLYS;
 		}
 
 		uint debug_flags = 0;
@@ -856,26 +863,45 @@ void FredRenderer::render_one_model_htl(object* objp,
 		model_clear_instance(Ship_info[Ships[z].ship_info_index].model_num);
 
 		if (!view().Lighting_on) {
-			j |= MR_NO_LIGHTING;
+			flags |= MR_NO_LIGHTING;
 		}
 
 		if (view().FullDetail) {
-			j |= MR_FULL_DETAIL;
+			flags |= MR_FULL_DETAIL;
 		}
 
 		if (Fred_outline) {
-			j |= MR_SHOW_OUTLINE_HTL;
+			flags |= MR_SHOW_OUTLINE_HTL;
 		}
 
 		model_render_params render_info;
 		render_info.set_debug_flags(debug_flags);
 		render_info.set_color(Fred_outline >> 16, (Fred_outline >> 8) & 0xff, Fred_outline & 0xff);
-		render_info.set_replacement_textures(Ships[z].ship_replacement_textures);
-		render_info.set_flags(j);
+		render_info.set_replacement_textures(model_get_instance(Ships[z].model_instance_num)->texture_replace);
+		render_info.set_flags(flags);
 
 		g3_done_instance(0);
 
-		model_render_immediate(&render_info, Ship_info[Ships[z].ship_info_index].model_num, &objp->orient, &objp->pos);
+		model_render_immediate(&render_info, Ship_info[Ships[z].ship_info_index].model_num, Ships[z].model_instance_num, &objp->orient, &objp->pos);
+
+		if (view().Draw_outline_at_warpin_position 
+			&& (Ships[z].arrival_cue != Locked_sexp_true || Ships[z].arrival_delay > 0)
+			&& Ships[z].arrival_cue != Locked_sexp_false
+			&& !Ships[z].flags[Ship::Ship_Flags::No_arrival_warp])
+		{
+			int warp_type = Warp_params[Ships[z].warpin_params_index].warp_type;
+			if (warp_type == WT_DEFAULT || warp_type == WT_KNOSSOS || warp_type == WT_DEFAULT_THEN_KNOSSOS || (warp_type & WT_DEFAULT_WITH_FIREBALL)) {
+				float warpin_dist = shipfx_calculate_arrival_warp_distance(objp);
+
+				// project the ship forward as far as it should go
+				vec3d warpin_pos;
+				vm_vec_scale_add(&warpin_pos, &objp->pos, &objp->orient.vec.fvec, warpin_dist);
+
+				render_info.set_color(65, 65, 65);	// grey; see rgba_defaults
+				render_info.set_flags(flags | MR_SHOW_OUTLINE_HTL | MR_NO_LIGHTING | MR_NO_POLYS | MR_NO_TEXTURING);
+				model_render_immediate(&render_info, Ship_info[Ships[z].ship_info_index].model_num, Ships[z].model_instance_num, &objp->orient, &warpin_pos);
+			}
+		}
 	} else {
 		int r = 0, g = 0, b = 0;
 
@@ -1005,17 +1031,17 @@ void FredRenderer::render_frame(int cur_object_index,
         True_rw = rect.Width();
         True_rh = rect.Height();
         if (Fixed_briefing_size) {
-            True_rw = BRIEF_GRID_W;
-            True_rh = BRIEF_GRID_H;
+            True_rw = Briefing_window_resolution[0];
+            True_rh = Briefing_window_resolution[1];
 
         }
         else {
-            if ((float)True_rh / (float)True_rw > (float)BRIEF_GRID_H / (float)BRIEF_GRID_W) {
-                True_rh = (int)((float)BRIEF_GRID_H * (float)True_rw / (float)BRIEF_GRID_W);
+            if ((float)True_rh / (float)True_rw > (float)Briefing_window_resolution[1] / (float)Briefing_window_resolution[0]) {
+                True_rh = (int)((float)Briefing_window_resolution[1] * (float)True_rw / (float)Briefing_window_resolution[0]);
 
             }
             else {  // Fred is wider than briefing window
-                True_rw = (int)((float)BRIEF_GRID_W * (float)True_rh / (float)BRIEF_GRID_H);
+                True_rw = (int)((float)Briefing_window_resolution[0] * (float)True_rh / (float)Briefing_window_resolution[1]);
             }
         }
 

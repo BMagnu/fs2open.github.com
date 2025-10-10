@@ -25,14 +25,19 @@
 #define	PF_AFTERBURNER_WAIT		(1 << 7)	// true when afterburner cannot be used.  replaces variable used in afterburner code
 #define	PF_CONST_VEL			(1 << 8)	// Use velocity in phys_info struct.  Optimize weapons in phys_sim 
 #define	PF_WARP_IN				(1 << 9)	//	Use when ship is warping in
-#define	PF_SPECIAL_WARP_IN		(1 << 10)	//	Use when ship is warping in and we want to slow the ship faster than normal game physics
+#define	PF_SUPERCAP_WARP_IN		(1 << 10)	//	Use when ship is warping in and we want to slow the ship faster than normal game physics
 #define	PF_WARP_OUT				(1 << 11)	//	Use when ship is warping out
-#define	PF_SPECIAL_WARP_OUT		(1 << 12)	//	Use when ship is warping out and we want to slow the ship faster than normal game physics
+#define	PF_SUPERCAP_WARP_OUT	(1 << 12)	//	Use when ship is warping out and we want to slow the ship faster than normal game physics
 #define PF_BOOSTER_ON			(1 << 13)
 #define PF_GLIDING				(1 << 14)
 #define PF_FORCE_GLIDE			(1 << 15)
 #define PF_NEWTONIAN_DAMP		(1 << 16)	// SUSHI: Whether or not to use newtonian dampening
-#define PF_MANEUVER_NO_DAMP				(1 << 17)	// Goober5000 - don't damp velocity changes in physics; used for instantaneous acceleration
+#define PF_MANEUVER_NO_DAMP		(1 << 17)	// Goober5000 - don't damp velocity changes in physics; used for instantaneous acceleration
+#define PF_BALLISTIC			(1 << 18)	// Asteroth - not moving 'under its own power', simplified physics calculations
+#define PF_SCRIPTED_VELOCITY    (1 << 19)   // Asteroth - velocity was modified via script, should not be altered by the engine for this frame
+
+extern const float SUPERCAP_WARP_T_CONST;
+extern const float SUPERCAP_WARP_EXCESS_SPD_THRESHOLD;
 
 //information for physics sim for an object
 typedef struct physics_info {
@@ -102,6 +107,8 @@ typedef struct physics_info {
 	matrix ai_desired_orient;   // Asteroth - This is only set to something other than the zero matrix if Framerate_independent_turning is enabled, and 
 								// only by the AI after calls to angular_move. It is read and then zeroed out for the rest of the frame by physics_sim_rot
 	vec3d acceleration;		// this is only the current trend of velocity in m/s^2, does NOT determine future velocity
+
+	float gravity_const;   // how much this object is affected by gravity
 } physics_info;
 
 // control info override flags
@@ -147,18 +154,20 @@ extern int physics_paused;				//	Set means don't do physics, except for player.
 //   physics_sim(&ViewerPos, &ViewerOrient, &ViewerPhysics, FrameSecs );		
 extern void physics_init( physics_info * pi );
 extern void physics_read_flying_controls( matrix * orient, physics_info * pi, control_info * ci, float sim_time, vec3d *wash_rot=NULL);
-extern void physics_sim(vec3d *position, matrix * orient, physics_info * pi, float sim_time );
+extern void physics_sim(vec3d *position, matrix * orient, physics_info * pi, vec3d* gravity, float sim_time);
 extern void physics_sim_editor(vec3d *position, matrix * orient, physics_info * pi, float sim_time);
 
-extern void physics_sim_vel(vec3d * position, physics_info * pi, float sim_time, matrix * orient);
+extern void physics_sim_vel(vec3d * position, physics_info * pi,matrix * orient, vec3d* gravity, float sim_time);
 extern void physics_sim_rot(matrix * orient, physics_info * pi, float sim_time );
 extern bool whack_below_limit(const vec3d* impulse);
-extern void physics_calculate_and_apply_whack(vec3d *force, vec3d *pos, physics_info *pi, matrix *orient, matrix *inv_moi);
-extern void physics_apply_whack(float orig_impulse, physics_info* pi, vec3d *delta_rotvel, vec3d* delta_vel, matrix* orient);
+extern bool whack_below_limit(float impulse);
+extern void physics_calculate_and_apply_whack(const vec3d *force, const vec3d *pos, physics_info *pi, const matrix *orient, const matrix *inv_moi);
+extern void physics_apply_whack(float orig_impulse, physics_info* pi, const vec3d *delta_rotvel, const vec3d* delta_vel, const matrix* orient);
 extern void physics_apply_shock(vec3d *direction_vec, float pressure, physics_info *pi, matrix *orient, vec3d *min, vec3d *max, float radius);
-extern void physics_collide_whack(vec3d *impulse, vec3d *delta_rotvel, physics_info *pi, matrix *orient, bool is_landing);
+extern void physics_collide_whack(vec3d *impulse, vec3d *delta_rotvel, physics_info *pi, matrix *orient, bool is_landing, float max_rotvel = -1.0f);
 int check_rotvel_limit( physics_info *pi );
 extern void physics_add_point_mass_moi(matrix *moi, float mass, vec3d *pos);
+extern bool physics_lead_ballistic_trajectory(const vec3d* start, const vec3d* end_pos, const vec3d* target_vel, float weapon_speed, const vec3d* gravity, vec3d* out_direction);
 
 
 // If physics_set_viewer is called with the viewer's physics_info, then

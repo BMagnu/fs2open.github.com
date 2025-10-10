@@ -1,4 +1,5 @@
 #include "fictionviewer.h"
+#include "missionui/fictionviewer.h"
 
 namespace scripting {
 namespace api {
@@ -7,7 +8,7 @@ fiction_viewer_stage_h::fiction_viewer_stage_h() : f_stage(-1) {}
 
 fiction_viewer_stage_h::fiction_viewer_stage_h(int stage) : f_stage(stage) {}
 
-bool fiction_viewer_stage_h::IsValid() const
+bool fiction_viewer_stage_h::isValid() const
 {
 	return f_stage >= 0;
 }
@@ -31,7 +32,9 @@ ADE_VIRTVAR(TextFile, l_FictionViewerStage, nullptr, "The text file of the stage
 		LuaError(L, "This property is read only.");
 	}
 
-	return ade_set_args(L, "s", stage.getStage()->story_filename);
+	SCP_string localized_filename = get_localized_fiction_filename(stage.getStage()->story_filename);
+
+	return ade_set_args(L, "s", localized_filename.c_str());
 }
 
 ADE_VIRTVAR(FontFile, l_FictionViewerStage, nullptr, "The font file of the stage", "string", "The font filename")

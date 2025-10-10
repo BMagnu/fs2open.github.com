@@ -37,7 +37,6 @@ extern float flFrametime;
 extern fix Missiontime;
 extern TIMESTAMP Last_frame_timestamp;			// A timestamp for when the previous frame ended, in mission time
 extern UI_TIMESTAMP Last_frame_ui_timestamp;	// Ditto, in real time (independent of pause and time compression)
-extern fix Skybox_timestamp;	// A timestamp for animated skyboxes -MageKing17
 
 // 0 - 4
 extern int Game_skill_level;
@@ -124,7 +123,7 @@ void change_time_compression(float multiplier);
 // call this to set frametime properly (once per frame)
 void game_set_frametime(int state);
 
-// overall frametime of game, indepedent of mission timer
+// overall frametime of game in fix units (seconds * 65536), independent of mission timer
 fix game_get_overall_frametime();
 
 // Used to halt all looping game sounds
@@ -151,7 +150,7 @@ bool game_using_low_mem();
 // misc ---------------------------------------------------------------
 
 // lookup the specified filename. return an fs_builtin_mission* if found, NULL otherwise
-fs_builtin_mission *game_find_builtin_mission(char *filename);
+const fs_builtin_mission *game_find_builtin_mission(const char *filename);
 
 
 
@@ -183,9 +182,6 @@ void game_shudder_apply(int time, float intensity, bool perpetual = false, bool 
 
 //===================================================================
 
-// make sure a CD is in the drive before continuing (returns 1 to continue, otherwise 0).
-int find_freespace_cd(char *volume_name=NULL);
-
 // Used to tell the player that a feature is disabled by build settings
 void game_feature_disabled_popup();
 
@@ -199,13 +195,16 @@ int game_hacked_data();
 void game_pause();
 void game_unpause();
 
+extern bool Pre_player_entry;
+extern bool game_actually_playing();
+
 //WMC - Stuff for scripting, these make the game go
 extern camid Main_camera;
 
 extern void game_level_init();
 extern void game_post_level_init();
 extern camid game_render_frame_setup();
-extern void game_render_frame(camid cid);
+extern void game_render_frame(camid cid, const vec3d* offset = nullptr, const matrix* rot_offset = nullptr, const fov_t* fov_override = nullptr);
 extern void game_simulation_frame();
 extern void game_update_missiontime();
 extern void game_render_post_frame();

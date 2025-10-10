@@ -17,8 +17,23 @@
 
 #include <memory>
 
+extern bool Randomize_particle_rotation;
+
 namespace particle
 {
+
+	class ParticleEffect;
+	struct particle_effect_tag {
+	};
+	using ParticleEffectHandle = ::util::ID<particle_effect_tag, ptrdiff_t, -1>;
+
+	struct ParticleSubeffectHandle {
+		ParticleEffectHandle handle;
+		size_t subeffect;
+
+		const ParticleEffect& getParticleEffect() const;
+	};
+
 	//============================================================================
 	//==================== PARTICLE SYSTEM GAME SEQUENCING CODE ==================
 	//============================================================================
@@ -38,44 +53,21 @@ namespace particle
 	// kill all active particles
 	void kill_all();
 
+	size_t get_particle_count();
+
 
 	//============================================================================
 	//=============== LOW-LEVEL SINGLE PARTICLE CREATION CODE ====================
 	//============================================================================
 
-	/**
-	 * The different types of particles
-	 */
-	enum ParticleType
-	{
-		PARTICLE_DEBUG, //!< A simple sphere; optional data provides the color which defaults to red
-		PARTICLE_BITMAP, //!< A bitmap, optional data is the bitmap number.  If bitmap is an animation, lifetime is calculated by the number of frames and fps.
-		PARTICLE_FIRE, //!< The vclip used for explosions, optional means nothing
-		PARTICLE_SMOKE, //!< The vclip used for smoke, optional means nothing
-		PARTICLE_SMOKE2, //!< The vclip used for smoke, optional means nothing
-		PARTICLE_BITMAP_PERSISTENT, //!< A bitmap, optional data is the bitmap number.  If bitmap is an animation, lifetime is calculated by the number of frames and fps.
+	extern int Anim_bitmap_id_fire;
+	extern int Anim_num_frames_fire;
 
-		NUM_PARTICLE_TYPES,
-		INVALID_TYPE
-	};
+	extern int Anim_bitmap_id_smoke;
+	extern int Anim_num_frames_smoke;
 
-	// particle creation stuff
-	typedef struct particle_info {
-		// old-style particle info
-		vec3d pos = vmd_zero_vector;
-		vec3d vel = vmd_zero_vector;
-		float lifetime = -1.0f;
-		float rad = -1.0f;
-		ParticleType type = INVALID_TYPE;
-		int optional_data = -1;
-
-		// new-style particle info
-		int attached_objnum = -1;				// if these are set, the pos is relative to the pos of the origin of the attached object
-		int attached_sig = -1;					// to make sure the object hasn't changed or died. velocity is ignored in this case
-		bool reverse = false;					// play any animations in reverse
-		bool lifetime_from_animation = true;	// if the particle plays an animation then use the anim length for the particle life
-		float length = 0.f;						// if set, makes the particle render like a laser, oriented along its path
-	} particle_info;
+	extern int Anim_bitmap_id_smoke2;
+	extern int Anim_num_frames_smoke2;
 
 	typedef struct particle {
 		// old style data
@@ -85,16 +77,18 @@ namespace particle
 		float	max_life;			// How much life we had
 		bool    looping;            // If the particle will loop its animation at the end of its life instead of expiring
 		float	radius;				// radius
-		int		type;				// type										// -1 = None
-		int		optional_data;		// depends on type
+		int		bitmap;		// depends on type
 		int		nframes;			// If an ani, how many frames?	
 
 		// new style data
 		int		attached_objnum;	// if this is set, pos is relative to the attached object. velocity is ignored
 		int		attached_sig;		// to check for dead/nonexistent objects
 		bool	reverse;			// play any animations in reverse
-		int		particle_index;		// used to keep particle offset in dynamic array for orient usage
 		float   length;				// the length of the particle for laser-style rendering
+		float	angle;
+		bool	use_angle;			// whether this particle can be rotated
+
+		ParticleSubeffectHandle parent_effect;
 	} particle;
 
 	typedef std::weak_ptr<particle> WeakParticlePtr;
@@ -109,23 +103,7 @@ namespace particle
 	 *
 	 * @param pinfo A structure containg information about how the particle should be created
 	 */
-	void create(particle_info* pinfo);
-
-	/**
-	 * @brief Convenience function for creating a non-persistent particle without explicitly creating a particle_info
-	 * structure.
-	 * @return The particle handle
-	 *
-	 * @see particle::create(particle_info* pinfo)
-	 */
-	void create(vec3d* pos,
-				vec3d* vel,
-				float lifetime,
-				float rad,
-				ParticleType type,
-				int optional_data = -1,
-				object* objp = NULL,
-				bool reverse = false);
+	void create(particle&& new_particle);
 
 	/**
 	 * @brief Creates a persistent particle
@@ -137,31 +115,7 @@ namespace particle
 	 * @param pinfo A structure containg information about how the particle should be created
 	 * @return A weak reference to the particle
 	 */
-    WeakParticlePtr createPersistent(particle_info* pinfo);
-
-	//============================================================================
-	//============== HIGH-LEVEL PARTICLE SYSTEM CREATION CODE ====================
-	//============================================================================
-
-	// Use a structure rather than pass a ton of parameters to particle_emit
-	typedef struct particle_emitter {
-		int		num_low;			// Lowest number of particles to create
-		int		num_high;			// Highest number of particles to create
-		vec3d	pos;				// Where the particles emit from
-		vec3d	vel;				// Initial velocity of all the particles
-		float	min_life;			// How long the particles live
-		float	max_life;			// How long the particles live
-		vec3d	normal;				// What normal the particle emit arond
-		float	normal_variance;	// How close they stick to that normal 0=good, 1=360 degree
-		float	min_vel;			// How fast the slowest particle can move
-		float	max_vel;			// How fast the fastest particle can move
-		float	min_rad;			// Min radius
-		float	max_rad;			// Max radius
-	} particle_emitter;
-
-	// Creates a bunch of particles. You pass a structure
-	// rather than a bunch of parameters.
-	void emit(particle_emitter *pe, ParticleType type, int optional_data, float range = 1.0);
+	WeakParticlePtr createPersistent(particle&& new_particle);
 }
 
 #endif // _PARTICLE_H

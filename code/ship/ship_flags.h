@@ -8,8 +8,9 @@ namespace Ship {
 	FLAG_LIST(Weapon_Flags){
 		Beam_Free = 0,	// if this is a beam weapon, its free to fire
 		Turret_Lock,	// is this turret is free to fire or locked
-		Tagged_Only,	// only fire if target is tagged
-		Trigger_Lock,	// // indicates that the trigger is held down
+		Tagged_Only,	// only fire if target is tagged		
+		Secondary_trigger_down,	// indicates that the trigger is held down, used for multilock hold-to-lock type missiles
+		Primary_trigger_down,	// indicates that the trigger is held down
 
 		NUM_VALUES
 	};
@@ -64,7 +65,7 @@ namespace Ship {
 		Arriving_stage_1_dock_follower,		// "Arriving but Not the Dock Leader"; these guys need some warp stuff done but not all
 		Arriving_stage_2,			// ship is arriving. In other words, doing warp in effect, stage 2             
 		Arriving_stage_2_dock_follower,		// "Arriving but Not the Dock Leader"; these guys need some warp stuff done but not all
-		Engines_on,					// engines sound should play if set
+		Engine_sound_on,                // engines sound should play if set
 		Dock_leader,				// Goober5000 - this guy is in charge of everybody he's docked to
 		Cargo_revealed,				// ship's cargo is revealed to all friendly ships
 		From_player_wing,			// set for ships that are members of any player starting wing
@@ -72,7 +73,7 @@ namespace Ship {
 		Secondary_dual_fire,		// ship is firing two missiles from the current secondary bank
 		Warp_broken,				// set when warp drive is not working, but is repairable
 		Warp_never,					// set when ship can never warp
-		Trigger_down,				// ship has its "trigger" held down
+		Trigger_down,				// ship has its "trigger" held down, PLAYER ONLY
 		Ammo_count_recorded,		// we've recorded the initial secondary weapon count (which is used to limit support ship rearming)
 		Hidden_from_sensors,		// ship doesn't show up on sensors, blinks in/out on radar
 		Scannable,					// ship is "scannable".  Play scan effect and report as "Scanned" or "not scanned".
@@ -107,8 +108,8 @@ namespace Ship {
 		No_thrusters,				// The E - Thrusters on this ship are not rendered.
 		Ship_locked,				// Karajorma - Prevents the player from changing the ship class on loadout screen
 		Weapons_locked,				// Karajorma - Prevents the player from changing the weapons on the ship on the loadout screen
-		Ship_selective_linking,		// RSAXVC - Allow pilot to pick firing configuration
-		Scramble_messages,			// Goober5000 - all messages sent from this ship appear scrambled
+		Scramble_messages,			// Goober5000 - all messages sent from or received by this ship appear scrambled
+		EMP_doesnt_scramble_messages,	// Goober5000 - when EMP is active, messages will not have the scramble effect
         No_secondary_lockon,        // zookeeper - secondary lock-on disabled
         No_disabled_self_destruct,  // Goober5000 - ship will not self-destruct after 90 seconds if engines or weapons destroyed (c.f. ai_maybe_self_destruct)
 		Subsystem_movement_locked,	// The_E -- Rotating subsystems are locked in place.
@@ -135,6 +136,12 @@ namespace Ship {
 		Fail_sound_locked_secondary,		// Kiloku -- Play the firing fail sound when the weapon is locked.
 		Subsystem_cache_valid,		// Goober5000 - whether the subsystem list index caches can be used
 		Aspect_immune,						// Kiloku -- Ship cannot be targeted by Aspect Seekers.
+		Cannot_perform_scan,		// Goober5000 - ship cannot scan other ships
+		No_targeting_limits,				//MjnMixael -- Ship is always targetable regardless of AWACS or targeting range limits
+		Maneuver_despite_engines,	// Goober5000 - ship can move even when engines are disabled or disrupted
+		Force_primary_unlinking,	// plieblang - turned on when the ship is under good-primary-time
+		No_scanned_cargo,                 //MjnMixael -- The cargo will never be revealed, instead always returning "Scanned" or "Not Scanned"
+		No_insignias,				// Cyborg -- do not render insignias, even when one is defined for them.
 
 		NUM_VALUES
 
@@ -147,6 +154,7 @@ namespace Ship {
 		Player_deleted,
 		Been_tagged,
 		Red_alert_carry,
+		From_player_wing,
 
 		NUM_VALUES
 	};
@@ -209,17 +217,8 @@ namespace Ship {
 		Instantaneous_acceleration,		// Goober5000
 		Has_display_name,				// Goober5000
 		Large_ship_deathroll,			// Asteroth - big ships dont normally deathroll, this makes them do it!
-		No_impact_debris,				// wookieejedi - Don't spawn the small debris on impact
-
-		NUM_VALUES
-	};
-
-	FLAG_LIST(Aiming_Flags) {
-		Autoaim = 0,			// has autoaim
-		Auto_convergence,		// has automatic convergence
-		Std_convergence,		// has standard - ie. non-automatic - convergence
-		Autoaim_convergence,	// has autoaim with convergence
-		Convergence_offset,		// marks that convergence has offset value
+		Disable_all_generic_impact_debris,    // wookieejedi - Don't spawn debris on impact
+		Disable_all_generic_explosion_debris, // wookieejedi - Don't spawn debris on explosion
 
 		NUM_VALUES
 	};
@@ -254,8 +253,8 @@ namespace Ship {
 		Bank_left,
 		Pitch_up,
 		Pitch_down,
-		Roll_right,
-		Roll_left,
+		Yaw_right,
+		Yaw_left,
 		Slide_right,
 		Slide_left,
 		Slide_up,
@@ -268,10 +267,9 @@ namespace Ship {
 
 
     // Not all wing flags are parseable or saveable in mission files. Right now, the only ones which can be set by mission designers are:
-    // ignore_count, reinforcement, no_arrival_music, no_arrival_message, no_arrival_warp, no_departure_warp,
+    // ignore_count, reinforcement, no_arrival_music, no_arrival_message, no_first_wave_message, no_arrival_warp, no_departure_warp,
 	// same_arrival_warp_when_docked, same_departure_warp_when_docked, no_dynamic, and nav_carry_status
-    // Should that change, bump this variable and make sure to make the necessary changes to parse_wing (in missionparse)
-#define PARSEABLE_WING_FLAGS 10
+    // The list of parseable flags is in missionparse.cpp
 	
     FLAG_LIST(Wing_Flags) {
 		Gone,					// all ships were either destroyed or departed
@@ -290,6 +288,8 @@ namespace Ship {
 		Nav_carry,				// Kazan - Wing has nav-carry-status
 		Same_arrival_warp_when_docked,		// Goober5000
 		Same_departure_warp_when_docked,	// Goober5000
+		No_first_wave_message,		// don't play arrival message for the first wave
+		Waypoints_no_formation, // wing will not try to form up when running a waypoint together
 
 		NUM_VALUES
 	};

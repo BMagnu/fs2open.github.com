@@ -5,21 +5,6 @@
 #include "parse/sexp.h"
 
 namespace sexp {
-namespace {
-
-int get_subcategory(const SCP_string& name)
-{
-	for (auto& subcat : op_submenu) {
-		if (subcat.name == name) {
-			return subcat.id;
-		}
-	}
-
-	return -1;
-}
-
-} // namespace
-
 EngineSEXPFactory::ArgumentListBuilder::ArgumentListBuilder(EngineSEXPFactory* parent) : _parent(parent) {}
 EngineSEXPFactory::ArgumentListBuilder& EngineSEXPFactory::ArgumentListBuilder::arg(int type, SCP_string help_text)
 {
@@ -34,11 +19,11 @@ EngineSEXPFactory::ArgumentListBuilder& EngineSEXPFactory::ArgumentListBuilder::
 {
 	Assertion(std::find_if(_parent->_arguments.begin(),
 				  _parent->_arguments.end(),
-				  [](const argument& arg) { return arg.optional_marker; }) == _parent->_arguments.end(),
+				  EngineSEXPFactory::isArgumentOptional) == _parent->_arguments.end(),
 		"Optional marker was already added!");
 	Assertion(std::find_if(_parent->_arguments.begin(),
 				  _parent->_arguments.end(),
-				  [](const argument& arg) { return arg.varargs_marker; }) == _parent->_arguments.end(),
+				  EngineSEXPFactory::isArgumentVarargsMarker) == _parent->_arguments.end(),
 		"Adding optional arguments after varags specifier is not allowed!");
 
 	argument arg;
@@ -51,7 +36,7 @@ EngineSEXPFactory::ArgumentListBuilder& EngineSEXPFactory::ArgumentListBuilder::
 {
 	Assertion(std::find_if(_parent->_arguments.begin(),
 				  _parent->_arguments.end(),
-				  [](const argument& arg) { return arg.varargs_marker; }) == _parent->_arguments.end(),
+				  EngineSEXPFactory::isArgumentVarargsMarker) == _parent->_arguments.end(),
 		"Varargs marker was already added!");
 
 	argument arg;
@@ -69,6 +54,11 @@ EngineSEXPFactory& EngineSEXPFactory::category(int cat)
 	_category = cat;
 	return *this;
 }
+EngineSEXPFactory& EngineSEXPFactory::category(const SCP_string& cat)
+{
+	_categoryName = cat;
+	return *this;
+}
 EngineSEXPFactory& EngineSEXPFactory::subcategory(int cat)
 {
 	_category = cat;
@@ -83,14 +73,19 @@ EngineSEXPFactory::ArgumentListBuilder EngineSEXPFactory::beginArgList() { retur
 
 dummy_return EngineSEXPFactory::finish()
 {
-	Assertion(_category >= 0, "Engine SEXP %s: A category has to be specified!", m_sexp->getName().c_str());
 	Assertion(_returnType >= 0, "Engine SEXP %s: A return type has to be specified!", m_sexp->getName().c_str());
 
-	m_sexp->setCategory(_category);
-	if (_subcategory >= 0) {
+	if (_category >= 0 && _category != OP_CATEGORY_NONE) {
+		m_sexp->setCategory(_category);
+	} else {
+		Assertion(!_categoryName.empty(), "Engine SEXP %s: A category has to be specified!", m_sexp->getName().c_str());
+		m_sexp->setCategoryName(_categoryName);
+	}
+
+	if (_subcategory >= 0 && _subcategory != OP_SUBCATEGORY_NONE) {
 		m_sexp->setSubcategory(_subcategory);
 	} else {
-		Assertion(!_subcategoryName.empty(), "A subcategory has to be specified!");
+		Assertion(!_subcategoryName.empty(), "Engine SEXP %s: A subcategory has to be specified!", m_sexp->getName().c_str());
 		m_sexp->setSubcategoryName(_subcategoryName);
 	}
 
@@ -174,6 +169,14 @@ EngineSEXPFactory& EngineSEXPFactory::action(EngineSexpAction act)
 	_action = std::move(act);
 	return *this;
 }
+bool EngineSEXPFactory::isArgumentOptional(const EngineSEXPFactory::argument& arg)
+{
+	return arg.optional_marker;
+}
+bool EngineSEXPFactory::isArgumentVarargsMarker(const EngineSEXPFactory::argument& arg)
+{
+	return arg.varargs_marker;
+}
 EngineSEXP::EngineSEXP(const SCP_string& name) : DynamicSEXP(name) {}
 
 EngineSEXPFactory EngineSEXP::create(const SCP_string& name)
@@ -182,11 +185,20 @@ EngineSEXPFactory EngineSEXP::create(const SCP_string& name)
 }
 void EngineSEXP::initialize()
 {
-	// Initialize subcategory now that we know that it is safe to do so
-	if (_subcategory < 0) {
-		_subcategory = get_subcategory(_subcategoryName);
+	// Initialize category now that we know that it is safe to do so
+	if (_category == OP_CATEGORY_NONE) {
+		_category = get_category(_categoryName);
 
-		if (_subcategory < 0) {
+		if (_category == OP_CATEGORY_NONE) {
+			_category = add_category(_categoryName);
+		}
+	}
+
+	// Initialize subcategory now that we know that it is safe to do so
+	if (_subcategory == OP_SUBCATEGORY_NONE) {
+		_subcategory = get_subcategory(_subcategoryName, _category);
+
+		if (_subcategory == OP_SUBCATEGORY_NONE) {
 			_subcategory = add_subcategory(_category, _subcategoryName);
 		}
 	}
@@ -212,7 +224,7 @@ int EngineSEXP::getArgumentType(int argnum) const
 		return _argumentTypes[argnum];
 	}
 }
-int EngineSEXP::execute(int node)
+int EngineSEXP::execute(int node, int /*parent_node*/)
 {
 	SEXPParameterExtractor extractor(node);
 	return _action(&extractor);
@@ -222,6 +234,7 @@ int EngineSEXP::getSubcategory() { return _subcategory; }
 int EngineSEXP::getCategory() { return _category; }
 
 void EngineSEXP::setCategory(int category) { _category = category; }
+void EngineSEXP::setCategoryName(SCP_string category) { _categoryName = std::move(category); }
 void EngineSEXP::setSubcategory(int subcategory) { _subcategory = subcategory; }
 void EngineSEXP::setSubcategoryName(SCP_string subcategory) { _subcategoryName = std::move(subcategory); }
 void EngineSEXP::setHelpText(SCP_string helpText) { _help_text = std::move(helpText); }

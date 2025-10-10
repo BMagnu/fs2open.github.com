@@ -288,7 +288,7 @@ int draw_subsys_brackets(graphics::line_draw_list* draw_list, ship_subsys* subsy
 	}
 
 	// determine if subsystem is on far or near side of the ship
-	int in_sight = ship_subsystem_in_sight(targetp, subsys, &View_position, &subobj_pos, 0);
+	bool in_sight = ship_subsystem_in_sight(targetp, subsys, &View_position, &subobj_pos, false);
 	
 	if (draw)
 	{
@@ -331,7 +331,7 @@ int draw_subsys_brackets(graphics::line_draw_list* draw_list, ship_subsys* subsy
 }
 
 HudGaugeBrackets::HudGaugeBrackets():
-HudGauge(HUD_OBJECT_BRACKETS, HUD_OFFSCREEN_INDICATOR, false, true, VM_DEAD_VIEW, 255, 255, 255)
+HudGauge3DAnchor(HUD_OBJECT_BRACKETS, HUD_OFFSCREEN_INDICATOR, false, true, VM_DEAD_VIEW, 255, 255, 255)
 {
 }
 
@@ -355,8 +355,13 @@ void HudGaugeBrackets::initBitmaps(char *fname)
 	}
 }
 
-void HudGaugeBrackets::render(float  /*frametime*/)
+void HudGaugeBrackets::render(float  /*frametime*/, bool config)
 {
+	// Brackets are do not support config settings
+	if (config) {
+		return;
+	}
+	
 	// don't display brackets if we're warping out.
 	if ( Player->control_mode != PCM_NORMAL ) {
 		return;
@@ -393,7 +398,6 @@ void HudGaugeBrackets::renderObjectBrackets(object *targetp, color *clr, int w_c
 	int x1,x2,y1,y2;
 	bool draw_box = true;
 	int bound_rc;
-	SCP_list<CJumpNode>::iterator jnp;
 
 
 	bool not_player_target = (Player_ai->target_objnum < 0 || targetp != &Objects[Player_ai->target_objnum]);
@@ -438,19 +442,17 @@ void HudGaugeBrackets::renderObjectBrackets(object *targetp, color *clr, int w_c
 			{
 			int pof = 0;
 			pof = Asteroids[targetp->instance].asteroid_subtype;
-			modelnum = Asteroid_info[Asteroids[targetp->instance].asteroid_type].model_num[pof];
+			modelnum = Asteroid_info[Asteroids[targetp->instance].asteroid_type].subtypes[pof].model_number;
 			bound_rc = model_find_2d_bound_min( modelnum, &targetp->orient, &targetp->pos,&x1,&y1,&x2,&y2 );
 			}
 			break;
 
 		case OBJ_JUMP_NODE:
-			for (jnp = Jump_nodes.begin(); jnp != Jump_nodes.end(); ++jnp) {
-				if(jnp->GetSCPObject() == targetp)
-					break;
-			}	
-				
-			modelnum = jnp->GetModelNumber();
+			{
+			auto jnp = jumpnode_get_by_objp(targetp);
+			modelnum = jnp ? jnp->GetModelNumber() : -1;
 			bound_rc = model_find_2d_bound_min( modelnum, &targetp->orient, &targetp->pos,&x1,&y1,&x2,&y2 );
+			}
 			break;
 
 		default:
@@ -632,7 +634,6 @@ void HudGaugeBrackets::renderBoundingBrackets(int x1, int y1, int x2, int y2, in
 		const char* tinfo_class = NULL;
 		char temp_name[NAME_LENGTH*2+3];
 		char temp_class[NAME_LENGTH];
-		SCP_list<CJumpNode>::iterator jnp;
 
 		switch(t_objp->type) {
 			case OBJ_SHIP:
@@ -671,14 +672,8 @@ void HudGaugeBrackets::renderBoundingBrackets(int x1, int y1, int x2, int y2, in
 				}
 				break;
 			case OBJ_JUMP_NODE:
-				for (jnp = Jump_nodes.begin(); jnp != Jump_nodes.end(); ++jnp) {
-					if(jnp->GetSCPObject() == t_objp)
-						break;
-				}
-				
-				strcpy_s(temp_name, jnp->GetName());
-				end_string_at_first_hash_symbol(temp_name);
-				tinfo_name = temp_name;
+				auto jnp = jumpnode_get_by_objnum(target_objnum);
+				tinfo_name = jnp ? jnp->GetDisplayName() : "";
 				break;
 		}
 
@@ -764,7 +759,7 @@ void HudGaugeBrackets::renderBoundingBracketsSubobject()
 			}
 
 			// determine if subsystem is on far or near side of the ship
-			Player->subsys_in_view = ship_subsystem_in_sight(targetp, subsys, &View_position, &subobj_pos, 0);
+			Player->subsys_in_view = ship_subsystem_in_sight(targetp, subsys, &View_position, &subobj_pos, false) ? 1 : 0;
 
 			// AL 29-3-98: If subsystem is destroyed, draw gray brackets
 			// Goober5000: this will now execute for fighterbays if the bay has been given a

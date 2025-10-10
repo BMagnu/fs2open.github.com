@@ -32,8 +32,10 @@ namespace Mission {
 		Toggle_showing_goals,			// Show mission goals for training missions, hide otherwise - Karajorma/naomimyselfandi
 		End_to_mainhall,			// Return to the mainhall after debrief - niffiwan
 		Override_hashcommand,		// Override #Command with the Command info in Mission Specs - Goober5000
-		Player_start_chase_view,	// Player starts mission in chase view - Goober5000
+		Toggle_start_chase_view,	// Toggles (versus the default) whether the player starts the mission in chase view - Goober5000
 		Neb2_fog_color_override,	// Whether to use explicit fog colors instead of checking the palette - Goober5000
+		Fullneb_background_bitmaps, // Show background bitmaps despite fullneb
+		Preload_subspace,			// Preload the subspace tunnel for both the sexp and specs checkbox (for scripts) - MjnMixael
 		
 		NUM_VALUES
 	};
@@ -49,7 +51,9 @@ namespace Mission {
 		OF_Protected,
 		OF_Player_start,
 		SF_No_departure_warp,
-		SF_Locked,
+		SF_Locked,	// encompasses both ship-locked and weapons-locked
+		SF_Ship_locked,
+		SF_Weapons_locked,
 		OF_Invulnerable,
 		SF_Hidden_from_sensors,
 		SF_Scannable,	// ship is a "scannable" ship
@@ -88,11 +92,11 @@ namespace Mission {
 		SF_Lock_all_turrets_initially,		
 		SF_Afterburner_locked,	
 		OF_Force_shields_on,
-		OF_Immobile,
+		OF_Immobile,	// encompasses both don't-change-position and don't-change-orientation (legacy flag, but not deprecated due to the difficulty of mapping one flag to two for compatibility)
+		OF_Dont_change_position,
+		OF_Dont_change_orientation,
 		SF_No_ets,
 		SF_Cloaked,
-		SF_Ship_locked,
-		SF_Weapons_locked,
 		SF_Scramble_messages,
 		Red_alert_deleted,	// Goober5000 - used analogously to SEF_PLAYER_DELETED
 		Already_handled,	// Goober5000 - used for docking currently, but could be used generically
@@ -106,6 +110,9 @@ namespace Mission {
 		SF_Fail_sound_locked_primary, 	// Kiloku - Plays fail sound when firing with locked weapons
 		SF_Fail_sound_locked_secondary,	// Kiloku - Plays fail sound when firing with locked weapons
 		SF_Aspect_immune,				// Kiloku - Ship cannot be locked onto by aspect seeking weapons
+		SF_Cannot_perform_scan,			// Goober5000 - ship cannot scan other ships
+		SF_No_targeting_limits,			// MjnMixael - Ship is always targetable regardless of AWACS or targeting range limits
+		SF_From_player_wing,			// set for ships that are members of any player starting wing
 
 		NUM_VALUES
 	};

@@ -24,6 +24,7 @@
 #include "restrictpaths.h"
 #include "iff_defs/iff_defs.h"
 #include "warpparamsdlg.h"
+#include "ship/ship.h"
 
 #define ID_WING_MENU 9000
 
@@ -31,6 +32,9 @@
 #undef THIS_FILE
 static char THIS_FILE[] = __FILE__;
 #endif
+
+constexpr auto INPUT_THRESHOLD = 0.001f;		// smallest increment of input box
+constexpr auto INPUT_FORMAT = "%#.3f";
 
 /////////////////////////////////////////////////////////////////////////////
 // wing_editor dialog
@@ -45,6 +49,7 @@ wing_editor::wing_editor(CWnd* pParent /*=NULL*/)
 	m_waves = 0;
 	m_threshold = 0;
 	m_formation = 0;	// retail formation (no formation) is -1, but it's the 0-offset in the combo box
+	m_formation_scale = _T("1.0");
 	m_arrival_location = -1;
 	m_departure_location = -1;
 	m_arrival_delay = 0;
@@ -59,6 +64,7 @@ wing_editor::wing_editor(CWnd* pParent /*=NULL*/)
 	m_no_arrival_music = FALSE;
 	m_departure_target = -1;
 	m_no_arrival_message = FALSE;
+	m_no_first_wave_message = FALSE;
 	m_no_arrival_warp = FALSE;
 	m_no_departure_warp = FALSE;
 	m_same_arrival_warp_when_docked = FALSE;
@@ -86,6 +92,7 @@ void wing_editor::DoDataExchange(CDataExchange* pDX)
 	DDX_Text(pDX, IDC_WING_SQUAD_LOGO, m_wing_squad_filename);
 	DDX_CBIndex(pDX, IDC_WING_SPECIAL_SHIP, m_special_ship);
 	DDX_CBIndex(pDX, IDC_WING_FORMATION, m_formation);
+	DDX_Text(pDX, IDC_WING_FORMATION_SCALE, m_formation_scale);
 	DDX_CBIndex(pDX, IDC_ARRIVAL_LOCATION, m_arrival_location);
 	DDX_CBIndex(pDX, IDC_DEPARTURE_LOCATION, m_departure_location);
 	DDX_Check(pDX, IDC_REINFORCEMENT, m_reinforcement);
@@ -96,6 +103,7 @@ void wing_editor::DoDataExchange(CDataExchange* pDX)
 	DDX_Check(pDX, IDC_NO_ARRIVAL_MUSIC, m_no_arrival_music);
 	DDX_CBIndex(pDX, IDC_DEPARTURE_TARGET, m_departure_target);
 	DDX_Check(pDX, IDC_NO_ARRIVAL_MESSAGE, m_no_arrival_message);
+	DDX_Check(pDX, IDC_NO_FIRST_WAVE_MESSAGE, m_no_first_wave_message);
 	DDX_Check(pDX, IDC_NO_ARRIVAL_WARP, m_no_arrival_warp);
 	DDX_Check(pDX, IDC_NO_DEPARTURE_WARP, m_no_departure_warp);
 	DDX_Check(pDX, IDC_SAME_ARRIVAL_WARP_WHEN_DOCKED, m_same_arrival_warp_when_docked);
@@ -172,6 +180,7 @@ BEGIN_MESSAGE_MAP(wing_editor, CDialog)
 	ON_BN_CLICKED(IDC_RESTRICT_DEPARTURE, OnRestrictDeparture)
 	ON_BN_CLICKED(IDC_CUSTOM_WARPIN_PARAMS, OnBnClickedCustomWarpinParams)
 	ON_BN_CLICKED(IDC_CUSTOM_WARPOUT_PARAMS, OnBnClickedCustomWarpoutParams)
+	ON_BN_CLICKED(IDC_WING_FORMATION_ALIGN, OnWingFormationAlign)
 	//}}AFX_MSG_MAP
 END_MESSAGE_MAP()
 
@@ -257,6 +266,8 @@ void wing_editor::OnClose()
 
 	SetWindowPos(Fred_main_wnd, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW);
 	Fred_main_wnd->SetWindowPos(&wndTop, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+
+	FREDDoc_ptr->autosave("wing editor");
 }
 
 // initialize everything that update_data_safe() saves.
@@ -277,6 +288,7 @@ void wing_editor::initialize_data_safe(int full_update)
 		m_wing_squad_filename = _T("");
 		m_special_ship = -1;
 		m_formation = 0;
+		m_formation_scale = _T("1.0");
 		m_arrival_location = -1;
 		m_departure_location = -1;
 		m_arrival_delay = 0;
@@ -295,6 +307,7 @@ void wing_editor::initialize_data_safe(int full_update)
 		m_ignore_count = 0;
 		m_no_arrival_music = FALSE;
 		m_no_arrival_message = FALSE;
+		m_no_first_wave_message = FALSE;
 		m_no_arrival_warp = FALSE;
 		m_no_departure_warp = FALSE;
 		m_same_arrival_warp_when_docked = FALSE;
@@ -339,8 +352,15 @@ void wing_editor::initialize_data_safe(int full_update)
 		m_waves = Wings[cur_wing].num_waves;
 		m_threshold = Wings[cur_wing].threshold;
 		m_formation = Wings[cur_wing].formation + 1;
-		m_arrival_location = Wings[cur_wing].arrival_location;
-		m_departure_location = Wings[cur_wing].departure_location;
+
+		// there doesn't seem to be an easier way to do this
+		m_formation_scale.Format(INPUT_FORMAT, Wings[cur_wing].formation_scale);
+		m_formation_scale.TrimRight('0');
+		if (m_formation_scale.Right(1) == CString("."))
+			m_formation_scale.Append("0");
+
+		m_arrival_location = static_cast<int>(Wings[cur_wing].arrival_location);
+		m_departure_location = static_cast<int>(Wings[cur_wing].departure_location);
 		m_arrival_delay = Wings[cur_wing].arrival_delay;
 		m_arrival_delay_min = Wings[cur_wing].wave_delay_min;
 		m_arrival_delay_max = Wings[cur_wing].wave_delay_max;
@@ -350,7 +370,7 @@ void wing_editor::initialize_data_safe(int full_update)
 		m_no_dynamic = (Wings[cur_wing].flags[Ship::Wing_Flags::No_dynamic])?1:0;
 
 		// Add the ships/special items to the combo box here before data is updated
-		if ( m_arrival_location == ARRIVE_FROM_DOCK_BAY ) {
+		if ( m_arrival_location == static_cast<int>(ArrivalLocation::FROM_DOCK_BAY) ) {
 			management_add_ships_to_combo( arrival_box, SHIPS_2_COMBO_DOCKING_BAY_ONLY );
 		} else {
 			management_add_ships_to_combo( arrival_box, SHIPS_2_COMBO_SPECIAL | SHIPS_2_COMBO_ALL_SHIPS );
@@ -378,7 +398,7 @@ void wing_editor::initialize_data_safe(int full_update)
 		}
 
 		// add the ships to the departure target combo box
-		if ( m_departure_location == DEPART_AT_DOCK_BAY ) {
+		if ( m_departure_location == static_cast<int>(DepartureLocation::TO_DOCK_BAY) ) {
 			management_add_ships_to_combo( departure_box, SHIPS_2_COMBO_DOCKING_BAY_ONLY );
 		} else {
 			departure_box->ResetContent();
@@ -402,6 +422,7 @@ void wing_editor::initialize_data_safe(int full_update)
 
 		m_no_arrival_music = Wings[cur_wing].flags[Ship::Wing_Flags::No_arrival_music] ? TRUE : FALSE;
 		m_no_arrival_message = Wings[cur_wing].flags[Ship::Wing_Flags::No_arrival_message] ? TRUE : FALSE;
+		m_no_first_wave_message = Wings[cur_wing].flags[Ship::Wing_Flags::No_first_wave_message] ? TRUE : FALSE;
 
 		m_no_arrival_warp = Wings[cur_wing].flags[Ship::Wing_Flags::No_arrival_warp] ? TRUE : FALSE;
 		m_no_departure_warp = Wings[cur_wing].flags[Ship::Wing_Flags::No_departure_warp] ? TRUE : FALSE;
@@ -438,6 +459,8 @@ void wing_editor::initialize_data_safe(int full_update)
 	GetDlgItem(IDC_SPIN_WAVE_THRESHOLD)->EnableWindow(player_enabled);
 
 	GetDlgItem(IDC_WING_FORMATION)->EnableWindow(enable);
+	GetDlgItem(IDC_WING_FORMATION_ALIGN)->EnableWindow(enable);
+	GetDlgItem(IDC_WING_FORMATION_SCALE)->EnableWindow(enable);
 
 	GetDlgItem(IDC_ARRIVAL_LOCATION)->EnableWindow(enable);
 	GetDlgItem(IDC_ARRIVAL_DELAY)->EnableWindow(player_enabled);
@@ -451,7 +474,7 @@ void wing_editor::initialize_data_safe(int full_update)
 		GetDlgItem(IDC_ARRIVAL_DISTANCE)->EnableWindow(FALSE);
 		GetDlgItem(IDC_ARRIVAL_TARGET)->EnableWindow(FALSE);
 	}
-	if (m_arrival_location == ARRIVE_FROM_DOCK_BAY) {
+	if (m_arrival_location == static_cast<int>(ArrivalLocation::FROM_DOCK_BAY)) {
 		GetDlgItem(IDC_RESTRICT_ARRIVAL)->EnableWindow(enable);
 		GetDlgItem(IDC_CUSTOM_WARPIN_PARAMS)->EnableWindow(FALSE);
 	} else {
@@ -465,7 +488,7 @@ void wing_editor::initialize_data_safe(int full_update)
 	} else {
 		GetDlgItem(IDC_DEPARTURE_TARGET)->EnableWindow(FALSE);
 	}
-	if (m_departure_location == DEPART_AT_DOCK_BAY) {
+	if (m_departure_location == static_cast<int>(DepartureLocation::TO_DOCK_BAY)) {
 		GetDlgItem(IDC_RESTRICT_DEPARTURE)->EnableWindow(enable);
 		GetDlgItem(IDC_CUSTOM_WARPOUT_PARAMS)->EnableWindow(FALSE);
 	} else {
@@ -489,6 +512,7 @@ void wing_editor::initialize_data_safe(int full_update)
 	GetDlgItem(IDC_IGNORE_COUNT)->EnableWindow(enable);
 	GetDlgItem(IDC_NO_ARRIVAL_MUSIC)->EnableWindow(enable);
 	GetDlgItem(IDC_NO_ARRIVAL_MESSAGE)->EnableWindow(enable);
+	GetDlgItem(IDC_NO_FIRST_WAVE_MESSAGE)->EnableWindow(enable);
 	GetDlgItem(IDC_NO_ARRIVAL_WARP)->EnableWindow(enable);
 	GetDlgItem(IDC_NO_DEPARTURE_WARP)->EnableWindow(enable);
 	GetDlgItem(IDC_SAME_ARRIVAL_WARP_WHEN_DOCKED)->EnableWindow(enable);
@@ -681,7 +705,7 @@ int wing_editor::update_data(int redraw)
 		str = Wings[cur_wing].name;
 		if (strcmp(old_name, str)) {
 			update_sexp_references(old_name, str);
-			ai_update_goal_references(REF_TYPE_WING, old_name, str);
+			ai_update_goal_references(sexp_ref_type::WING, old_name, str);
 			update_texture_replacements(old_name, str);
 			for (i=0; i<Num_reinforcements; i++)
 				if (!strcmp(old_name, Reinforcements[i].name)) {
@@ -774,8 +798,10 @@ void wing_editor::update_data_safe()
 	MODIFY(Wings[cur_wing].num_waves, m_waves);
 	MODIFY(Wings[cur_wing].threshold, m_threshold);
 	MODIFY(Wings[cur_wing].formation, m_formation - 1);
-	MODIFY(Wings[cur_wing].arrival_location, m_arrival_location);
-	MODIFY(Wings[cur_wing].departure_location, m_departure_location);
+	MODIFY(Wings[cur_wing].formation_scale, (float)atof(m_formation_scale));
+
+	MODIFY(Wings[cur_wing].arrival_location, static_cast<ArrivalLocation>(m_arrival_location));
+	MODIFY(Wings[cur_wing].departure_location, static_cast<DepartureLocation>(m_departure_location));
 	MODIFY(Wings[cur_wing].arrival_delay, m_arrival_delay);
 	if (m_arrival_delay_min > m_arrival_delay_max) {
 		if (!bypass_errors) {
@@ -794,13 +820,13 @@ void wing_editor::update_data_safe()
 		MODIFY(Wings[cur_wing].arrival_anchor, i);
 
 		// when arriving near or in front of a ship, be sure that we are far enough away from it!!!
-		if (((m_arrival_location != ARRIVE_AT_LOCATION) && (m_arrival_location != ARRIVE_FROM_DOCK_BAY)) && (i >= 0) && !(i & SPECIAL_ARRIVAL_ANCHOR_FLAG)) {
-			d = int(std::min(500.0f, 2.0f * Objects[Ships[i].objnum].radius));
+		if (((m_arrival_location != static_cast<int>(ArrivalLocation::AT_LOCATION)) && (m_arrival_location != static_cast<int>(ArrivalLocation::FROM_DOCK_BAY))) && (i >= 0) && !(i & SPECIAL_ARRIVAL_ANCHOR_FLAG)) {
+			d = int(std::min(MIN_TARGET_ARRIVAL_DISTANCE, MIN_TARGET_ARRIVAL_MULTIPLIER * Objects[Ships[i].objnum].radius));
 			if ((Wings[cur_wing].arrival_distance < d) && (Wings[cur_wing].arrival_distance > -d)) {
 				if (!bypass_errors) {
 					sprintf(buf, "Ship must arrive at least %d meters away from target.\n"
 						"Value has been reset to this.  Use with caution!\r\n"
-						"Recommended distance is %d meters.\r\n", d, (int)(2.0f * Objects[Ships[i].objnum].radius) );
+						"Recommended distance is %d meters.\r\n", d, (int)(MIN_TARGET_ARRIVAL_MULTIPLIER * Objects[Ships[i].objnum].radius) );
 
 					MessageBox(buf);
 				}
@@ -857,6 +883,18 @@ void wing_editor::update_data_safe()
         if (Wings[cur_wing].flags[Ship::Wing_Flags::No_arrival_message])
             set_modified();
         Wings[cur_wing].flags.remove(Ship::Wing_Flags::No_arrival_message);
+    }
+
+    if (m_no_first_wave_message) {
+        if (!(Wings[cur_wing].flags[Ship::Wing_Flags::No_first_wave_message]))
+            set_modified();
+        Wings[cur_wing].flags.set(Ship::Wing_Flags::No_first_wave_message);
+
+    }
+    else {
+        if (Wings[cur_wing].flags[Ship::Wing_Flags::No_first_wave_message])
+            set_modified();
+        Wings[cur_wing].flags.remove(Ship::Wing_Flags::No_first_wave_message);
     }
 
     // set the no warp effect for wings flag
@@ -1151,7 +1189,7 @@ void wing_editor::calc_cue_height()
 	CRect cue;
 
 	GetDlgItem(IDC_CUE_FRAME)->GetWindowRect(cue);
-	cue_height = (cue.bottom - cue.top) + 10;
+	cue_height = (cue.bottom - cue.top) + 1;
 }
 
 void wing_editor::show_hide_sexp_help()
@@ -1214,7 +1252,7 @@ void wing_editor::OnSelchangeArrivalLocation()
 		}
 
 		// determine which items we should put into the arrival target combo box
-		if ( m_arrival_location == ARRIVE_FROM_DOCK_BAY ) {
+		if ( m_arrival_location == static_cast<int>(ArrivalLocation::FROM_DOCK_BAY) ) {
 			management_add_ships_to_combo( box, SHIPS_2_COMBO_DOCKING_BAY_ONLY );
 		} else {
 			management_add_ships_to_combo( box, SHIPS_2_COMBO_SPECIAL | SHIPS_2_COMBO_ALL_SHIPS );
@@ -1225,7 +1263,7 @@ void wing_editor::OnSelchangeArrivalLocation()
 		GetDlgItem(IDC_ARRIVAL_TARGET)->EnableWindow(FALSE);
 	}
 
-	if (m_arrival_location == ARRIVE_FROM_DOCK_BAY)	{
+	if (m_arrival_location == static_cast<int>(ArrivalLocation::FROM_DOCK_BAY))	{
 		GetDlgItem(IDC_RESTRICT_ARRIVAL)->EnableWindow(TRUE);
 		GetDlgItem(IDC_CUSTOM_WARPIN_PARAMS)->EnableWindow(FALSE);
 	} else {
@@ -1249,7 +1287,7 @@ void wing_editor::OnSelchangeDepartureLocation()
 		}
 		// we need to build up the list box content based on the departure type.  When
 		// from a docking bay, only show ships in the list which have them.  Show all ships otherwise
-		if ( m_departure_location == DEPART_AT_DOCK_BAY ) {
+		if ( m_departure_location == static_cast<int>(DepartureLocation::TO_DOCK_BAY) ) {
 			management_add_ships_to_combo( box, SHIPS_2_COMBO_DOCKING_BAY_ONLY );
 		} else {
 			// I think that this section is currently illegal
@@ -1260,7 +1298,7 @@ void wing_editor::OnSelchangeDepartureLocation()
 		GetDlgItem(IDC_DEPARTURE_TARGET)->EnableWindow(FALSE);
 	}
 
-	if (m_departure_location == DEPART_AT_DOCK_BAY)	{
+	if (m_departure_location == static_cast<int>(DepartureLocation::TO_DOCK_BAY))	{
 		GetDlgItem(IDC_RESTRICT_DEPARTURE)->EnableWindow(TRUE);
 		GetDlgItem(IDC_CUSTOM_WARPOUT_PARAMS)->EnableWindow(FALSE);
 	} else {
@@ -1337,7 +1375,7 @@ void wing_editor::OnRestrictArrival()
 	// grab stuff from GUI
 	UpdateData(TRUE);
 
-	if (m_arrival_location != ARRIVE_FROM_DOCK_BAY)
+	if (m_arrival_location != static_cast<int>(ArrivalLocation::FROM_DOCK_BAY))
 	{
 		Int3();
 		return;
@@ -1372,7 +1410,7 @@ void wing_editor::OnRestrictDeparture()
 	// grab stuff from GUI
 	UpdateData(TRUE);
 
-	if (m_departure_location != DEPART_AT_DOCK_BAY)
+	if (m_departure_location != static_cast<int>(DepartureLocation::TO_DOCK_BAY))
 	{
 		Int3();
 		return;
@@ -1416,4 +1454,29 @@ void wing_editor::OnBnClickedCustomWarpoutParams()
 	warp_params_dlg dlg;
 	dlg.m_warp_in = false;
 	dlg.DoModal();
+}
+
+void wing_editor::OnWingFormationAlign()
+{
+	auto wingp = &Wings[cur_wing];
+	auto leader_objp = &Objects[Ships[wingp->ship_index[0]].objnum];
+
+	// temporarily set formation in case it isn't set yet (since changes don't take effect until dialog is closed)
+	auto old_formation = wingp->formation;
+	auto old_formation_scale = wingp->formation_scale;
+	UpdateData(TRUE);	// read controls
+	wingp->formation = m_formation - 1;
+	wingp->formation_scale = (float)atof(m_formation_scale);
+
+	for (int i = 1; i < wingp->wave_count; i++)
+	{
+		auto objp = &Objects[Ships[wingp->ship_index[i]].objnum];
+
+		get_absolute_wing_pos(&objp->pos, leader_objp, cur_wing, i, false);
+		objp->orient = leader_objp->orient;
+	}
+
+	// roll back temporary formation
+	wingp->formation = old_formation;
+	wingp->formation_scale = old_formation_scale;
 }

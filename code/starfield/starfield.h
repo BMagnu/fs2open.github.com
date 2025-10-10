@@ -21,7 +21,8 @@
 #define DEFAULT_NMODEL_FLAGS  (MR_NO_ZBUFFER | MR_NO_CULL | MR_ALL_XPARENT | MR_NO_LIGHTING)
 
 #define MAX_STARFIELD_BITMAP_LISTS	1
-#define MAX_ASTEROID_FIELDS			4
+
+#define MAX_MOTION_DEBRIS_BITMAPS 4
 
 // nice low polygon background
 #define BACKGROUND_MODEL_FILENAME			"spherec.pof"
@@ -42,6 +43,13 @@ typedef struct background_t {
 	SCP_vector<starfield_list_entry> suns;
 } background_t;
 
+typedef struct star {
+	vec3d pos;
+	vec3d last_star_pos;
+	color col;
+} star;
+constexpr int MAX_STARS = 2000;
+
 extern int Cur_background;
 extern SCP_vector<background_t> Backgrounds;
 
@@ -49,18 +57,33 @@ extern SCP_vector<background_t> Backgrounds;
 extern int Nmodel_num;
 extern int Nmodel_instance_num;
 extern matrix Nmodel_orient;
-extern int Nmodel_flags;
+extern uint64_t Nmodel_flags;
 extern int Nmodel_bitmap;
-
-extern bool Subspace_sexp_used;
+extern float Nmodel_alpha;
 
 extern bool Motion_debris_override;
 extern bool Motion_debris_enabled;
+
+struct motion_debris_bitmaps {
+	int bm;
+	int nframes;
+	char name[MAX_FILENAME_LEN];
+};
+
+struct motion_debris_types {
+	motion_debris_bitmaps bitmaps[MAX_MOTION_DEBRIS_BITMAPS];
+	SCP_string name;
+};
+
+extern SCP_vector<motion_debris_types> Motion_debris_info;
+extern motion_debris_bitmaps* Motion_debris_ptr;
 
 void stars_swap_backgrounds(int idx1, int idx2);
 void stars_pack_backgrounds();
 bool stars_background_empty(const background_t &bg);
 
+void stars_get_data(bool is_sun, int idx, starfield_list_entry& sle);
+void stars_set_data(bool is_sun, int idx, starfield_list_entry& sle);
 
 // add a new sun or bitmap instance
 int stars_add_sun_entry(starfield_list_entry *sun_ptr);
@@ -95,8 +118,8 @@ const char *stars_get_name_from_instance(int index, bool is_a_sun);
 #define stars_get_sun_name(x)		stars_get_name_from_instance((x),true)
 #define stars_get_bitmap_name(x)	stars_get_name_from_instance((x),false)
 
-extern const int MAX_STARS;
 extern int Num_stars;
+extern TIMESTAMP Skybox_timestamp;
 
 // call on game startup
 void stars_init();
@@ -128,8 +151,10 @@ void stars_draw_sun_glow(int sun_n);
 void stars_camera_cut();
 
 // call this to set a specific model as the background model
-void stars_set_background_model(const char *model_name, const char *texture_name, int flags = DEFAULT_NMODEL_FLAGS);
+void stars_set_background_model(int new_model, int new_bitmap = -1, uint64_t flags = DEFAULT_NMODEL_FLAGS, float alpha = 1.0f);
+void stars_set_background_model(const char *model_name, const char *texture_name, uint64_t flags = DEFAULT_NMODEL_FLAGS, float alpha = 1.0f);
 void stars_set_background_orientation(const matrix *orient = nullptr);
+void stars_set_background_alpha(float alpha = 1.0f);
 
 // lookup a starfield bitmap, return index or -1 on fail
 int stars_find_bitmap(const char *name);
@@ -148,7 +173,9 @@ void stars_preload_background_bitmap(const char *fname);
 
 void stars_set_nebula(bool activate, float range);
 
-void stars_load_debris(int fullneb = 0);
+int get_motion_debris_by_name(const SCP_string &name);
+
+void stars_load_debris(int fullneb = 0, const SCP_string &custom_name = "");
 
 // Starfield functions that should be used only by FRED ...
 

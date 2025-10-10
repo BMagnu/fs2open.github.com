@@ -23,6 +23,7 @@
 #define CCF_HAT         0x04    //!< btn is a hat
 #define CCF_BALL        0x02    //!< btn is a ball
 #define CCF_BUTTON      0x01    //!< btn is actually a button
+#define CCF_NONE        0x00    //!< No flags.  Alias is "NONE"
 
 /*!
  * These are used to index a corresponding axis value from an array.
@@ -35,8 +36,10 @@ enum Joy_axis_index : short {
 	JOY_RX_AXIS,
 	JOY_RY_AXIS,
 	JOY_RZ_AXIS,
+	JOY_U_AXIS,
+	JOY_V_AXIS,
 
-	JOY_NUM_AXES	// Number of axes a joystick may have. Must be last enum in Joy_axis_index.
+	JOY_NUM_AXES	//!< Max number of joy axes that FSO can handle. Must be last enum in Joy_axis_index.
 };
 
 // Aliases for mouse axes.  Really should unify this...
@@ -294,7 +297,16 @@ enum IoActionId : int {
 	JOY_ABS_THROTTLE_AXIS							= 127,
 	JOY_REL_THROTTLE_AXIS							= 128,
 
+	//!< @n
+	//! Communication menu controls
+	//! ----------------------------
+	COMMS_MENU_MOVE_UP,
+	COMMS_MENU_MOVE_DOWN,
+	COMMS_MENU_SELECT,
+
 	TOGGLE_HUD_SHADOWS,
+
+	CYCLE_PRIMARY_WEAPON_PATTERN,
 
 	/*!
 	 * This must always be below the last defined item
@@ -432,6 +444,26 @@ private:
 	short btn = -1;     //!< The button, key combo, or axis that's bound.
 };
 
+/**
+ * @struct cc_line
+ * @brief Defines an interactable line to display control names and their bindings
+ */
+struct cc_line {
+	const char* label;
+	int cc_index;       // index into Control_config of item
+	int y;              // Y coordinate of line
+	int kx, kw, jx, jw; // x start and width of keyboard and joystick bound text
+};
+
+/**
+ * @struct conflict
+ * @brief Defines an conflict between bindings
+ */
+struct conflict {
+	int first = -1;  // index of other control in conflict with this one
+	int second = -1; // index of other control in conflict with this one
+};
+
 /*!
  * A pair of bindings.
  * @note Please don't set the bindings directly, use ::take() instead.
@@ -536,7 +568,7 @@ class CC_preset {
 public:
 	SCP_vector<CCB> bindings;
 	SCP_string name;
-	Preset_t type;
+	Preset_t type = Preset_t::hardcode;
 
 public:
 	CC_preset() = default;
@@ -640,6 +672,15 @@ private:
 	SCP_vector<CCI>& ControlConfig;
 };
 
+enum class selItem : int {
+	selItem_REND, // Must be first to allow cycling
+
+	None,
+	Primary,
+	Secondary,
+
+	selItem_END // Must be last to allow cycling
+};
 
 extern int Failed_key_index;
 
@@ -648,9 +689,11 @@ extern int Joy_sensitivity;
 
 extern int Control_config_overlay_id;
 
+extern SCP_vector<cc_line> Cc_lines; //!< Stores the keyboard details for the UI
+extern SCP_vector<conflict> Conflicts; //!< Stores conflict data for the keybinds
+
 extern SCP_vector<CCI> Control_config;		//!< Stores the keyboard configuration
 extern SCP_vector<CC_preset> Control_config_presets; // tabled control presets; pointers to config_item arrays
-extern const char **Joy_button_text;			// String table of button labels.  XSTR'd on init.
 
 extern bool Generate_controlconfig_table;
 
@@ -688,7 +731,7 @@ void control_config_common_close();
 /*!
  * @brief init config menu
  */
-void control_config_init();
+void control_config_init(bool API_Access = false);
 
 /*!
  * @brief do a frame of the config menu
@@ -698,12 +741,73 @@ void control_config_do_frame(float frametime);
 /*!
  * @brief close config menu
  */
-void control_config_close();
+void control_config_close(bool API_Access = false);
+
+/*!
+ * @brief setup for binding a control
+ */
+void control_config_do_bind(bool API_Access = false);
+
+/*!
+ * @brief setup for searching a control
+ */
+void control_config_do_search(bool API_Access = false);
+
+/**
+ * @brief Unbinds the selected control
+ */
+bool control_config_remove_binding(int ctrl, selItem item, bool API_Access = false);
+
+/**
+ * @brief Clears all conflicting control bindings, except the selected control
+ */
+bool control_config_clear_other(int ctrl, bool API_Access = false);
+
+/**
+ * @brief Unbinds ALL controls
+ * TODO: unbind axes and reset inversion
+ */
+bool control_config_clear_all(bool API_Access = false);
+
+/**
+ * @brief Reverts all bindings to their preset. If already default, cycle to the next presets.
+ */
+bool control_config_do_reset(bool cycle = true, bool API_Access = false);
+
+/**
+ * @brief Toggles a modifier on or off for a control binding
+ */
+bool control_config_toggle_modifier(int bit, int ctrl, bool API_Access = false);
+
+/**
+ * @brief Toggles inversion for the selected axis control
+ */
+bool control_config_toggle_invert(int ctrl, selItem item, bool API_Access = false);
+
+/*!
+ * @brief Performs a single undo opration, reverting the most recent change to bindings, if any
+ */
+void control_config_do_undo(bool API_Access = false);
+
+/*!
+ *@brief Runs every frame to check for input and binds the input if appropriate
+ */
+int control_config_bind_key_on_frame(int ctrl, selItem item, bool API_Access = false);
+
+/*!
+ *@brief Runs every frame to check for input. Returns the index of the item the key is bound to or -1 if nothing.
+ */
+int control_config_search_key_on_frame(bool API_Access = false);
+
+/*!
+ * Does a cursory conflict check, then accepts changes to the bindings, if any, and request the menu to close.
+ */
+bool control_config_accept(bool API_Access = false);
 
 /*!
  * @brief Cancel configuration of controls, revert any changes, return to previous menu/game state
  */
-void control_config_cancel_exit();
+void control_config_cancel_exit(bool API_Access = false);
 
 /*!
  * @brief Copies all bindings within preset into Control_config
@@ -733,6 +837,30 @@ bool control_config_use_preset_by_name(const SCP_string &name);
  */
 
 SCP_vector<CC_preset>::iterator control_config_get_current_preset(bool invert_agnostic = false);
+
+/*!
+ * @brief Deletes the preset
+ * 
+ * @returns TRUE if successful
+ * @returns FALSE if the preset is default or currently selected
+ */
+bool control_config_delete_preset(CC_preset preset);
+
+/*!
+ * @brief Clones a preset
+ *
+ * @returns TRUE if successful
+ * @returns FALSE if the preset already exists with that name
+ */
+bool control_config_clone_preset(const CC_preset& preset, const SCP_string& name, bool overwrite);
+
+/*!
+ * @brief Saves a preset with the current controls
+ *
+ * @returns TRUE if successful
+ * @returns FALSE if the preset already exists with that name
+ */
+bool control_config_create_new_preset(const SCP_string& name, bool overwrite);
 
 /*!
  * Returns the IoActionId (index within Control_config[]) of a control bound to the given key
@@ -790,7 +918,18 @@ const char *textify_scancode(int code);
  */
 const char *textify_scancode_universal(int code);
 
-/*!
+/**
+ * @brief Creates a button label based on btn index and locale settings.
+ * 
+ * @param[in]   btn The btn to textify
+ * 
+ * @return The text representation of the btn
+ * 
+ * @note Not thread safe.  Has an internal buffer for the return value which is overwritten on each call.
+ */
+const char* textify_button(int btn);
+
+	/*!
  * @brief Checks how long a control has been active
  *
  * @param[in] id The IoActionId of the control to check
@@ -829,7 +968,7 @@ int check_control(int id, int key = -1);
 void control_get_axes_readings(int *axis_v, float frame_time);
 
 /**
- * @brief Markes the given control (by IoActionId) as used
+ * @brief Marks the given control (by IoActionId) as used
  *
  * @details Updates the ::used timestamp, triggers a script hook, and marks ::continous_ongoing as true
  */

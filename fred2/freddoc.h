@@ -10,7 +10,8 @@
  */
 #include "MissionSave.h"
 
-#define MISSION_BACKUP_NAME "Backup"
+#define MISSION_BACKUP_NAME     "Backup"
+#define MISSION_BACKUP_DEPTH    9
 
 #define US_WORLD_CHANGED    0x01
 #define US_VIEW_CHANGED     0x02
@@ -48,7 +49,7 @@ public:
 	 *
 	 * @returns true on success, false on failure
 	 */
-	bool load_mission(char *pathname, int flags = 0);
+	bool load_mission(const char *pathname, int flags = 0);
 
 	/**
 	 * @brief Pushes an Undo item onto the stack
@@ -145,9 +146,7 @@ public:
 	virtual void Dump(CDumpContext &dc) const;
 #endif
 
-	char mission_pathname[256];             //!< Full pathname to the opened mission
-
-	CString undo_desc[BACKUP_DEPTH + 1];    //!< String array of the undo descriptions
+	CString undo_desc[MISSION_BACKUP_DEPTH + 1];    //!< String array of the undo descriptions
 
 protected:
 	/**

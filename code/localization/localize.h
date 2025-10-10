@@ -37,6 +37,7 @@
 // language info table
 typedef struct lang_info {
 	char lang_name[LCL_LANG_NAME_LEN + 1];				// literal name of the language
+	int xstr;											// the xstr id for the language name itself. Used for the built-in language selector
 	char lang_ext[LCL_LANG_NAME_LEN + 1];				// the extension used for adding to names on disk access
 	SCP_vector<ubyte> special_char_indexes;				// where in the font do we have the special characters for this language
 														// note: treats 0 as "none" since a zero offset in a font makes no sense
@@ -71,6 +72,9 @@ extern bool *Lcl_unexpected_tstring_check;
 // LOCALIZE FUNCTIONS
 //
 
+// get the index of a language in the array by name
+int lcl_find_lang_index_by_name(const SCP_string& lang);
+
 // get an index we can use to look into the array, since we now have three different ways of using English
 // (translated, untranslated, and hybrid: internal translated, external untranslated)
 int lcl_get_current_lang_index();
@@ -103,6 +107,7 @@ ubyte lcl_get_font_index(int font_num);
 
 // maybe add localized directory to full path with file name when opening a localized file
 int lcl_add_dir_to_path_with_filename(char *current_path, size_t path_max);
+int lcl_add_dir_to_path_with_filename(SCP_string &current_path);
 
 // Goober5000
 void lcl_replace_stuff(char *text, size_t max_len, bool force = false);
@@ -133,5 +138,7 @@ void lcl_translate_targetbox_name_gr(char *name);
 void lcl_translate_targetbox_name_pl(char *name);
 void lcl_translate_medal_name_gr(char *name);
 void lcl_translate_medal_name_pl(char *name);
+
+void lcl_delayed_xstr(SCP_string& str, const char* name, int xstr);
 
 #endif	// defined __FREESPACE2_LOCALIZATION_UTILITIES_HEADER_FILE

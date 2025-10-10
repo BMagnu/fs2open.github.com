@@ -19,7 +19,12 @@ AudioProperties getAudioProps(AVStream* stream)
 	AudioProperties props;
 
 	int channels;
-#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(57, 24, 255)
+#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(59, 36, 255)
+	channels             = stream->codecpar->ch_layout.nb_channels;
+	props.channel_layout = stream->codecpar->ch_layout.u.mask;
+	props.sample_rate    = stream->codecpar->sample_rate;
+	props.format         = (AVSampleFormat)stream->codecpar->format;
+#elif LIBAVCODEC_VERSION_INT > AV_VERSION_INT(57, 24, 255)
 	channels             = stream->codecpar->channels;
 	props.channel_layout = stream->codecpar->channel_layout;
 	props.sample_rate    = stream->codecpar->sample_rate;
@@ -33,7 +38,14 @@ AudioProperties getAudioProps(AVStream* stream)
 
 	if (props.channel_layout == 0) {
 		// Use a default channel layout value
+#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(59, 36, 255)
+		AVChannelLayout ch_layout;
+
+		av_channel_layout_default(&ch_layout, channels);
+		props.channel_layout = ch_layout.u.mask;
+#else
 		props.channel_layout = av_get_default_channel_layout(channels);
+#endif
 	}
 
 	return props;
@@ -44,8 +56,20 @@ AudioProperties getAdjustedAudioProps(const AudioProperties& baseProps)
 	AudioProperties adjusted;
 	adjusted.sample_rate = baseProps.sample_rate; // Don't adjust sample rate
 
+	int channels = 2;
 	adjusted.channel_layout = baseProps.channel_layout;
-	if (av_get_channel_layout_nb_channels(baseProps.channel_layout) > 2) {
+
+#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(59, 36, 255)
+	AVChannelLayout ch_layout;
+
+	av_channel_layout_from_mask(&ch_layout, baseProps.channel_layout);
+
+	channels = ch_layout.nb_channels;
+#else
+	channels = av_get_channel_layout_nb_channels(baseProps.channel_layout);
+#endif
+
+	if (channels > 2) {
 		adjusted.channel_layout = AV_CH_LAYOUT_STEREO;
 	}
 
@@ -90,8 +114,18 @@ AudioProperties getAdjustedAudioProps(const AudioProperties& baseProps)
 SwrContext* getSWRContext(const AudioProperties& base, const AudioProperties& adjusted)
 {
 	SwrContext* swr = nullptr;
+#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(59, 36, 255)
+	AVChannelLayout base_layout, adjusted_layout;
+
+	av_channel_layout_from_mask(&base_layout, base.channel_layout);
+	av_channel_layout_from_mask(&adjusted_layout, adjusted.channel_layout);
+
+	swr_alloc_set_opts2(&swr, &adjusted_layout, adjusted.format, adjusted.sample_rate, &base_layout,
+							 base.format, base.sample_rate, 0, nullptr);
+#else
 	swr = swr_alloc_set_opts(swr, adjusted.channel_layout, adjusted.format, adjusted.sample_rate, base.channel_layout,
 							 base.format, base.sample_rate, 0, nullptr);
+#endif
 
 	if (swr_init(swr) < 0) {
 		return nullptr;
@@ -117,9 +151,10 @@ FFmpegWaveFile::~FFmpegWaveFile()
 	av_frame_free(&m_decodeFrame);
 
 	if (m_audioCodecCtx) {
-		avcodec_close(m_audioCodecCtx);
 #if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(57, 24, 255)
 		avcodec_free_context(&m_audioCodecCtx);
+#else
+		avcodec_close(m_audioCodecCtx);
 #endif
 		m_audioCodecCtx = nullptr;
 	}
@@ -145,7 +180,11 @@ const AVCodec* sound::ffmpeg::FFmpegWaveFile::prepareOpened()
     }
     m_audioStream = ctx->streams[m_audioStreamIndex];
 
+#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(57, 24, 255)
 	audio_codec = avcodec_find_decoder(m_audioStream->codecpar->codec_id);
+#else
+	audio_codec = avcodec_find_decoder(m_audioStream->codec->codec_id);
+#endif
 
 	if ( !audio_codec ) {
 		throw FFmpegException("Failed to find decoder for audio stream in file.");
@@ -208,16 +247,23 @@ bool FFmpegWaveFile::Open(const char* pszFilename, bool keep_ext)
 				throw FFmpegException("Unknown file extension.");
 			}
 
-			auto res = cf_find_file_location(pszFilename, CF_TYPE_ANY, false);
-
+			auto res = cf_find_file_location(pszFilename, CF_TYPE_ANY);
 			if (!res.found) {
+#ifndef NDEBUG
+				// see if the file exists with a different extension
+				res = cf_find_file_location_ext(filename, NUM_AUDIO_EXT, audio_ext_list, CF_TYPE_ANY);
+				if (res.found) {
+					Warning(LOCATION, "File %s was not found with its specified extension, but another file %s exists in the modpack.  Please update the extension and adjust audio specifications if necessary.", filename, res.name_ext.c_str());
+				}
+#endif
+
 				throw FFmpegException("File not found.");
 			}
 
 			cfp = cfopen_special(res, "rb", CF_TYPE_ANY);
 		} else {
 			// ... otherwise we just find the best match
-			auto res = cf_find_file_location_ext(filename, NUM_AUDIO_EXT, audio_ext_list, CF_TYPE_ANY, false);
+			auto res = cf_find_file_location_ext(filename, NUM_AUDIO_EXT, audio_ext_list, CF_TYPE_ANY);
 
 			if (!res.found) {
 				throw FFmpegException("File not found with any known extension.");
@@ -375,7 +421,18 @@ int FFmpegWaveFile::getTotalSamples() const
 	return samples;
 }
 
-int FFmpegWaveFile::getNumChannels() const { return av_get_channel_layout_nb_channels(m_audioProps.channel_layout); }
+int FFmpegWaveFile::getNumChannels() const
+{
+#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(59, 36, 255)
+	AVChannelLayout ch_layout;
+
+	av_channel_layout_from_mask(&ch_layout, m_audioProps.channel_layout);
+
+	return ch_layout.nb_channels;
+#else
+	return av_get_channel_layout_nb_channels(m_audioProps.channel_layout);
+#endif
+}
 
 AudioFileProperties FFmpegWaveFile::getFileProperties()
 {

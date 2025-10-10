@@ -45,27 +45,31 @@ int Failed_key_index;
 // Joystick configuration
 int Joy_dead_zone_size = 10;
 
-auto DeadZoneOption =
-    options::OptionBuilder<int>("Input.JoystickDeadZone", "Deadzone", "The deadzone of the selected joystick.")
-        .category("Input")
-        .range(0, 45)
-        .level(options::ExpertLevel::Beginner)
-        .default_val(10)
-        .bind_to(&Joy_dead_zone_size)
-        .importance(1)
-        .finish();
+auto DeadZoneOption = options::OptionBuilder<int>("Input.JoystickDeadZone",
+                     std::pair<const char*, int>{"Deadzone", 1377},
+                     std::pair<const char*, int>{"The deadzone used for all joysticks", 1744})
+                     .category(std::make_pair("Input", 1827))
+                     .range(0, 45)
+                     .level(options::ExpertLevel::Beginner)
+                     .default_val(10)
+                     .bind_to(&Joy_dead_zone_size)
+                     .importance(1)
+                     .flags({options::OptionFlags::RetailBuiltinOption})
+                     .finish();
 
 int Joy_sensitivity = 9;
 
-auto SensitivityOption =
-    options::OptionBuilder<int>("Input.JoystickSensitivity", "Sensitivity", "The sentitivity of the selected joystick.")
-        .category("Input")
-        .range(0, 9)
-        .level(options::ExpertLevel::Beginner)
-        .default_val(9)
-        .bind_to(&Joy_sensitivity)
-        .importance(2)
-        .finish();
+auto SensitivityOption = options::OptionBuilder<int>("Input.JoystickSensitivity",
+                     std::pair<const char*, int>{"Sensitivity", 1745},
+                     std::pair<const char*, int>{"The sensitivity used for all joysticks", 1746})
+                     .category(std::make_pair("Input", 1827))
+                     .range(0, 9)
+                     .level(options::ExpertLevel::Beginner)
+                     .default_val(9)
+                     .bind_to(&Joy_sensitivity)
+                     .importance(2)
+                     .flags({options::OptionFlags::RetailBuiltinOption})
+                     .finish();
 
 //! arrays which hold the key mappings.  The array index represents a key-independent action.
 //! please use SPACES for aligning the fields of this array
@@ -158,8 +162,8 @@ void control_config_common_init_bindings() {
 	// flight controls (flight modes)
 	(BANK_WHEN_PRESSED,                                      -1, -1, SHIP_TAB, 1, "Bank When Pressed",  CC_TYPE_CONTINUOUS)
 	(AFTERBURNER,                                       KEY_TAB,  5, SHIP_TAB, 1, "Afterburner",        CC_TYPE_CONTINUOUS)
-	(GLIDE_WHEN_PRESSED,                                     -1, -1, SHIP_TAB, 0, "Glide When Pressed", CC_TYPE_CONTINUOUS)
-	(TOGGLE_GLIDING,                          KEY_ALTED | KEY_G, -1, SHIP_TAB, 0, "Toggle Gliding",     CC_TYPE_TRIGGER)
+	(GLIDE_WHEN_PRESSED,                                     -1, -1, SHIP_TAB, 1774, "Glide When Pressed", CC_TYPE_CONTINUOUS)
+	(TOGGLE_GLIDING,                          KEY_ALTED | KEY_G, -1, SHIP_TAB, 1775, "Toggle Gliding",     CC_TYPE_TRIGGER)
 
 	// flight controls (axes)
 	(JOY_HEADING_AXIS,                     JOY_X_AXIS, MOUSE_X_AXIS, SHIP_TAB, 1016, "Turn (Yaw) Axis",        CC_TYPE_AXIS_REL)
@@ -173,7 +177,8 @@ void control_config_common_init_bindings() {
 	(FIRE_SECONDARY,                               KEY_SPACEBAR,  1, WEAPON_TAB, 1, "Fire Secondary Weapon",                  CC_TYPE_CONTINUOUS)
 	(CYCLE_NEXT_PRIMARY,                             KEY_PERIOD, -1, WEAPON_TAB, 1, "Cycle Primary Weapon Forward",           CC_TYPE_TRIGGER)
 	(CYCLE_PREV_PRIMARY,                              KEY_COMMA, -1, WEAPON_TAB, 1, "Cycle Primary Weapon Backward",          CC_TYPE_TRIGGER)
-	(CYCLE_PRIMARY_WEAPON_SEQUENCE,                       KEY_O, -1, WEAPON_TAB, 0, "Cycle Primary Weapon Firing Rate",       CC_TYPE_TRIGGER)
+	(CYCLE_PRIMARY_WEAPON_SEQUENCE,                       KEY_O, -1, WEAPON_TAB, 1776, "Cycle Primary Weapon Firing Rate",       CC_TYPE_TRIGGER)
+	(CYCLE_PRIMARY_WEAPON_PATTERN,			  KEY_ALTED | KEY_O, -1, WEAPON_TAB, 1859, "Cycle Primary Weapon Firing Pattern",	  CC_TYPE_TRIGGER)
 	(CYCLE_SECONDARY,                                KEY_DIVIDE, -1, WEAPON_TAB, 1, "Cycle Secondary Weapon Forward",         CC_TYPE_TRIGGER)
 	(CYCLE_NUM_MISSLES,                KEY_SHIFTED | KEY_DIVIDE, -1, WEAPON_TAB, 1, "Cycle Secondary Weapon Firing Rate",     CC_TYPE_TRIGGER)
 	(LAUNCH_COUNTERMEASURE,                               KEY_X,  3, WEAPON_TAB, 1, "Launch Countermeasure",                  CC_TYPE_TRIGGER)
@@ -205,12 +210,12 @@ void control_config_common_init_bindings() {
 	(VIEW_DIST_INCREASE,                            KEY_PADPLUS, -1, COMPUTER_TAB, 1, "Increase View Distance",             CC_TYPE_CONTINUOUS)
 	(VIEW_DIST_DECREASE,                           KEY_PADMINUS, -1, COMPUTER_TAB, 1, "Decrease View Distance",             CC_TYPE_CONTINUOUS)
 	(VIEW_CENTER,                                      KEY_PAD5, -1, COMPUTER_TAB, 1, "Center View",                        CC_TYPE_CONTINUOUS)
-	(PADLOCK_UP,                                             -1, 33, COMPUTER_TAB, 1, "View Up",                            CC_TYPE_CONTINUOUS)
-	(PADLOCK_DOWN,                                           -1, 32, COMPUTER_TAB, 1, "View Rear",                          CC_TYPE_CONTINUOUS)
-	(PADLOCK_LEFT,                                           -1, 34, COMPUTER_TAB, 1, "View Left",                          CC_TYPE_CONTINUOUS)
-	(PADLOCK_RIGHT,                                          -1, 35, COMPUTER_TAB, 1, "View Right",                         CC_TYPE_CONTINUOUS)
-	(VIEW_TOPDOWN,                                           -1, -1, COMPUTER_TAB, 0, "Top-Down View",                      CC_TYPE_TRIGGER)
-	(VIEW_TRACK_TARGET,                                      -1, -1, COMPUTER_TAB, 0, "Target Padlock View",                CC_TYPE_TRIGGER)
+	(PADLOCK_UP,                                             -1, iHAT_UP,       COMPUTER_TAB, 1, "View Up",                            CC_TYPE_CONTINUOUS)
+	(PADLOCK_DOWN,                                           -1, iHAT_DOWN,     COMPUTER_TAB, 1, "View Rear",                          CC_TYPE_CONTINUOUS)
+	(PADLOCK_LEFT,                                           -1, iHAT_LEFT,     COMPUTER_TAB, 1, "View Left",                          CC_TYPE_CONTINUOUS)
+	(PADLOCK_RIGHT,                                          -1, iHAT_RIGHT,    COMPUTER_TAB, 1, "View Right",                         CC_TYPE_CONTINUOUS)
+	(VIEW_TOPDOWN,                                           -1, -1, COMPUTER_TAB, 1777, "Top-Down View",                      CC_TYPE_TRIGGER)
+	(VIEW_TRACK_TARGET,                                      -1, -1, COMPUTER_TAB, 1778, "Target Padlock View",                CC_TYPE_TRIGGER)
 
 	(RADAR_RANGE_CYCLE,                            KEY_RAPOSTRO, -1, COMPUTER_TAB, 1, "Cycle Radar Range",                 CC_TYPE_TRIGGER)
 	(SQUADMSG_MENU,                                       KEY_C, -1, COMPUTER_TAB, 1, "Communications Menu",               CC_TYPE_TRIGGER)
@@ -235,8 +240,8 @@ void control_config_common_init_bindings() {
 
 	// Navigation and Autopilot
 	(SHOW_NAVMAP,                                            -1, -1, NO_TAB,       1, "Show Nav Map",       CC_TYPE_TRIGGER, true)
-	(AUTO_PILOT_TOGGLE,                       KEY_ALTED | KEY_A, -1, COMPUTER_TAB, 0, "Toggle Auto Pilot",  CC_TYPE_TRIGGER)
-	(NAV_CYCLE,                               KEY_ALTED | KEY_N, -1, COMPUTER_TAB, 0, "Cycle Nav Points",   CC_TYPE_TRIGGER)
+	(AUTO_PILOT_TOGGLE,                       KEY_ALTED | KEY_A, -1, COMPUTER_TAB, 1779, "Toggle Auto Pilot",  CC_TYPE_TRIGGER)
+	(NAV_CYCLE,                               KEY_ALTED | KEY_N, -1, COMPUTER_TAB, 1780, "Cycle Nav Points",   CC_TYPE_TRIGGER)
 
 	// Escort
 	(ADD_REMOVE_ESCORT,                       KEY_ALTED | KEY_E, -1, COMPUTER_TAB, 1, "Add or Remove Escort",   CC_TYPE_TRIGGER)
@@ -258,15 +263,22 @@ void control_config_common_init_bindings() {
 	// HUD
 	(TOGGLE_HUD,                                    KEY_SHIFTED | KEY_O, -1, COMPUTER_TAB, 1, "Toggle HUD",                       CC_TYPE_TRIGGER)
 	(TOGGLE_HUD_CONTRAST,                                         KEY_L, -1, COMPUTER_TAB, 1, "Toggle High HUD Contrast",         CC_TYPE_TRIGGER)
-	(TOGGLE_HUD_SHADOWS,                              KEY_ALTED | KEY_L, -1, COMPUTER_TAB, 0, "Toggle HUD Drop Shadows",          CC_TYPE_TRIGGER)
+	(TOGGLE_HUD_SHADOWS,                              KEY_ALTED | KEY_L, -1, COMPUTER_TAB, 1781, "Toggle HUD Drop Shadows",          CC_TYPE_TRIGGER)
 	(HUD_TARGETBOX_TOGGLE_WIREFRAME,    KEY_ALTED | KEY_SHIFTED | KEY_Q, -1, COMPUTER_TAB, 1, "Toggle HUD Wireframe Target View", CC_TYPE_TRIGGER)
 
 	// Custom Controls
-	(CUSTOM_CONTROL_1,                  KEY_ALTED | KEY_SHIFTED | KEY_1, -1, COMPUTER_TAB, 0, "Custom Control 1", CC_TYPE_TRIGGER, true)
-	(CUSTOM_CONTROL_2,                  KEY_ALTED | KEY_SHIFTED | KEY_2, -1, COMPUTER_TAB, 0, "Custom Control 2", CC_TYPE_TRIGGER, true)
-	(CUSTOM_CONTROL_3,                  KEY_ALTED | KEY_SHIFTED | KEY_3, -1, COMPUTER_TAB, 0, "Custom Control 3", CC_TYPE_TRIGGER, true)
-	(CUSTOM_CONTROL_4,                  KEY_ALTED | KEY_SHIFTED | KEY_4, -1, COMPUTER_TAB, 0, "Custom Control 4", CC_TYPE_TRIGGER, true)
-	(CUSTOM_CONTROL_5,                  KEY_ALTED | KEY_SHIFTED | KEY_5, -1, COMPUTER_TAB, 0, "Custom Control 5", CC_TYPE_TRIGGER, true)
+	(CUSTOM_CONTROL_1,                  KEY_ALTED | KEY_SHIFTED | KEY_1, -1, COMPUTER_TAB, 1784, "Custom Control 1", CC_TYPE_TRIGGER, true)
+	(CUSTOM_CONTROL_2,                  KEY_ALTED | KEY_SHIFTED | KEY_2, -1, COMPUTER_TAB, 1785, "Custom Control 2", CC_TYPE_TRIGGER, true)
+	(CUSTOM_CONTROL_3,                  KEY_ALTED | KEY_SHIFTED | KEY_3, -1, COMPUTER_TAB, 1786, "Custom Control 3", CC_TYPE_TRIGGER, true)
+	(CUSTOM_CONTROL_4,                  KEY_ALTED | KEY_SHIFTED | KEY_4, -1, COMPUTER_TAB, 1787, "Custom Control 4", CC_TYPE_TRIGGER, true)
+	(CUSTOM_CONTROL_5,                  KEY_ALTED | KEY_SHIFTED | KEY_5, -1, COMPUTER_TAB, 1788, "Custom Control 5", CC_TYPE_TRIGGER, true)
+
+
+	//Comms Controls
+	(COMMS_MENU_MOVE_UP,                                             -1, -1, COMPUTER_TAB, 1883, "Communication Menu Move Up",   CC_TYPE_TRIGGER)
+	(COMMS_MENU_MOVE_DOWN,                                           -1, -1, COMPUTER_TAB, 1884, "Communication Menu Move Down", CC_TYPE_TRIGGER)
+	(COMMS_MENU_SELECT,                                              -1, -1, COMPUTER_TAB, 1885, "Communication Menu Select",    CC_TYPE_TRIGGER)
+
 	.end();	// Builder
 
 	// init default preset
@@ -427,74 +439,49 @@ SCP_unordered_map<SCP_string, IoActionId> old_text = {
 	{"Cycle Nav Points",                        NAV_CYCLE},
 	{"Toggle Gliding",                          TOGGLE_GLIDING},
 	{"Cycle Primary Weapon Firing Rate",        CYCLE_PRIMARY_WEAPON_SEQUENCE},
+	{"Cycle Primary Weapon Firing Pattern",		CYCLE_PRIMARY_WEAPON_PATTERN},
 	{"Custom Control 1",                        CUSTOM_CONTROL_1},
 	{"Custom Control 2",                        CUSTOM_CONTROL_2},
 	{"Custom Control 3",                        CUSTOM_CONTROL_3},
 	{"Custom Control 4",                        CUSTOM_CONTROL_4},
 	{"Custom Control 5",                        CUSTOM_CONTROL_5},
+	{"Communication Menu Move Up",              COMMS_MENU_MOVE_UP},
+	{"Communication Menu Move Down",            COMMS_MENU_MOVE_DOWN},
+	{"Communication Menu Select",               COMMS_MENU_SELECT},
 };
 
-const char* Joy_button_text_german_u[] = {
-	"Knopf 1",		"Knopf 2",		"Knopf 3",		"Knopf 4",		"Knopf 5",		"Knopf 6",
-	"Knopf 7",		"Knopf 8",		"Knopf 9",		"Knopf 10",		"Knopf 11",		"Knopf 12",
-	"Knopf 13",		"Knopf 14",		"Knopf 15",		"Knopf 16",		"Knopf 17",		"Knopf 18",
-	"Knopf 19",		"Knopf 20",		"Knopf 21",		"Knopf 22",		"Knopf 23",		"Knopf 24",
-	"Knopf 25",		"Knopf 26",		"Knopf 27",		"Knopf 28",		"Knopf 29",		"Knopf 30",
-	"Knopf 31",		"Knopf 32",		"Hut Hinten",	"Hut Vorne",	"Hut Links",	"Hut Rechts"
+// Localization strings for hat positions. Back[0], Forward[1], Left[2], Right[3]
+// This ordering is used to follow the same logic as hatBtnToEnum in joy-sdl.cpp
+const char* Joy_hat_text_german_u[JOY_NUM_HAT_POS] = {
+	"Hut Hinten", "Hut Vorne", "Hut Links", "Hut Rechts"
 };
 
-const char* Joy_button_text_french_u[] = {
-	"Bouton 1",		"Bouton 2",		"Bouton 3",		"Bouton 4",		"Bouton 5",		"Bouton 6",
-	"Bouton 7",		"Bouton 8",		"Bouton 9",		"Bouton 10",		"Bouton 11",		"Bouton 12",
-	"Bouton 13",		"Bouton 14",		"Bouton 15",		"Bouton 16",		"Bouton 17",		"Bouton 18",
-	"Bouton 19",		"Bouton 20",		"Bouton 21",		"Bouton 22",		"Bouton 23",		"Bouton 24",
-	"Bouton 25",		"Bouton 26",		"Bouton 27",		"Bouton 28",		"Bouton 29",		"Bouton 30",
-	"Bouton 31",		"Bouton 32",		"Chapeau Arri\xc3\xa8""re",		"Chapeau Avant",		"Chapeau Gauche",		"Chapeau Droite"
+const char* Joy_hat_text_french_u[JOY_NUM_HAT_POS] = {
+	("Chapeau Arri\xc3\xa8""re"), "Chapeau Avant", "Chapeau Gauche", "Chapeau Droite"
 };
 
-const char* Joy_button_text_polish_u[] = {
-	"Przyc.1",		"Przyc.2",		"Przyc.3",		"Przyc.4",		"Przyc.5",		"Przyc.6",
-	"Przyc.7",		"Przyc.8",		"Przyc.9",		"Przyc.10",	"Przyc.11",	"Przyc.12",
-	"Przyc.13",	"Przyc.14",	"Przyc.15",	"Przyc.16",	"Przyc.17",	"Przyc.18",
-	"Przyc.19",	"Przyc.20",	"Przyc.21",	"Przyc.22",	"Przyc.23",	"Przyc.24",
-	"Przyc.25",	"Przyc.26",	"Przyc.27",	"Przyc.28",	"Przyc.29",	"Przyc.30",
-	"Przyc.31",	"Przyc.32",	"Hat Ty\xc5\x82",		"Hat Prz\xc3\xb3""d",	"Hat Lewo",		"Hat Prawo"
+const char* Joy_hat_text_polish_u[JOY_NUM_HAT_POS] = {
+	"Hat Ty\xc5\x82", ("Hat Prz\xc3\xb3""d"), "Hat Lewo", "Hat Prawo"
 };
 
-const char* Joy_button_text_english_u[] = {
-	"Button 1",		"Button 2",		"Button 3",		"Button 4",		"Button 5",		"Button 6",
-	"Button 7",		"Button 8",		"Button 9",		"Button 10",	"Button 11",	"Button 12",
-	"Button 13",	"Button 14",	"Button 15",	"Button 16",	"Button 17",	"Button 18",
-	"Button 19",	"Button 20",	"Button 21",	"Button 22",	"Button 23",	"Button 24",
-	"Button 25",	"Button 26",	"Button 27",	"Button 28",	"Button 29",	"Button 30",
-	"Button 31",	"Button 32",	"Hat Back",		"Hat Forward",	"Hat Left",		"Hat Right"
+const char* Joy_hat_text_english_u[JOY_NUM_HAT_POS] = {
+	"Hat Back", "Hat Forward", "Hat Left", "Hat Right"
 };
 
-const char* Joy_button_text_german[] = {
-	"Knopf 1",		"Knopf 2",		"Knopf 3",		"Knopf 4",		"Knopf 5",		"Knopf 6",
-	"Knopf 7",		"Knopf 8",		"Knopf 9",		"Knopf 10",		"Knopf 11",		"Knopf 12",
-	"Knopf 13",		"Knopf 14",		"Knopf 15",		"Knopf 16",		"Knopf 17",		"Knopf 18",
-	"Knopf 19",		"Knopf 20",		"Knopf 21",		"Knopf 22",		"Knopf 23",		"Knopf 24",
-	"Knopf 25",		"Knopf 26",		"Knopf 27",		"Knopf 28",		"Knopf 29",		"Knopf 30",
-	"Knopf 31",		"Knopf 32",		"Hut Hinten",	"Hut Vorne",	"Hut Links",	"Hut Rechts"
+const char* Joy_hat_text_german[JOY_NUM_HAT_POS] = {
+	"Hut Hinten", "Hut Vorne", "Hut Links", "Hut Rechts"
 };
 
-const char* Joy_button_text_french[] = {
-	"Bouton 1",		"Bouton 2",		"Bouton 3",		"Bouton 4",		"Bouton 5",		"Bouton 6",
-	"Bouton 7",		"Bouton 8",		"Bouton 9",		"Bouton 10",		"Bouton 11",		"Bouton 12",
-	"Bouton 13",		"Bouton 14",		"Bouton 15",		"Bouton 16",		"Bouton 17",		"Bouton 18",
-	"Bouton 19",		"Bouton 20",		"Bouton 21",		"Bouton 22",		"Bouton 23",		"Bouton 24",
-	"Bouton 25",		"Bouton 26",		"Bouton 27",		"Bouton 28",		"Bouton 29",		"Bouton 30",
-	"Bouton 31",		"Bouton 32",		"Chapeau Arri\x8Are",		"Chapeau Avant",		"Chapeau Gauche",		"Chapeau Droite"
+const char* Joy_hat_text_french[JOY_NUM_HAT_POS] = {
+	"Chapeau Arri\x8Are", "Chapeau Avant", "Chapeau Gauche", "Chapeau Droite"
 };
 
-const char* Joy_button_text_polish[] = {
-	"Przyc.1",		"Przyc.2",		"Przyc.3",		"Przyc.4",		"Przyc.5",		"Przyc.6",
-	"Przyc.7",		"Przyc.8",		"Przyc.9",		"Przyc.10",	"Przyc.11",	"Przyc.12",
-	"Przyc.13",	"Przyc.14",	"Przyc.15",	"Przyc.16",	"Przyc.17",	"Przyc.18",
-	"Przyc.19",	"Przyc.20",	"Przyc.21",	"Przyc.22",	"Przyc.23",	"Przyc.24",
-	"Przyc.25",	"Przyc.26",	"Przyc.27",	"Przyc.28",	"Przyc.29",	"Przyc.30",
-	"Przyc.31",	"Przyc.32",	"Hat Ty\xB3",		"Hat Prz\xF3\x64",	"Hat Lewo",		"Hat Prawo"
+const char* Joy_hat_text_polish[JOY_NUM_HAT_POS] = {
+	"Hat Ty\xB3", "Hat Prz\xF3\x64", "Hat Lewo", "Hat Prawo"
+};
+
+const char* Joy_hat_text_english[JOY_NUM_HAT_POS] = {
+	"Hat Back", "Hat Forward", "Hat Left", "Hat Right"
 };
 
 //English scancodes are still needed eclusively for the scripting API, as we need to give generic and stable scan code names to the API that are neither translated nor localized to keyboard layout.
@@ -539,17 +526,6 @@ const char *Scan_code_text_english[] = {
 	"",				"",				"",				"",				"",				"",				"",				"",
 	"",				"",				"",				"",				"",				"",				"",				"",
 };
-
-const char* Joy_button_text_english[] = {
-	"Button 1",		"Button 2",		"Button 3",		"Button 4",		"Button 5",		"Button 6",
-	"Button 7",		"Button 8",		"Button 9",		"Button 10",	"Button 11",	"Button 12",
-	"Button 13",	"Button 14",	"Button 15",	"Button 16",	"Button 17",	"Button 18",
-	"Button 19",	"Button 20",	"Button 21",	"Button 22",	"Button 23",	"Button 24",
-	"Button 25",	"Button 26",	"Button 27",	"Button 28",	"Button 29",	"Button 30",
-	"Button 31",	"Button 32",	"Hat Back",		"Hat Forward",	"Hat Left",		"Hat Right"
-};
-
-const char **Joy_button_text = Joy_button_text_english;
 
 bool Generate_controlconfig_table = false;
 
@@ -643,7 +619,9 @@ const char *translate_key(char *key)
 
 	if (!first.empty() && !second.empty()) {
 		strcpy_s(text, first.textify().c_str());
-		strcat_s(text, " or ");
+		strcat_s(text, " ");
+		strcat_s(text, XSTR("or", 1672));
+		strcat_s(text, " ");
 		strcat_s(text, second.textify().c_str());
 
 	} else if (!first.empty()) {
@@ -653,7 +631,7 @@ const char *translate_key(char *key)
 		strcpy_s(text, second.textify().c_str());
 
 	} else {
-			strcpy_s(text, "None");
+			strcpy_s(text, XSTR("None", 1673));
 	}
 
 	return text;
@@ -664,7 +642,7 @@ const char *textify_scancode(int code)
 	static char text[BTN_MSG_LEN];
 
 	if (code < 0)
-		return "None";
+		return XSTR("None", 1673);
 
 	int keycode = code & KEY_MASK;
 
@@ -717,7 +695,69 @@ const char *textify_scancode_universal(int code)
 	
 	return text;
 }
-//XSTR:ON
+
+const char* textify_button(int btn) {
+	static char text[BTN_MSG_LEN];
+
+	if ((btn < 0) || (btn >= JOY_TOTAL_BUTTONS))
+		return "None";
+
+	text[0] = '\0';
+
+	if (btn < JOY_NUM_BUTTONS) {
+		// Is a button.
+		if (Lcl_gr) {
+			sprintf(text, "Knopf %i", btn);
+
+		} else if (Lcl_fr) {
+			sprintf(text, "Bouton %i", btn);
+
+		} else if (Lcl_pl) {
+			sprintf(text, "Przyc.%i", btn);
+
+		} else {
+			sprintf(text, "Button %i", btn);
+		}
+
+	} else {
+		//is Hat
+		btn -= JOY_NUM_BUTTONS;
+		Assertion(btn <= JOY_NUM_HAT_POS, "Invalid btn value '%i' after hat position translation.", btn);
+
+		if (Unicode_text_mode) {
+			// use unicode character maps
+			if (Lcl_gr) {
+				strcpy_s(text, Joy_hat_text_german_u[btn]);
+
+			} else if (Lcl_fr) {
+				strcpy_s(text, Joy_hat_text_french_u[btn]);
+
+			} else if (Lcl_pl) {
+				strcpy_s(text, Joy_hat_text_polish_u[btn]);
+
+			} else {
+				strcpy_s(text, Joy_hat_text_english_u[btn]);
+			}
+		} else {
+			// use ascii character maps
+			if (Lcl_gr) {
+				strcpy_s(text, Joy_hat_text_german[btn]);
+
+			} else if (Lcl_fr) {
+				strcpy_s(text, Joy_hat_text_french[btn]);
+
+			} else if (Lcl_pl) {
+				strcpy_s(text, Joy_hat_text_polish[btn]);
+
+			} else {
+				strcpy_s(text, Joy_hat_text_english[btn]);
+			}
+		}
+	}
+
+	return text;
+}
+	//XSTR:ON
 
 void control_config_common_load_overrides();
 
@@ -750,36 +790,6 @@ void control_config_common_init()
 	// load player presets
 	load_preset_files();
 
-	// Init control label localization
-	if (Unicode_text_mode) {
-		if (Lcl_gr) {
-			Joy_button_text = Joy_button_text_german_u;
-		}
-		else if (Lcl_fr) {
-			Joy_button_text = Joy_button_text_french_u;
-		}
-		else if (Lcl_pl) {
-			Joy_button_text = Joy_button_text_polish_u;
-		}
-		else {
-			Joy_button_text = Joy_button_text_english_u;
-		}
-	}
-	else {
-		if (Lcl_gr) {
-			Joy_button_text = Joy_button_text_german;
-		}
-		else if (Lcl_fr) {
-			Joy_button_text = Joy_button_text_french;
-		}
-		else if (Lcl_pl) {
-			Joy_button_text = Joy_button_text_polish;
-		}
-		else {
-			Joy_button_text = Joy_button_text_english;
-		}
-	}
-
 	// Old XSTR indices have been put beside their corresponding label in case we use them again
 	Axis_text[0] = vm_strdup(XSTR("X Axis", 1647));		// XSTR 1021 - "Joystick/Mouse X Axis"
 	Axis_text[1] = vm_strdup(XSTR("Y Axis", 1648));		// XSTR 1022 - "Joystick/Mouse Y Axis"
@@ -787,6 +797,8 @@ void control_config_common_init()
 	Axis_text[3] = vm_strdup(XSTR("rX Axis", 1650));	// XSTR 1024 - "Joystick rX Axis"
 	Axis_text[4] = vm_strdup(XSTR("rY Axis", 1651));	// XSTR 1025 - "Joystick rY Axis"
 	Axis_text[5] = vm_strdup(XSTR("rZ Axis", 1652));	// XSTR 1026 - "Joystick rZ Axis"
+	Axis_text[6] = vm_strdup(XSTR("U Axis", 1860));
+	Axis_text[7] = vm_strdup(XSTR("V Axis", 1861));
 
 	Mouse_button_text[0] = vm_strdup(XSTR("Left Button", 1027));
 	Mouse_button_text[1] = vm_strdup(XSTR("Right Button", 1028));
@@ -797,6 +809,8 @@ void control_config_common_init()
 	Mouse_button_text[6] = vm_strdup(XSTR("Wheel Down", 1656));
 	Mouse_button_text[7] = vm_strdup(XSTR("Wheel Left", 1657));
 	Mouse_button_text[8] = vm_strdup(XSTR("Wheel Right", 1658));
+
+	Script_system.OnStateDestroy.add([](lua_State*) -> void { Lua_hooks.clear(); });
 }
 
 /*
@@ -1146,6 +1160,7 @@ void LoadEnumsIntoActionMap() {
 	ADD_ENUM_TO_ACTION_MAP(TOGGLE_GLIDING)
 
 	ADD_ENUM_TO_ACTION_MAP(CYCLE_PRIMARY_WEAPON_SEQUENCE)
+	ADD_ENUM_TO_ACTION_MAP(CYCLE_PRIMARY_WEAPON_PATTERN)
 
 	ADD_ENUM_TO_ACTION_MAP(CUSTOM_CONTROL_1)
 	ADD_ENUM_TO_ACTION_MAP(CUSTOM_CONTROL_2)
@@ -1158,6 +1173,10 @@ void LoadEnumsIntoActionMap() {
 	ADD_ENUM_TO_ACTION_MAP(JOY_BANK_AXIS)
 	ADD_ENUM_TO_ACTION_MAP(JOY_ABS_THROTTLE_AXIS)
 	ADD_ENUM_TO_ACTION_MAP(JOY_REL_THROTTLE_AXIS)
+
+	ADD_ENUM_TO_ACTION_MAP(COMMS_MENU_MOVE_UP)
+	ADD_ENUM_TO_ACTION_MAP(COMMS_MENU_MOVE_DOWN)
+	ADD_ENUM_TO_ACTION_MAP(COMMS_MENU_SELECT)
 
 
 #undef ADD_ENUM_TO_ACTION_MAP
@@ -1198,6 +1217,8 @@ void LoadEnumsIntoAxisMap() {
 	mAxisNameToVal["RX_AXIS"] = JOY_RX_AXIS;
 	mAxisNameToVal["RY_AXIS"] = JOY_RY_AXIS;
 	mAxisNameToVal["RZ_AXIS"] = JOY_RZ_AXIS;
+	mAxisNameToVal["U_AXIS"] = JOY_U_AXIS;
+	mAxisNameToVal["V_AXIS"] = JOY_V_AXIS;
 }
 
 void LoadEnumsIntoHatMap() {
@@ -1400,7 +1421,8 @@ void control_enable_hook(IoActionId id, bool enable) {
 }
 
 /**
- * Stuffs the CCF flags into the given char.  Needs item_id for validation
+ * Stuffs the CCF flags into the given char.  Needs item_id for validation.
+ * @details Unknown, unrecognized, or excessive flags are silently ignored on Release builds.  Debug builds complain.
  */
 void stuff_CCF(char& flags, size_t item_id) {
 	Assert(item_id < Control_config.size());
@@ -1414,7 +1436,9 @@ void stuff_CCF(char& flags, size_t item_id) {
 	SCP_string flag_str;
 	size_t pos = 0;
 	size_t len = 0;
-
+	
+	// Lambda to add flags.
+	// Debug version Eats the substring as it is found.
 	auto ADD_FLAG = [&](char id) {
 		flag_str = ValToCCF(id);
 		pos = szTempBuffer.find(flag_str);
@@ -1425,6 +1449,8 @@ void stuff_CCF(char& flags, size_t item_id) {
 		}
 	};
 #else
+	// Lambda to add flags.
+	// Release version doesn't modify szTempBuffer as it searches for substrings.
 	auto ADD_FLAG = [&](char id) {
 		if (szTempBuffer.find(ValToCCF(id)) != SCP_string::npos)
 			flags |= id;
@@ -1438,13 +1464,38 @@ void stuff_CCF(char& flags, size_t item_id) {
 	ADD_FLAG(CCF_HAT);
 	ADD_FLAG(CCF_BALL);
 
+
 #ifndef NDEBUG
+	// Eat the "CCF_NONE" and "NONE" substrings
+	auto EAT_FLAG = [&](SCP_string str) {
+		pos = szTempBuffer.find(str);
+		len = str.length();
+			if (pos != SCP_string::npos) {
+				if (flags != 0) {
+					// Complain about bad habits
+					error_display(0,
+						"Flag 'NONE' passed to config item %i along with other flags, ignoring: \n'%s'",
+						static_cast<int>(item_id),
+						szTempBuffer.c_str()
+					);
+				}
+				szTempBuffer.erase(pos, len);
+			}
+	};
+
+	EAT_FLAG("CCF_NONE");
+	EAT_FLAG("NONE");
+
 	// Complain about any unknown flag strings
 	replace_all(szTempBuffer, ",", " ");
 	drop_white_space(szTempBuffer);
 
 	if (!szTempBuffer.empty()) {
-		error_display(0, "Unknown flags passed to config item %i, ignoring: \n'%s'", static_cast<int>(item_id), szTempBuffer.c_str());
+		error_display(0,
+			"Unknown (or excessive) flags passed to config item %i, ignoring: \n'%s'",
+			static_cast<int>(item_id),
+			szTempBuffer.c_str()
+		);
 	}
 #endif
 
@@ -1919,7 +1970,7 @@ int control_config_common_write_tbl(bool overwrite = false, bool all = false) {
 		return 1;
 	}
 
-	CFILE* cfile = cfopen("controlconfigdefaults.tbl", "w", CFILE_NORMAL, CF_TYPE_TABLES);
+	CFILE* cfile = cfopen("controlconfigdefaults.tbl", "w", CF_TYPE_TABLES);
 	if (cfile == nullptr) {
 		// Could not open. Bail.
 		return 1;
@@ -2276,7 +2327,7 @@ SCP_string ValToCCF(char id) {
 	}
 
 	if (str.empty()) {
-		// If unsupported flags, or no flags at all, list as "None"
+		// If unsupported flags, or (id == CCF_NONE), list as "None"
 		str = "NONE";
 	}
 
@@ -2612,22 +2663,21 @@ SCP_string CC_bind::textify() const {
 	SCP_string prefix;
 	SCP_string retval;
 
-	// TODO: XSTR the Mouse/Joy prefix
 	switch (cid) {
 	case CID_MOUSE:
-		prefix = "Mouse ";
+		prefix = XSTR("Mouse ", 1868);
 		break;
 	case CID_JOY0:
-		prefix = "Joy-0 ";
+		prefix = XSTR("Joy-0 ", 1869);
 		break;
 	case CID_JOY1:
-		prefix = "Joy-1 ";
+		prefix = XSTR("Joy-1 ", 1870);
 		break;
 	case CID_JOY2:
-		prefix = "Joy-2 ";
+		prefix = XSTR("Joy-2 ", 1871);
 		break;
 	case CID_JOY3:
-		prefix = "Joy-3 ";
+		prefix = XSTR("Joy-3 ", 1872);
 		break;
 	case CID_NONE:
 	case CID_KEYBOARD:
@@ -2639,7 +2689,7 @@ SCP_string CC_bind::textify() const {
 	if (flags & CCF_AXIS) {
 		// Is Axis
 		if (cid == CID_NONE) {
-			retval = "None";
+			retval = XSTR("None", 1873);
 		} else {
 			Assert((btn >= 0) && (btn < NUM_AXIS_TEXT));
 			retval = SCP_string(Axis_text[btn]);
@@ -2662,12 +2712,12 @@ SCP_string CC_bind::textify() const {
 		case CID_JOY2:
 		case CID_JOY3:
 			Assert((btn >= 0) && (btn < JOY_TOTAL_BUTTONS));
-			retval = SCP_string(Joy_button_text[btn]);
+			retval = SCP_string(textify_button(btn));
 			break;
 
 		case CID_NONE:
 		default:
-			retval = "None";
+			retval = XSTR("None", 1873);
 		break;
 		}
 	}
@@ -2746,10 +2796,12 @@ bool CCB::operator!=(const CCB& A) const {
 }
 
 bool CCB::has_first_conflict(const CCB& A) const {
+	// coverity[copy_paste_error:FALSE]
 	return !first.empty() && (first.conflicts_with(A.first) || first.conflicts_with(A.second));
 }
 
 bool CCB::has_second_conflict(const CCB& A) const {
+	// coverity[copy_paste_error:FALSE]
 	return !second.empty() && (second.conflicts_with(A.first) || second.conflicts_with(A.second));
 }
 

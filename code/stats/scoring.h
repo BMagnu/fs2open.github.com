@@ -23,23 +23,21 @@ class object;
 
 #define NUM_MEDALS_FS2		18
 #define NUM_MEDALS_FS1		16
-extern int Num_medals;
 
-#define NUM_RANKS				10
+//Ranks are no longer limited to the retail 10 and checks are against index position rather than arbitrary title - Mjn
+//#define RANK_ENSIGN				0
+//#define RANK_LT_JUNIOR			1
+//#define RANK_LT					2
+//#define RANK_LT_CMDR				3
+//#define RANK_CMDR					4
+//#define RANK_CAPTAIN				5
+//#define RANK_COMMODORE			6
+//#define RANK_REAR_ADMIRAL			7
+//#define RANK_VICE_ADMIRAL			8
+//#define RANK_ADMIRAL  			9
 
-#define RANK_ENSIGN				0
-#define RANK_LT_JUNIOR			1
-#define RANK_LT					2
-#define RANK_LT_CMDR				3
-#define RANK_CMDR					4
-#define RANK_CAPTAIN				5
-#define RANK_COMMODORE			6
-#define RANK_REAR_ADMIRAL		7
-#define RANK_VICE_ADMIRAL		8
-#define RANK_ADMIRAL  			9
-
-#define MAX_FREESPACE1_RANK	RANK_COMMODORE
-#define MAX_FREESPACE2_RANK	RANK_ADMIRAL
+//#define MAX_FREESPACE1_RANK	RANK_COMMODORE
+//#define MAX_FREESPACE2_RANK	RANK_ADMIRAL
 
 
 /*
@@ -64,6 +62,8 @@ extern int Num_medals;
 
 struct rank_stuff {
 	char		name[NAME_LENGTH];		// name of this rank
+	SCP_string	alt_name;  // Alt name for displaying
+	SCP_string	title;     // Title used for replacing the $RankTitle variable
 	SCP_map<int, SCP_string>	promotion_text;		// text to display when promoted to this rank
 	int		points;						// points needed to reach this rank
 	char		bitmap[MAX_FILENAME_LEN];		// bitmap of this rank medal
@@ -73,6 +73,13 @@ struct rank_stuff {
 struct traitor_stuff {
 	SCP_map<int, SCP_string> debriefing_text;
 	char		traitor_voice_base[MAX_FILENAME_LEN];
+	SCP_string recommendation_text;
+};
+
+struct traitor_override_t {
+	SCP_string name;
+	SCP_string text;
+	char       voice_filename[MAX_FILENAME_LEN];
 	SCP_string recommendation_text;
 };
 
@@ -142,11 +149,16 @@ public:
 	bool operator!=(const scoring_struct& rhs) const;
 };
 
-extern rank_stuff Ranks[NUM_RANKS];
+extern SCP_vector<rank_stuff> Ranks;
 extern traitor_stuff Traitor;
+extern SCP_vector<traitor_override_t> Traitor_overrides;
 
-void parse_rank_tbl();
-void parse_traitor_tbl();
+int verify_rank(int rank);
+
+SCP_string get_rank_display_name(rank_stuff* rank);
+
+void rank_init();
+void traitor_init();
 void scoring_close();
 
 void scoring_level_init( scoring_struct *score );
@@ -154,8 +166,8 @@ void scoring_level_close(int accepted = 1);
 void scoring_backout_accept( scoring_struct *score );
 void scoring_do_accept( scoring_struct *score );
 
-void scoring_add_damage(object *ship_obj,object *other_obj,float damage);
-int scoring_eval_kill(object *ship_obj);
+void scoring_add_damage(const object *ship_obj, const object *other_obj, float damage);
+int scoring_eval_kill(const object *ship_obj);
 int scoring_eval_kill_on_weapon(object *weapon_obj, object *other_obj);
 void scoring_eval_assists(ship *sp,int killer_sig, bool enemy_player = false);
 
@@ -163,9 +175,11 @@ void scoring_eval_assists(ship *sp,int killer_sig, bool enemy_player = false);
 void scoring_bash_rank(player *pl,int rank);
 
 // eval a hit on an object (for primary and secondary hit purposes)
-void scoring_eval_hit(object *hit_obj, object *other_obj, int from_blast = 0);
+void scoring_eval_hit(const object *hit_obj, const object *other_obj, int from_blast = 0);
 
 // get a scaling factor for adding/subtracting from mission score
 float scoring_get_scale_factor();
+
+traitor_override_t* get_traitor_override_pointer(const SCP_string& name);
 
 #endif

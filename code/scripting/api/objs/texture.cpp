@@ -6,12 +6,14 @@
 #define BMPMAN_INTERNAL
 #include "bmpman/bm_internal.h"
 
-
 namespace scripting {
 namespace api {
 
 texture_h::texture_h() = default;
-texture_h::texture_h(int bm) : handle(bm) {}
+texture_h::texture_h(int bm, bool refcount, int parent_bm) : handle(bm), parent_handle(parent_bm) {
+	if (refcount && isValid())
+		bm_get_entry(parent_bm != -1 ? parent_bm : bm)->load_count++;
+}
 texture_h::~texture_h()
 {
 	if (!isValid()) {
@@ -19,19 +21,28 @@ texture_h::~texture_h()
 		return;
 	}
 
-	// Note: due to some unknown reason, in some circumstances this function
-	// might get called even for handles to bitmaps which are actually still in
-	// use, and in order to prevent that we want to double-check the load count
-	// here before unloading the bitmap. -zookeeper
-	if (bm_get_entry(handle)->load_count < 1)
-		bm_release(handle);
+	//Note: We previously checked the load count here to make sure we don't unload the texture if it is in use otherwise.
+	//That is dangerous, as if anything else locks a lua-created texture while lua loses scope of the texture, we leak
+	//the texture as the load_count from the creation in lua will never decrease. To fix this, we need to properly refcount
+	//the textures using load_count. Anything that creates a texture object must also increase load count, unless it is
+	//created in a way that already increases load_count (like bm_load). That way, a texture going out of scope needs to be
+	//released and is safed against memleaks. -Lafiel
+	//Note 2: Some textures, notably subframes of animations, aren't first-class bmpman citizens and mustn't be released directly.
+	//Otherwise it is possible (and has been observed in practice) that the parent texture get's deleted before all dependent objects,
+	//causing this release of the dependent object to clear unrelated textures that were assigned the previously freed spots.
+	//So instead, both lock and later unlock the parent texture rather than this child texture. -Lafiel
+	bm_release(parent_handle != -1 ? parent_handle : handle);
 }
 bool texture_h::isValid() const { return bm_is_valid(handle) != 0; }
+
 texture_h::texture_h(texture_h&& other) noexcept {
 	*this = std::move(other);
 }
 texture_h& texture_h::operator=(texture_h&& other) noexcept {
-	std::swap(handle, other.handle);
+	if (this != &other) {
+		std::swap(handle, other.handle);
+		std::swap(parent_handle, other.parent_handle);
+	}
 	return *this;
 }
 
@@ -87,7 +98,7 @@ ADE_INDEXER(l_Texture, "number",
 	//Get actual texture handle
 	frame = first + frame;
 
-	return ade_set_args(L, "o", l_Texture.Set(texture_h(frame)));
+	return ade_set_args(L, "o", l_Texture.Set(texture_h(frame, true, first)));
 }
 
 ADE_FUNC(isValid, l_Texture, NULL, "Detects whether handle is valid", "boolean", "true if valid, false if handle is invalid, nil if a syntax/type error occurs")
@@ -133,6 +144,8 @@ ADE_FUNC(destroyRenderTarget, l_Texture, nullptr, "Destroys a texture's render t
 	}
 
 	bm_release_rendertarget(th->handle);
+
+	th->handle = -1;
 
 	return ADE_RETURN_NIL;
 }

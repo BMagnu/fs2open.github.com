@@ -8,6 +8,7 @@
 #include "freespace.h"
 
 #include "gamesequence/gamesequence.h"
+#include "libs/discord/discord.h"
 #include "mission/missiontraining.h"
 #include "network/multi.h"
 #include "parse/parselo.h"
@@ -85,7 +86,7 @@ ADE_FUNC(error, l_Base, "string Message", "Displays a FreeSpace error message wi
 	if (Cmdline_lua_devmode) {
 		nprintf(("scripting", "ERROR: %s\n", str.c_str()));
 	} else {
-		Error(LOCATION, "%s", lua_tostring(L, -1));
+		Error(LOCATION, "%s", lua_tostring_nullsafe(L, -1));
 	}
 
 	return ADE_RETURN_NIL;
@@ -206,11 +207,26 @@ ADE_FUNC(createVector, l_Base, "[number x, number y, number z]", "Creates a vect
 	return ade_set_args(L, "o", l_Vector.Set(v3));
 }
 
-ADE_FUNC(createRandomVector, l_Base, nullptr, "Creates a fairly random normalized vector object.", "vector", "Vector object")
+ADE_FUNC(createRandomVector, l_Base, nullptr, "Creates a random normalized vector object.", "vector", "Vector object")
 {
 	vec3d v3;
-	vm_vec_rand_vec(&v3);
+	vm_vec_random_in_sphere(&v3, &vmd_zero_vector, 1.0f, true);
 	return ade_set_args(L, "o", l_Vector.Set(v3));
+}
+
+ADE_FUNC(createRandomOrientation, l_Base, nullptr, "Creates a random orientation object.", "orientation", "Orientation object")
+{
+	vec3d fvec, uvec;
+	matrix fvec_orient, final_orient;
+
+	vm_vec_random_in_sphere(&fvec, &vmd_zero_vector, 1.0f, true);
+	vm_vector_2_matrix_norm(&fvec_orient, &fvec, nullptr, nullptr);
+
+	vm_vec_random_in_circle(&uvec, &vmd_zero_vector, &fvec_orient, 1.0f, true);
+
+	vm_vector_2_matrix_norm(&final_orient, &fvec, &uvec);
+
+	return ade_set_args(L, "o", l_Matrix.Set(matrix_h(&final_orient)));
 }
 
 ADE_FUNC(createSurfaceNormal,
@@ -282,9 +298,14 @@ ADE_FUNC(findPointOnLineNearestSkewLine,
 	return ade_set_args(L, "o", l_Vector.Set(dest));
 }
 
-ADE_FUNC(getFrametimeOverall, l_Base, NULL, "The overall frame time in seconds since the engine has started", "number", "Overall time (seconds)")
+ADE_FUNC(getFrametimeOverall, l_Base, nullptr, "The overall frame time in fix units (seconds * 65536) since the engine has started", "number", "Overall time (fix units)")
 {
 	return ade_set_args(L, "x", game_get_overall_frametime());
+}
+
+ADE_FUNC(getSecondsOverall, l_Base, nullptr, "The overall time in seconds since the engine has started", "number", "Overall time (seconds)")
+{
+	return ade_set_args(L, "f", f2fl(game_get_overall_frametime()));
 }
 
 ADE_FUNC(getMissionFrametime, l_Base, nullptr, "Gets how long this frame is calculated to take. Use it to for animations, physics, etc to make incremental changes. Increased or decreased based on current time compression", "number", "Frame time (seconds)")
@@ -362,7 +383,7 @@ ADE_FUNC(loadPlayer, l_Base, "string callsign", "Loads the player with the speci
 }
 
 ADE_FUNC(savePlayer, l_Base, "player plr", "Saves the specified player.", "boolean",
-         "true of successfull, false otherwise")
+         "true of successful, false otherwise")
 {
 	player_h* plh;
 	if (!ade_get_args(L, "o", l_Player.GetPtr(&plh))) {
@@ -467,7 +488,8 @@ ADE_FUNC(setTips, l_Base, "boolean", "Sets whether to display tips of the day th
 
 	bool tips = false;
 
-	ade_get_args(L, "b", &tips);
+	if (!ade_get_args(L, "b", &tips))
+		return ADE_RETURN_NIL;
 
 	if (tips)
 		Player->tips = 1;
@@ -490,7 +512,7 @@ ADE_FUNC(postGameEvent, l_Base, "gameevent Event", "Sets current game event. Not
 	if(!ade_get_args(L, "o", l_GameEvent.GetPtr(&gh)))
 		return ade_set_error(L, "b", false);
 
-	if(!gh->IsValid())
+	if(!gh->isValid())
 		return ade_set_error(L, "b", false);
 
 	gameseq_post_event(gh->Get());
@@ -499,24 +521,30 @@ ADE_FUNC(postGameEvent, l_Base, "gameevent Event", "Sets current game event. Not
 }
 
 ADE_FUNC(XSTR,
-		 l_Base,
-		 "string text, number id",
-		 "Gets the translated version of text with the given id. "
-			 "The uses the tstrings table for performing the translation. Passing -1 as the id will always return the given text.",
-		 "string",
-		 "The translated text") {
+	l_Base,
+	"string text, number id, boolean tstrings=true",
+	"Gets the translated version of text with the given id. "
+	"This uses the tstrings.tbl for performing the translation by default. Set tstrings to false to use "
+	"strings.tbl instead. Passing -1 as the id will always return the given text.",
+	"string",
+	"The translated text")
+{
 	const char* text = nullptr;
 	int id = -1;
+	bool use_tstrings = true;
 
-	if (!ade_get_args(L, "si", &text, &id)) {
+	if (!ade_get_args(L, "si|b", &text, &id, &use_tstrings)) {
 		return ADE_RETURN_NIL;
 	}
 
-	SCP_string xstr;
-	sprintf(xstr, "XSTR(\"%s\", %d)", text, id);
-
 	SCP_string translated;
-	lcl_ext_localize(xstr, translated);
+	if (use_tstrings) {
+		SCP_string xstr;
+		sprintf(xstr, "XSTR(\"%s\", %d)", text, id);
+		lcl_ext_localize(xstr, translated);
+	} else {
+		translated = XSTR(text, id);
+	}
 
 	return ade_set_args(L, "s", translated.c_str());
 }
@@ -541,7 +569,7 @@ ADE_FUNC(replaceTokens,
 ADE_FUNC(replaceVariables,
 	l_Base,
 	"string text",
-	"Returns a string that replaces any variable name with the variable value (same as text in Briefings, Debriefings, or Messages). Variable name must be preceeded by '$' for replacement to work.",
+	"Returns a string that replaces any variable name with the variable value (same as text in Briefings, Debriefings, or Messages). Variable name must be preceded by '$' for replacement to work.",
 	"string",
 	"Updated string or nil if invalid")
 {
@@ -588,6 +616,16 @@ ADE_FUNC(isEngineVersionAtLeast,
 	return ade_set_args(L, "b", gameversion::check_at_least(version));
 }
 
+ADE_FUNC(usesInvalidInsteadOfNil,
+	l_Base,
+	nullptr,
+	"Checks if the '$Lua API returns nil instead of invalid object:' option is set in game_settings.tbl.",
+	"boolean",
+	"true if the option is set, false otherwise")
+{
+	return Lua_API_returns_nil_instead_of_invalid_object ? ADE_RETURN_TRUE : ADE_RETURN_FALSE;
+}
+
 ADE_FUNC(getCurrentLanguage,
 		 l_Base,
 		 nullptr,
@@ -628,12 +666,27 @@ ADE_FUNC(getVersionString, l_Base, nullptr,
 	return ade_set_args(L, "s", str.c_str());
 }
 
+ADE_FUNC(getModRootName, l_Base, nullptr,
+	"Returns the name of the current mod's root folder.", "string", "The mod root or empty string if the mod runs without a -mod line")
+{
+	const char* mod = Cmdline_mod;
+	if (mod == nullptr) {
+		mod = "";
+	}
+	
+	SCP_string str = mod;
+
+	// Trim any trailing folders so we get just the name of the root mod folder
+	str = str.substr(0, str.find_first_of(DIR_SEPARATOR_CHAR));
+
+	return ade_set_args(L, "s", str.c_str());
+}
+
 ADE_FUNC(getModTitle, l_Base, nullptr,
          "Returns the title of the current mod as defined in game_settings.tbl. Will return an empty string if not defined.",
          "string", "The mod title")
 {
-	auto str = Mod_title;
-	return ade_set_args(L, "s", str.c_str());
+	return ade_set_args(L, "s", Mod_title.c_str());
 }
 
 ADE_FUNC(getModVersion, l_Base, nullptr,
@@ -642,37 +695,9 @@ ADE_FUNC(getModVersion, l_Base, nullptr,
 		 "the returned numbers will all be -1",
          "string, number, number, number", "The mod version string; the major, minor, patch version numbers or -1 if invalid")
 {
-	auto version = Mod_version;
+	gameversion::version version(Mod_version);
 
-	int major = -1;
-	int minor = -1;
-	int patch = -1;
-	
-	int i = 0;
-	auto str = Mod_version;
-	while (i <= 3) {
-		size_t pos = str.find_first_of('.');
-		if (pos != SCP_string::npos) {
-			auto ver = str.substr(0, pos);
-			if(!ver.empty() && std::find_if(ver.begin(), ver.end(), [](char c) { return !std::isdigit(c); }) == ver.end()){
-				if (major < 0) {
-					major = std::stoi(str.c_str());
-				} else if (minor < 0) {
-					minor = std::stoi(str.c_str());
-				}
-				str.erase(0, pos + 1);
-			} else if (major < 0) {
-				break; //Break out of the loop if the first string is not a digit. In this case we only return the whole string.
-			}
-		} else if ((major > -1) && (minor > -1) && (!str.empty() && std::find_if(str.begin(), str.end(), [](char c) {
-					   return !std::isdigit(c);
-				   }) == str.end())) {
-			patch = std::stoi(str.c_str());
-		}
-		i++;
-	}
-
-	return ade_set_args(L, "siii", version.c_str(), major, minor, patch);
+	return ade_set_args(L, "siii", Mod_version.c_str(), version.major, version.minor, version.build);
 }
 
 ADE_VIRTVAR(MultiplayerMode, l_Base, "boolean", "Determines if the game is currently in single- or multiplayer mode",
@@ -750,6 +775,38 @@ ADE_FUNC(deserializeValue,
 		LuaError(L, "Failed to deserialize value: %s", e.what());
 		return ADE_RETURN_NIL;
 	}
+}
+
+
+ADE_FUNC(setDiscordPresence,
+	l_Base,
+	"string DisplayText, [boolean Gameplay]",
+	"Sets the Discord presence to a specific string. If Gameplay is true then the string is ignored and presence will "
+	"be set as if the player is in-mission. The latter will fail if the player is not in a mission.",
+	nullptr,
+	"nothing")
+{
+	const char* text;
+	bool gp = false;
+	if (!ade_get_args(L, "s|b", &text, &gp)) {
+		return ADE_RETURN_NIL;
+	}
+
+	if (gp) {
+		if ((Game_mode & GM_IN_MISSION) != 0){
+			libs::discord::set_presence_gameplay();
+		}
+	} else {
+		libs::discord::set_presence_string(text);
+	}
+
+	return ADE_RETURN_NIL;
+}
+
+ADE_FUNC(hasFocus, l_Base, nullptr, "Returns if the game engine has focus or not", "boolean", "True if the game has focus, false if it has been lost")
+{
+	return ade_set_args(L, "b", os_foreground());
+
 }
 
 //**********SUBLIBRARY: Base/Events

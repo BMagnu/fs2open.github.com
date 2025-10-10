@@ -16,6 +16,7 @@
  * include toolchain.h which will pull in the file appropriate to
  * the detected toolchain.
  */
+#pragma once
 
 #if defined(_MSC_VER)
 
@@ -39,7 +40,7 @@
 #define ASSUME(x)
 
 #if defined(NDEBUG)
-#	define Assertion(expr, msg, ...)  do { ASSUME(expr); } while (false)
+#	define Assertion(expr, msg, ...)  do { ASSUME(expr); (void)sizeof(expr); } while (false)
 #else
 #	define Assertion(expr, msg, ...)                                    \
 		do {                                                            \
@@ -59,6 +60,9 @@
 
 #define SIZE_T_ARG    "%Iu"
 #define PTRDIFF_T_ARG "%Id"
+
+#define UINT64_T_ARG  "%I64u"
+#define  INT64_T_ARG  "%I64d"
 
 #define likely(x) (x)
 #define unlikely(x) (x)

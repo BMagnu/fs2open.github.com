@@ -2,6 +2,7 @@
 //
 
 #include "hud.h"
+#include "scripting/api/objs/color.h"
 #include "scripting/api/objs/enums.h"
 #include "scripting/api/objs/hudgauge.h"
 #include "scripting/api/objs/object.h"
@@ -11,7 +12,9 @@
 #include "hud/hudconfig.h"
 #include "hud/hudtargetbox.h"
 #include "hud/hudtarget.h"
+#include "playerman/player.h"
 #include "ship/ship.h"
+#include "freespace.h"
 
 extern int Training_obj_num_display_lines;
 
@@ -22,7 +25,7 @@ namespace api {
 //**********LIBRARY: HUD library
 ADE_LIB(l_HUD, "HUD", "hu", "HUD library");
 
-ADE_VIRTVAR(HUDDrawn, l_HUD, "boolean", "Current HUD draw status", "boolean", "If the HUD is drawn or not")
+ADE_VIRTVAR(HUDDrawn, l_HUD, "boolean", "Whether the HUD is toggled on, i.e. is the HUD enabled.  See also hu.isOnHudDrawCalled()", "boolean", "Whether the HUD can be drawn")
 {
 	bool to_draw = false;
 
@@ -41,6 +44,19 @@ ADE_VIRTVAR(HUDDrawn, l_HUD, "boolean", "Current HUD draw status", "boolean", "I
 		return ADE_RETURN_TRUE;
 	else
 		return ADE_RETURN_FALSE;
+}
+
+ADE_VIRTVAR(HUDHighContrast, l_HUD, "boolean", "Gets or sets whether the HUD is currently high-contrast", "boolean", "Whether the HUD is high-contrast")
+{
+	bool value = false;
+
+	if(!ade_get_args(L, "*|b", &value))
+		return ADE_RETURN_NIL;
+
+	if(ADE_SETTING_VAR)
+		HUD_high_contrast = value;
+
+	return ade_set_args(L, "b", HUD_high_contrast);
 }
 
 ADE_VIRTVAR(HUDDisabledExceptMessages, l_HUD, "boolean", "Specifies if only the messages gauges of the hud are drawn", "boolean", "true if only the message gauges are drawn, false otherwise")
@@ -95,62 +111,108 @@ ADE_FUNC(getHUDConfigShowStatus, l_HUD, "number|string gaugeNameOrIndex", "Gets 
 	if ((idx < 0) || (idx >= (int)default_hud_gauges.size()))
 		return ADE_RETURN_NIL;
 
-	if (hud_config_show_flag_is_set(idx))
+	const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
+
+	if (HUD_config.is_gauge_visible(gauge_map.get_string_id_from_numeric_id(idx)))
 		return ADE_RETURN_TRUE;
 	else
 		return ADE_RETURN_FALSE;
 }
 
 ADE_FUNC(setHUDGaugeColor, l_HUD,
-         "number|string gaugeNameOrIndex, [number red, number green, number blue, number alpha]",
-         "Modifies color used to draw the gauge in the pilot config", "boolean", "If the operation was successful")
+         "number|string gaugeNameOrIndex, [number|color /* red value or color object */, number green, number blue, number alpha]",
+	"Modifies color used to draw the gauge in the pilot config",
+	"boolean",
+	"If the operation was successful")
 {
 	int idx = getDefaultGaugeIndex(L);
 	int r = 0;
 	int g = 0;
 	int b = 0;
 	int a = 0;
+	color col;
 
-	if(!ade_get_args(L, "|iiii", &r, &g, &b, &a))
-		return ADE_RETURN_FALSE;
+	if (lua_isnumber(L, 2)) {
+		if (!ade_get_args(L, "*|iiii", &r, &g, &b, &a))
+			return ADE_RETURN_FALSE;
+
+	} else {
+		gr_init_alphacolor(&col, 0, 0, 0, 0);
+
+		if (!ade_get_args(L, "*o", l_Color.Get(&col)))
+			return ADE_RETURN_FALSE;
+
+		r = col.red;
+		g = col.green;
+		b = col.blue;
+		a = col.alpha;
+	}
 
 	if ((idx < 0) || (idx >= NUM_HUD_GAUGES))
 		return ADE_RETURN_FALSE;
 
-	gr_init_alphacolor(&HUD_config.clr[idx], r, g, b, a);
+	const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
+
+	gr_init_alphacolor(&HUD_config.gauge_colors[gauge_map.get_string_id_from_numeric_id(idx)], r, g, b, a);
 
 	return ADE_RETURN_TRUE;
 }
 
 ADE_FUNC(getHUDGaugeColor,
 	l_HUD,
-	"number|string gaugeNameOrIndex",
-	"Color specified in the config to draw the gauge",
-	"number, number, number, number",
+	"number|string gaugeNameOrIndex, [boolean ReturnType]",
+	"Color specified in the config to draw the gauge. False to return raw rgba, true to return color object. Defaults to false.",
+	"number, number, number, number | color",
 	"Red, green, blue, and alpha of the gauge")
 {
 	int idx = getDefaultGaugeIndex(L);
 
+	bool rc = false;
+	ade_get_args(L, "*|b", &rc);
+
 	if ((idx < 0) || (idx >= NUM_HUD_GAUGES))
 		return ADE_RETURN_NIL;
 
-	color c = HUD_config.clr[idx];
+	const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
 
-	return ade_set_args(L, "iiii", (int) c.red, (int) c.green, (int) c.blue, (int) c.alpha);
+	color cur = HUD_config.gauge_colors[gauge_map.get_string_id_from_numeric_id(idx)];
+
+	if (!rc) {
+		return ade_set_args(L, "iiii", (int)cur.red, (int)cur.green, (int)cur.blue, (int)cur.alpha);
+	} else {
+		return ade_set_args(L, "o", l_Color.Set(cur));
+	}
+
 }
 
 ADE_FUNC(setHUDGaugeColorInMission, l_HUD,
-         "number|string gaugeNameOrIndex, [number red, number green, number blue, number alpha]",
-         "Set color currently used to draw the gauge", "boolean", "If the operation was successful")
+         "number|string gaugeNameOrIndex, [number|color /* red value or color object */, number green, number blue, number alpha]",
+	"Set color currently used to draw the gauge",
+	"boolean",
+	"If the operation was successful")
 {
 	int idx = getDefaultGaugeIndex(L);
 	int r = 0;
 	int g = 0;
 	int b = 0;
 	int a = 255;
+	color col;
 
-	if(!ade_get_args(L, "|iiii", &r, &g, &b, &a))
-		return ADE_RETURN_FALSE;
+	if (lua_isnumber(L, 2)) {
+		if (!ade_get_args(L, "*|iiii", &r, &g, &b, &a))
+			return ADE_RETURN_FALSE;
+
+	} else {
+		gr_init_alphacolor(&col, 0, 0, 0, 255);
+
+		if (!ade_get_args(L, "*|o", l_Color.Get(&col)))
+			return ADE_RETURN_FALSE;
+
+		r = col.red;
+		g = col.green;
+		b = col.blue;
+		a = col.alpha;
+	}
 
 	if ((idx < 0) || (idx >= (int)default_hud_gauges.size()))
 		return ADE_RETURN_FALSE;
@@ -162,19 +224,26 @@ ADE_FUNC(setHUDGaugeColorInMission, l_HUD,
 
 ADE_FUNC(getHUDGaugeColorInMission,
 	l_HUD,
-	"number|string gaugeNameOrIndex",
-	"Color currently used to draw the gauge",
-	"number, number, number, number",
+	"number|string gaugeNameOrIndex, [boolean ReturnType]",
+	"Color currently used to draw the gauge. False returns raw rgb, true returns color object. Defaults to false.",
+	"number, number, number, number | color",
 	"Red, green, blue, and alpha of the gauge")
 {
 	int idx = getDefaultGaugeIndex(L);
 
+	bool rc = false;
+	ade_get_args(L, "*|b", &rc);
+
 	if ((idx < 0) || (idx >= (int)default_hud_gauges.size()))
 		return ADE_RETURN_NIL;
 
-	color c = default_hud_gauges[idx]->getColor();
+	color cur = default_hud_gauges[idx]->getColor();
 
-	return ade_set_args(L, "iiii", (int) c.red, (int) c.green, (int) c.blue, (int) c.alpha);
+	if (!rc) {
+		return ade_set_args(L, "iiii", (int)cur.red, (int)cur.green, (int)cur.blue, (int)cur.alpha);
+	} else {
+		return ade_set_args(L, "o", l_Color.Set(cur));
+	}
 }
 
 ADE_FUNC(getHUDGaugeHandle, l_HUD, "string Name", "Returns a handle to a specified HUD gauge", "HudGauge", "HUD Gauge handle, or nil if invalid")
@@ -206,7 +275,7 @@ ADE_FUNC(flashTargetBox, l_HUD, "enumeration section, [number duration_in_millis
 		return ADE_RETURN_NIL;
 
 	int section_index = 0;
-	if (section.IsValid())
+	if (section.isValid())
 	{
 		switch (section.index)
 		{
@@ -244,7 +313,7 @@ ADE_FUNC(getTargetDistance, l_HUD, "object targetee, [vector targeter_position]"
 	if (!ade_get_args(L, "o|o", l_Object.GetPtr(&targetee_h), l_Vector.GetPtr(&targeter_pos)))
 		return ADE_RETURN_NIL;
 
-	if (targetee_h == nullptr || !targetee_h->IsValid())
+	if (targetee_h == nullptr || !targetee_h->isValid())
 		return ADE_RETURN_NIL;
 
 	if (targeter_pos == nullptr)
@@ -258,7 +327,7 @@ ADE_FUNC(getTargetDistance, l_HUD, "object targetee, [vector targeter_position]"
 		}
 	}
 
-	auto dist = hud_find_target_distance(targetee_h->objp, targeter_pos);
+	auto dist = hud_find_target_distance(targetee_h->objp(), targeter_pos);
 	return ade_set_args(L, "f", dist);
 }
 
@@ -267,13 +336,35 @@ ADE_FUNC(getDirectiveLines, l_HUD, nullptr, "Returns the number of lines display
 	return ade_set_args(L, "i", Training_obj_num_display_lines);
 }
 
+ADE_FUNC(isCommMenuOpen, l_HUD, nullptr, "Returns whether the HUD comm menu is currently being displayed", "boolean", "Whether the comm menu is open")
+{
+	return ade_set_args(L, "b", (Player->flags & PLAYER_FLAGS_MSG_MODE) != 0);
+}
+
+ADE_FUNC(isOnHudDrawCalled, l_HUD, nullptr, "Returns whether the On Hud Draw hook is called this frame.  This is useful for scripting logic that is relevant to HUD drawing but is not part of the On Hud Draw hook", "boolean", "Whether the On Hud Draw hook is called this frame")
+{
+	return ade_set_args(L, "b", game_actually_playing() && !Pre_player_entry && !(Game_mode & GM_STANDALONE_SERVER) && !(Viewer_mode & (VM_EXTERNAL | VM_DEAD_VIEW | VM_WARP_CHASE | VM_PADLOCK_ANY)));
+}
+
 ADE_VIRTVAR(toggleCockpits, l_HUD, "boolean", "Gets or sets whether the the cockpit model will be rendered.", "boolean", "true if being rendered, false otherwise")
 {
-	bool choice = !disableCockpits;
+	bool choice = !Disable_cockpits;
 
 	if (ADE_SETTING_VAR && ade_get_args(L, "*b", &choice))
 	{
-		disableCockpits = !choice;
+		Disable_cockpits = !choice;
+	}
+
+	return ade_set_args(L, "b", choice);
+}
+
+ADE_VIRTVAR(toggleCockpitSway, l_HUD, "boolean", "Gets or sets whether the the cockpit model will sway due to ship acceleration.", "boolean", "true if using 'sway', false otherwise")
+{
+	bool choice = !Disable_cockpit_sway;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*b", &choice))
+	{
+		Disable_cockpit_sway = !choice;
 	}
 
 	return ade_set_args(L, "b", choice);

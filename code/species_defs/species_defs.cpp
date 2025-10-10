@@ -13,8 +13,10 @@
 #include "iff_defs/iff_defs.h"
 #include "localization/localize.h"
 #include "parse/parselo.h"
+#include "ship/shipfx.h"
 #include "species_defs/species_defs.h"
 
+extern int parse_warp_params(const WarpParams *inherit_from, WarpDirection direction, const char *info_type_name, const char *info_name, bool set_supercap_warp_physics = false);
 
 SCP_vector<species_info> Species_info;
 
@@ -233,7 +235,7 @@ void parse_species_tbl(const char *filename)
 			// Goober5000 - FRED color
 			if (optional_string("$FRED Color:") || optional_string("$FRED Colour:"))
 			{
-				stuff_int_list(species->fred_color.a1d, 3, RAW_INTEGER_TYPE);
+				stuff_int_list(species->fred_color.a1d, 3, ParseLookupType::RAW_INTEGER_TYPE);
 			}
 			else if (!no_create)
 			{
@@ -343,6 +345,24 @@ void parse_species_tbl(const char *filename)
 									  "The Species doing the borrowing must be defined after the Species it is borrowing from\n", temp_name, species->species_name);
 				}
 			}
+
+			if (optional_string("$Borrows Flyby Sounds from:")) {
+				char temp_name[NAME_LENGTH];
+				stuff_string(temp_name, F_NAME, NAME_LENGTH);
+				int idx = species_info_lookup(temp_name);
+				if (idx >= 0) {
+					species->borrows_flyby_sounds_species = idx;
+				} else {
+					Warning(LOCATION, "Species %s for '$Borrows Flyby Sounds from' in Species %s is either invalid or not yet parsed."
+									  "The Species doing the borrowing must be defined after the Species it is borrowing from\n", temp_name, species->species_name);
+				}
+			}
+
+			// get species parameters for warpin and warpout
+			// Note: if the index is not -1, we must have already assigned warp parameters, probably because we are now
+			// parsing a TBM.  In that case, inherit from ourselves.
+			species->warpin_params_index = parse_warp_params(species->warpin_params_index >= 0 ? &Warp_params[species->warpin_params_index] : nullptr, WarpDirection::WARP_IN, "Species", species->species_name);
+			species->warpout_params_index = parse_warp_params(species->warpout_params_index >= 0 ? &Warp_params[species->warpout_params_index] : nullptr, WarpDirection::WARP_OUT, "Species", species->species_name);
 
 			// don't add new entry if this is just a modified one
 			if (!no_create)

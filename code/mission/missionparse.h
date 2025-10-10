@@ -15,19 +15,25 @@
 
 #include "ai/ai.h"
 #include "ai/ai_profiles.h"
+#include "globalincs/version.h"
 #include "graphics/2d.h"
 #include "io/keycontrol.h"
 #include "model/model.h"
+#include "model/animation/modelanimation.h"
 #include "object/object.h"
 #include "parse/sexp.h"
 #include "sound/sound.h"
 #include "mission/mission_flags.h"
+#include "nebula/volumetrics.h"
+#include "stats/scoring.h"
 
 //WMC - This should be here
 #define FS_MISSION_FILE_EXT				NOX(".fs2")
 
 struct wing;
 struct p_dock_instance;
+enum class ArrivalLocation;
+enum class DepartureLocation;
 
 #define NUM_NEBULAS			3				// how many background nebulas we have altogether
 #define NUM_NEBULA_COLORS	9
@@ -39,20 +45,30 @@ struct p_dock_instance;
 #define SPECIAL_ARRIVAL_ANCHOR_FLAG				0x1000
 #define SPECIAL_ARRIVAL_ANCHOR_PLAYER_FLAG		0x0100
 
-int get_special_anchor(const char *name);
+#define MIN_TARGET_ARRIVAL_DISTANCE             500.0f // float because that's how FRED does the math
+#define MIN_TARGET_ARRIVAL_MULTIPLIER           2.0f // minimum distance is 2 * target radius, but at least 500
 
-// update version when mission file format changes, and add approprate code
-// to check loaded mission version numbers in the parse code.  Also, be sure
-// to update both MissionParse and MissionSave (FRED) when changing the
-// mission file format!
-#define	MISSION_VERSION 0.10f
-#define	FRED_MISSION_VERSION 0.10f
+int get_special_anchor(const char *name);
+void check_anchor_for_hangar_bay(SCP_string &message, SCP_set<int> &anchor_shipnums_checked, int anchor_shipnum, const char *other_name, bool other_is_ship, bool is_arrival);
+
+// MISSION_VERSION should be the earliest version of FSO that can load the current mission format without
+// requiring version-specific comments.  It should be updated whenever the format changes, but it should
+// not be updated simply because the engine's version changed.
+extern const gameversion::version MISSION_VERSION;
+extern const gameversion::version LEGACY_MISSION_VERSION;
+
+// These check to see if a mission has data that requires saving in a newer format.  This would warrant
+// a "soft version bump" rather than a hard bump because not all missions are affected.
+extern bool check_for_23_3_data();
+extern bool check_for_24_1_data();
+extern bool check_for_24_3_data();
 
 #define WING_PLAYER_BASE	0x80000  // used by Fred to tell ship_index in a wing points to a player
 
 // mission parse flags used for parse_mission() to tell what kind of information to get from the mission file
 #define MPF_ONLY_MISSION_INFO	(1 << 0)
 #define MPF_IMPORT_FSM			(1 << 1)
+#define MPF_FAST_RELOAD			(1 << 2)	// skip clearing some stuff so we can load the mission faster (usually since it's the same mission)
 
 // bitfield definitions for missions game types
 #define OLD_MAX_GAME_TYPES				4					// needed for compatibility
@@ -74,12 +90,21 @@ int get_special_anchor(const char *name);
 #define IS_MISSION_MULTI_TEAMS		(The_mission.game_type & MISSION_TYPE_MULTI_TEAMS)
 #define IS_MISSION_MULTI_DOGFIGHT	(The_mission.game_type & MISSION_TYPE_MULTI_DOGFIGHT)
 
+// Used in the mission editor
+inline const std::vector<std::pair<SCP_string, int>> Mission_event_teams_tvt = [] {
+	std::vector<std::pair<SCP_string, int>> arr;
+	arr.reserve(MAX_TVT_TEAMS);
+	for (int i = 0; i < MAX_TVT_TEAMS; ++i) {
+		arr.emplace_back("Team " + std::to_string(i + 1), i);
+	}
+	return arr;
+}();
 
 // Goober5000
 typedef struct support_ship_info {
-	int		arrival_location;				// arrival location
+	ArrivalLocation		arrival_location;				// arrival location
 	int		arrival_anchor;					// arrival anchor
-	int		departure_location;				// departure location
+	DepartureLocation	departure_location;				// departure location
 	int		departure_anchor;				// departure anchor
 	float	max_hull_repair_val;			// % of a ship's hull that can be repaired -C
 	float	max_subsys_repair_val;			// same thing, except for subsystems -C
@@ -91,13 +116,36 @@ typedef struct support_ship_info {
 } support_ship_info;
 
 // movie type defines
-#define	MOVIE_PRE_FICTION		0
-#define	MOVIE_PRE_CMD_BRIEF		1
-#define	MOVIE_PRE_BRIEF			2
-#define	MOVIE_PRE_GAME			3
-#define	MOVIE_PRE_DEBRIEF		4
-#define	MOVIE_POST_DEBRIEF		5
-#define	MOVIE_END_CAMPAIGN		6
+// If you add one here, you must also add a description to missioncutscenedlg.cpp for FRED
+// and update the dropdown list in fred.rc for the mission cutscene dialog editor.
+enum : int {
+	MOVIE_PRE_FICTION,
+	MOVIE_PRE_CMD_BRIEF,
+	MOVIE_PRE_BRIEF,
+	MOVIE_PRE_GAME,
+	MOVIE_PRE_DEBRIEF,
+	MOVIE_POST_DEBRIEF,
+	MOVIE_END_CAMPAIGN,
+
+	// Must always be at the end of the list
+	Num_movie_types
+};
+
+struct cutscene_type_data {
+	int value;         // enum
+	SCP_string label; // shown in combo boxes
+	SCP_string desc;   // short explanation for the description box
+};
+
+static const cutscene_type_data CutsceneMenuData[] = {
+	{MOVIE_PRE_FICTION,   "Fiction Viewer",   "Plays just before the fiction viewer game state"},
+	{MOVIE_PRE_CMD_BRIEF, "Command Briefing", "Plays just before the command briefing game state"},
+	{MOVIE_PRE_BRIEF,     "Briefing",         "Plays just before the briefing game state"},
+	{MOVIE_PRE_GAME,      "Pre-game",         "Plays just before the mission starts after Accept has been pressed"},
+	{MOVIE_PRE_DEBRIEF,   "Debriefing",       "Plays just before the debriefing game state"},
+	{MOVIE_POST_DEBRIEF,  "Post-debriefing",  "Plays when the debriefing has been accepted but before exiting the mission"},
+	{MOVIE_END_CAMPAIGN,  "End Campaign",     "Plays when the campaign has been completed"}
+};
 
 // defines a mission cutscene.
 typedef struct mission_cutscene {
@@ -106,10 +154,39 @@ typedef struct mission_cutscene {
 	int formula;
 } mission_cutscene;
 
+typedef struct mission_default_custom_data {
+	SCP_string key;
+	SCP_string value;
+	SCP_string description;
+} mission_default_custom_data;
+
+typedef struct custom_string {
+	SCP_string name;
+	SCP_string value;
+	SCP_string text;
+} custom_string;
+
+inline bool operator==(const custom_string& a, const custom_string& b)
+{
+	return a.name == b.name && a.value == b.value && a.text == b.text;
+}
+
+inline bool operator!=(const custom_string& a, const custom_string& b)
+{
+	return !(a == b);
+}
+
+// descriptions of flags for FRED
+template <class T>
+struct parse_object_flag_description {
+	T def;
+	const char *flag_desc;
+};
+
 typedef struct mission {
 	char	name[NAME_LENGTH];
-	char	author[NAME_LENGTH];
-	float	version;
+	SCP_string	author;
+	gameversion::version	required_fso_version;
 	char	created[DATE_TIME_LENGTH];
 	char	modified[DATE_TIME_LENGTH];
 	char	notes[NOTES_LENGTH];
@@ -124,6 +201,7 @@ typedef struct mission {
 	char	squad_name[NAME_LENGTH];				// if the player has been reassigned to a squadron, this is the name of the squadron, otherwise empty string
 	char	loading_screen[GR_NUM_RESOLUTIONS][MAX_FILENAME_LEN];
 	char	skybox_model[MAX_FILENAME_LEN];
+	animation::ModelAnimationSet skybox_model_animations;
 	matrix	skybox_orientation;
 	char	envmap_name[MAX_FILENAME_LEN];
 	int		skybox_flags;
@@ -131,12 +209,16 @@ typedef struct mission {
 	int		ambient_light_level;
 	float	neb_far_multi;
 	float	neb_near_multi;
+	std::optional<volumetric_nebula> volumetrics;
 	sound_env	sound_environment;
+	vec3d   gravity;
+	int     HUD_timer_padding;
 
 	// Goober5000
 	int	command_persona;
 	char command_sender[NAME_LENGTH];
 	int debriefing_persona;
+	traitor_override_t* traitor_override;
 
 	// Goober5000
 	char event_music_name[NAME_LENGTH];
@@ -147,46 +229,15 @@ typedef struct mission {
 	// Goober5000
 	ai_profile_t *ai_profile;
 
+	SCP_string lighting_profile_name;
+
 	SCP_vector<mission_cutscene> cutscenes;
 
-	void Reset( )
-	{
-		int i = 0;
-		name[ 0 ] = '\0';
-		author[ 0 ] = '\0';
-		version = 0.;
-		created[ 0 ] = '\0';
-		modified[ 0 ] = '\0';
-		notes[ 0 ] = '\0';
-		mission_desc[ 0 ] = '\0';
-		game_type = 0;
-		flags.reset();
-		num_players = 0;
-		num_respawns = 0;
-		max_respawn_delay = 0;
-		memset(&Ignored_keys, 0, sizeof(int)*CCFG_MAX);
-		memset( &support_ships, 0, sizeof( support_ships ) );
-		squad_filename[ 0 ] = '\0';
-		squad_name[ 0 ] = '\0';
-		for ( i = 0; i < GR_NUM_RESOLUTIONS; i++ )
-			loading_screen[ i ][ 0 ] = '\0';
-		skybox_model[ 0 ] = '\0';
-		vm_set_identity(&skybox_orientation);
-		skybox_flags = 0;
-		envmap_name[ 0 ] = '\0';
-		contrail_threshold = 0;
-		ambient_light_level = DEFAULT_AMBIENT_LIGHT_LEVEL;
-		sound_environment.id = -1;
-		command_persona = 0;
-		command_sender[ 0 ] = '\0';
-		debriefing_persona = -1;
-		event_music_name[ 0 ] = '\0';
-		briefing_music_name[ 0 ] = '\0';
-		substitute_event_music_name[ 0 ] = '\0';
-		substitute_briefing_music_name[ 0 ] = '\0';
-		ai_profile = NULL;
-		cutscenes.clear( );
-	}
+	SCP_map<SCP_string, SCP_string> custom_data;
+
+	SCP_vector<custom_string> custom_strings;
+
+	void Reset( );
 
 	mission( )
 	{
@@ -200,7 +251,7 @@ typedef struct mission {
 // must be reworked so that all the flags are maintained from function to function
 #define CARGO_INDEX_MASK	0xBF
 #define CARGO_NO_DEPLETE	0x40		// CARGO_NO_DEPLETE + CARGO_INDEX_MASK must == FF
-#define MAX_CARGO				30
+#define MAX_CARGO				60
 
 
 // Goober5000 - contrail threshold (previously defined in ShipContrails.cpp)
@@ -209,22 +260,28 @@ typedef struct mission {
 extern mission The_mission;
 extern char Mission_filename[80];  // filename of mission in The_mission (Fred only)
 
-#define	MAX_FORMATION_NAMES	3
-#define	MAX_STATUS_NAMES		3
+// enums for arrival locations.  The integer values of these enums should match their counterparts in the arrival location array
+#define	MAX_ARRIVAL_NAMES				9
+enum class ArrivalLocation : int
+{
+	AT_LOCATION = 0,
+	NEAR_SHIP = 1,
+	IN_FRONT_OF_SHIP = 2,
+	IN_BACK_OF_SHIP = 3,
+	ABOVE_SHIP = 4,
+	BELOW_SHIP = 5,
+	TO_LEFT_OF_SHIP = 6,
+	TO_RIGHT_OF_SHIP = 7,
+	FROM_DOCK_BAY = 8
+};
 
-// defines for arrival locations.  These defines should match their counterparts in the arrival location
-// array
-#define	MAX_ARRIVAL_NAMES				4
-#define	ARRIVE_AT_LOCATION			0
-#define	ARRIVE_NEAR_SHIP				1
-#define	ARRIVE_IN_FRONT_OF_SHIP		2
-#define	ARRIVE_FROM_DOCK_BAY			3
-
-// defines for departure locations.  These defines should match their counterparts in the departure location
-// array
+// enums for departure locations.  The integer values of these enums should match their counterparts in the departure location array
 #define MAX_DEPARTURE_NAMES			2
-#define DEPART_AT_LOCATION				0
-#define DEPART_AT_DOCK_BAY				1
+enum class DepartureLocation : int
+{
+	AT_LOCATION = 0,
+	TO_DOCK_BAY = 1
+};
 
 #define	MAX_GOAL_TYPE_NAMES	3
 
@@ -248,18 +305,27 @@ typedef struct path_restriction_t {
 
 extern const char *Ship_class_names[MAX_SHIP_CLASSES];
 extern const char *Ai_behavior_names[MAX_AI_BEHAVIORS];
-extern char *Formation_names[MAX_FORMATION_NAMES];
-extern const char *Status_desc_names[MAX_STATUS_NAMES];
-extern const char *Status_type_names[MAX_STATUS_NAMES];
-extern const char *Status_target_names[MAX_STATUS_NAMES];
 extern const char *Arrival_location_names[MAX_ARRIVAL_NAMES];
 extern const char *Departure_location_names[MAX_DEPARTURE_NAMES];
 extern const char *Goal_type_names[MAX_GOAL_TYPE_NAMES];
 
 extern const char *Reinforcement_type_names[];
+extern flag_def_list_new<Mission::Mission_Flags> Parse_mission_flags[];
+extern parse_object_flag_description<Mission::Mission_Flags> Parse_mission_flag_descriptions[];
+extern const size_t Num_parse_mission_flags;
 extern char *Object_flags[];
+extern flag_def_list_new<Ship::Ship_Flags> Parse_ship_flags[];
+extern const size_t Num_Parse_ship_flags;
+extern flag_def_list_new<AI::AI_Flags> Parse_ship_ai_flags[];
+extern const size_t Num_Parse_ship_ai_flags;
+extern flag_def_list_new<Object::Object_Flags> Parse_ship_object_flags[];
+extern const size_t Num_Parse_ship_object_flags;
 extern flag_def_list_new<Mission::Parse_Object_Flags> Parse_object_flags[];
+extern parse_object_flag_description<Mission::Parse_Object_Flags> Parse_object_flag_descriptions[];
 extern const size_t Num_parse_object_flags;
+extern flag_def_list_new<Ship::Wing_Flags> Parse_wing_flags[];
+extern parse_object_flag_description<Ship::Wing_Flags> Parse_wing_flag_descriptions[];
+extern const size_t Num_parse_wing_flags;
 extern const char *Icon_names[];
 extern const char *Mission_event_log_flags[];
 
@@ -275,9 +341,7 @@ extern int	Num_iff;
 extern int	Num_ai_behaviors;
 extern int	Num_ai_classes;
 extern int	Num_cargo;
-extern int	Num_status_names;
 extern int	Num_arrival_names;
-extern int	Num_formation_names;
 extern int	Num_goal_type_names;
 extern int	Num_reinforcement_type_names;
 extern int	Player_starts;
@@ -290,6 +354,8 @@ extern int Num_unknown_loadout_classes;
 
 extern ushort Current_file_checksum;
 extern int    Current_file_length;
+
+extern SCP_vector<mission_default_custom_data> Default_custom_data;
 
 #define SUBSYS_STATUS_NO_CHANGE	-999
 
@@ -305,6 +371,7 @@ typedef struct subsys_status {
 	int	secondary_ammo[MAX_SHIP_SECONDARY_BANKS];
 	int	ai_class;
 	int	subsys_cargo_name;
+	char subsys_cargo_title[NAME_LENGTH];
 } subsys_status;
 
 typedef struct texture_replace {
@@ -317,13 +384,36 @@ typedef struct texture_replace {
 
 extern SCP_vector<texture_replace> Fred_texture_replacements;
 
-typedef struct alt_class {
+// which ships have had the "immobile" flag migrated to "don't-change-position" and "don't-change-orientation"
+extern SCP_unordered_set<int> Fred_migrated_immobile_ships;
+
+struct alt_class {
 	int ship_class;				
 	int variable_index;			// if set allows the class to be set by a variable
 	bool default_to_this_class;
-}alt_class;
-
-#define MAX_OBJECT_STATUS	10
+	alt_class()
+	{
+		ship_class = -1;
+		variable_index = -1;
+		default_to_this_class = false;
+	}
+	alt_class(const alt_class& a) {
+		ship_class = a.ship_class;
+		variable_index = a.variable_index;
+		default_to_this_class = a.default_to_this_class;
+	}
+	bool operator==(const alt_class& a) const
+	{
+		return (ship_class == a.ship_class && variable_index == a.variable_index && default_to_this_class == a.default_to_this_class);
+	}
+	alt_class& operator=(const alt_class& a)
+	{
+		ship_class = a.ship_class;
+		variable_index = a.variable_index;
+		default_to_this_class = a.default_to_this_class;
+		return *this;
+	}
+};
 
 //	a parse object
 //	information from a $OBJECT: definition is read into this struct to
@@ -331,102 +421,94 @@ typedef struct alt_class {
 class p_object
 {
 public:
-	char	name[NAME_LENGTH];
+	char	name[NAME_LENGTH] = "";
 	SCP_string display_name;
-	p_object *next, *prev;
+	p_object *next = nullptr, *prev = nullptr;
 
-	vec3d	pos;
-	matrix	orient;
-	int	ship_class;
-	int	team;
-	int loadout_team;						// original team, should never be changed after being set!!
-	int	behavior;							// ai_class;
-	int	ai_goals;							// sexp of lists of goals that this ship should try and do
-	char	cargo1;
+	vec3d	pos = vmd_zero_vector;
+	matrix	orient = vmd_identity_matrix;
+	int	ship_class = -1;
+	int	team = -1;
+	int loadout_team = -1;						// original team, should never be changed after being set!!
+	int	ai_goals = -1;							// sexp of lists of goals that this ship should try and do
+	char	cargo1 = '\0';
+	char cargo_title[NAME_LENGTH] = "";
 	SCP_string team_color_setting;
 
-	int	status_count;
-	int	status_type[MAX_OBJECT_STATUS];
-	int	status[MAX_OBJECT_STATUS];
-	int	target[MAX_OBJECT_STATUS];
+	int	subsys_index = -1;						// index into subsys_status array
+	int	subsys_count = 0;						// number of elements used in subsys_status array
+	int	initial_velocity = 0;
+	int	initial_hull = 100;
+	int	initial_shields = 100;
 
-	int	subsys_index;						// index into subsys_status array
-	int	subsys_count;						// number of elements used in subsys_status array
-	int	initial_velocity;
-	int	initial_hull;
-	int	initial_shields;
+	ArrivalLocation arrival_location = ArrivalLocation::AT_LOCATION;
+	int	arrival_distance = 0;					// used when arrival location is near or in front of some ship
+	int	arrival_anchor = -1;						// ship used for anchoring an arrival point
+	int arrival_path_mask = 0;					// Goober5000
+	int	arrival_cue = -1;				//	Index in Sexp_nodes of this sexp.
+	int	arrival_delay = 0;
 
-	int	arrival_location;
-	int	arrival_distance;					// used when arrival location is near or in front of some ship
-	int	arrival_anchor;						// ship used for anchoring an arrival point
-	int arrival_path_mask;					// Goober5000
-	int	arrival_cue;						//	Index in Sexp_nodes of this sexp.
-	int	arrival_delay;
+	DepartureLocation departure_location = DepartureLocation::AT_LOCATION;
+	int	departure_anchor = -1;
+	int departure_path_mask = 0;				// Goober5000
+	int	departure_cue = -1;			//	Index in Sexp_nodes of this sexp.
+	int	departure_delay = 0;
 
-	int	departure_location;
-	int	departure_anchor;
-	int departure_path_mask;				// Goober5000
-	int	departure_cue;						//	Index in Sexp_nodes of this sexp.
-	int	departure_delay;
+	int warpin_params_index = -1;
+	int warpout_params_index = -1;
 
-	int warpin_params_index;
-	int warpout_params_index;
-
-	char	misc[NAME_LENGTH];
-
-	int	wingnum;							// set to -1 if not in a wing -- Wing array index otherwise
-	int pos_in_wing;						// Goober5000 - needed for FRED with the new way things work
+	int	wingnum = -1;							// set to -1 if not in a wing -- Wing array index otherwise
+	int pos_in_wing = -1;						// Goober5000 - needed for FRED with the new way things work
 
 	flagset<Mission::Parse_Object_Flags>	flags;								// mission savable flags
-	int	escort_priority;					// priority in escort list
-	int	ai_class;
-	int	hotkey;								// hotkey number (between 0 and 9) -1 means no hotkey
-	int	score;
-	float assist_score_pct;					// percentage of the score which players who gain an assist will get when this ship is killed
-	std::set<size_t> orders_accepted;					// which orders this ship will accept from the player
-	p_dock_instance	*dock_list;				// Goober5000 - parse objects this parse object is docked to
-	object *created_object;					// Goober5000
-	int	group;								// group object is within or -1 if none.
-	int	persona_index;
-	int	kamikaze_damage;					// base damage for a kamikaze attack
+	int	escort_priority = 0;					// priority in escort list
+	int ship_guardian_threshold = 0;
+	int	ai_class = -1;
+	int	hotkey = -1;								// hotkey number (between 0 and 9) -1 means no hotkey
+	int	score = 0;
+	float assist_score_pct = 0.0f;					// percentage of the score which players who gain an assist will get when this ship is killed
+	SCP_set<size_t> orders_accepted;		// which orders this ship will accept from the player
+	p_dock_instance	*dock_list = nullptr;				// Goober5000 - parse objects this parse object is docked to
+	object *created_object = nullptr;					// Goober5000
+	int collision_group_id = 0;							// Goober5000
+	int	group = -1;								// group object is within or -1 if none.
+	int	persona_index = -1;
+	int	kamikaze_damage = 0;					// base damage for a kamikaze attack
 
-	bool use_special_explosion;				// new special explosion/hitpoints system 
-	int special_exp_damage;
-	int special_exp_blast;
-	int special_exp_inner;
-	int special_exp_outer;
-	bool use_shockwave;
-	int special_exp_shockwave_speed;
-	int special_exp_deathroll_time;
+	bool use_special_explosion = false;				// new special explosion/hitpoints system 
+	int special_exp_damage = -1;
+	int special_exp_blast = -1;
+	int special_exp_inner = -1;
+	int special_exp_outer = -1;
+	bool use_shockwave = false;
+	int special_exp_shockwave_speed = 0;
+	int special_exp_deathroll_time = 0;
 
-	int	special_hitpoints;
-	int	special_shield;
+	int	special_hitpoints = 0;
+	int	special_shield = -1;
 
-	ushort net_signature;					// network signature this object can have
-	int destroy_before_mission_time;
+	ushort net_signature = 0;					// network signature this object can have
+	int destroy_before_mission_time = -1;
 
-	char	wing_status_wing_index;			// wing index (0-4) in wingman status gauge
-	char	wing_status_wing_pos;			// wing position (0-5) in wingman status gauge
+	char	wing_status_wing_index = -1;			// wing index (0-4) in wingman status gauge
+	char	wing_status_wing_pos = -1;			// wing position (0-5) in wingman status gauge
 
-	uint	respawn_count;						// number of respawns for this object.  Applies only to player wing ships in multiplayer
-	int	respawn_priority;					// priority this ship has for controlling respawn points
+	uint	respawn_count = 0;						// number of respawns for this object.  Applies only to player wing ships in multiplayer
+	int	respawn_priority = 0;					// priority this ship has for controlling respawn points
 
-	int		alt_type_index;					// optional alt type index
-	int		callsign_index;					// optional callsign index
+	int		alt_type_index = -1;					// optional alt type index
+	int		callsign_index = -1;					// optional callsign index
 
-	float ship_max_hull_strength;			// Needed to deal with special hitpoints
-	float ship_max_shield_strength;
-
-	float max_shield_recharge;
+	float ship_max_hull_strength = 0.0f;			// Needed to deal with special hitpoints
+	float ship_max_shield_strength = 0.0f;
+	float max_shield_recharge = 0.0f;
 
 	// Goober5000
 	SCP_vector<texture_replace> replacement_textures;
 
 	SCP_vector<alt_class> alt_classes;	
-
 	SCP_map<std::pair<int, int>, int> alt_iff_color;
 
-	p_object();
 	~p_object();
 
 	const char* get_display_name();
@@ -440,7 +522,7 @@ extern SCP_vector<p_object> Parse_objects;
 extern p_object Support_ship_pobj, *Arriving_support_ship;
 extern p_object Ship_arrival_list;
 
-typedef struct {
+typedef struct team_data {
 	// ships
 	int		default_ship;  // default ship type for player start point (recommended choice)
 	int		num_ship_choices; // number of ship choices inside ship_list 
@@ -452,6 +534,7 @@ typedef struct {
 
 	// weapons
 	int		num_weapon_choices;
+	bool    do_not_validate;
 	int		weaponry_pool[MAX_WEAPON_TYPES];
 	int		weaponry_count[MAX_WEAPON_TYPES];
 	char	weaponry_pool_variable[MAX_WEAPON_TYPES][TOKEN_LENGTH];
@@ -463,6 +546,8 @@ typedef struct {
 #define MAX_SHIP_LIST	16
 
 extern team_data Team_data[MAX_TVT_TEAMS];
+extern int Num_teams;
+
 extern subsys_status *Subsys_status;
 extern int Subsys_index;
 
@@ -471,9 +556,7 @@ extern matrix Parse_viewer_orient;
 
 extern fix Mission_end_time;
 
-extern char Parse_names[MAX_SHIPS + MAX_WINGS][NAME_LENGTH];
-extern size_t Num_parse_names;
-extern int Num_teams;
+extern SCP_vector<SCP_string> Parse_names;
 
 extern char			Player_start_shipname[NAME_LENGTH];
 extern int			Player_start_shipnum;
@@ -488,16 +571,19 @@ extern p_object *Arriving_support_ship;
 extern char Neb2_texture_name[MAX_FILENAME_LEN];
 
 
+void mission_init(mission *pm);
 bool parse_main(const char *mission_name, int flags = 0);
 p_object *mission_parse_get_arrival_ship(ushort net_signature);
 p_object *mission_parse_get_arrival_ship(const char *name);
 bool mission_check_ship_yet_to_arrive(const char *name);
-p_object *mission_parse_get_parse_object(ushort net_signature);
-p_object *mission_parse_get_parse_object(const char *name);
+p_object *mission_parse_find_parse_object(const char *name);
 int parse_create_object(p_object *objp, bool standalone_ship = false);
 void resolve_parse_flags(object *objp, flagset<Mission::Parse_Object_Flags> &parse_flags);
 
 void mission_parse_close();
+
+// used in fred management.cpp when creating a new mission
+void apply_default_custom_data(mission* pm);
 
 bool mission_maybe_make_ship_arrive(p_object *p_objp, bool force_arrival = false);
 bool mission_maybe_make_wing_arrive(int wingnum, bool force_arrival = false);
@@ -548,7 +634,7 @@ void mission_parse_reset_callsign();
 int is_training_mission();
 
 // code to save/restore mission parse stuff
-int get_mission_info(const char *filename, mission *missionp = NULL, bool basic = true);
+int get_mission_info(const char *filename, mission *missionp = nullptr, bool basic = true, bool filename_is_full_path = false);
 
 // Goober5000
 void parse_dock_one_docked_object(p_object *pobjp, p_object *parent_pobjp);
@@ -560,6 +646,8 @@ void clear_texture_replacements();
 // Goober5000
 subsys_status *parse_get_subsys_status(p_object *pobjp, const char *subsys_name);
 
+// MjnMixael
+custom_string* get_custom_string_by_name(SCP_string name);
 
 #endif
 

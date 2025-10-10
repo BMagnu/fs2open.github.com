@@ -522,7 +522,7 @@ int find_player_socket(PSNET_SOCKET_RELIABLE sock)
 
 // multi_find_player_by_object returns a player num (reference by Net_players[x]) when given a object *.
 // used to find netplayers in game when only the object is known
-int multi_find_player_by_object( object *objp )
+int multi_find_player_by_object( const object *objp )
 {
 	int i, objnum;
 
@@ -736,7 +736,7 @@ void multi_assign_player_ship( int net_player_num, object *objp,int ship_class )
 }
 
 // -------------------------------------------------------------------------------------------------
-//	create_player() is called when a net player needs to be instantiated.  The ship that is created
+//	multi_create_player() is called when a net player needs to be instantiated.  The ship that is created
 // depends on the parameter ship_class.  Note that if ship_class is invalid, the ship default_player_ship
 // is used.  Returns 1 on success, 0 otherwise
 
@@ -879,7 +879,12 @@ void delete_player(int player_num,int kicked_reason)
 {			
 	char notify_string[256] = "";
 	int idx;
-	
+
+	Assertion(Net_player != nullptr, "Somehow Net_player is nullptr when trying to delete a player. Please get an SCP coder!");	
+	if (Net_player == nullptr) {
+		return;
+	}
+
 	if(!MULTI_CONNECTED(Net_players[player_num])){
 		return;
 	}
@@ -1128,14 +1133,14 @@ void multi_unpack_orient_matrix(ubyte *data,matrix *m)
 	                      
 void multi_do_client_warp(float frame_time)
 {
-   ship_obj *moveup;
-	
-   moveup = GET_FIRST(&Ship_obj_list);
-	while(moveup!=END_OF_LIST(&Ship_obj_list)){
+	for (auto moveup: list_range(&Ship_obj_list))
+	{
+		if (Objects[moveup->objnum].flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
 		// do all _necessary_ ship warp in (arrival) processing
 		if ( Ships[Objects[moveup->objnum].instance].is_arriving() )	
 			shipfx_warpin_frame( &Objects[moveup->objnum], frame_time );
-		moveup = GET_NEXT(moveup);
 	}	
 }	
 
@@ -1380,15 +1385,15 @@ int server_all_filesigs_ok()
 
 void multi_untag_player_ships()
 {
-	ship_obj *moveup;
+	for (auto moveup: list_range(&Ship_obj_list))
+	{
+		if (Objects[moveup->objnum].flags[Object::Object_Flags::Should_be_dead])
+			continue;
 
-	moveup = GET_FIRST(&Ship_obj_list);
-	while(moveup != END_OF_LIST(&Ship_obj_list)){
 		if(Objects[moveup->objnum].flags[Object::Object_Flags::Player_ship]){
             Objects[moveup->objnum].flags.remove(Object::Object_Flags::Player_ship);
 			obj_set_flags( &Objects[moveup->objnum], Objects[moveup->objnum].flags + Object::Object_Flags::Could_be_player);
 		}
-		moveup = GET_NEXT(moveup);
 	}
 }
 
@@ -1583,10 +1588,8 @@ int multi_message_should_broadcast(int type)
 {
 	switch (type) {
 		case MESSAGE_ARRIVE_ENEMY:
-		case MESSAGE_BETA_ARRIVED:
-		case MESSAGE_GAMMA_ARRIVED:
 		case MESSAGE_HELP:
-		case MESSAGE_REINFORCEMENTS:
+		case MESSAGE_BACKUP:
 		case MESSAGE_SUPPORT_KILLED:
 			return 1; 
 		default:
@@ -1597,54 +1600,39 @@ int multi_message_should_broadcast(int type)
 // active game list handling functions
 active_game *multi_new_active_game( void )
 {
-	active_game *new_game;
+	active_game new_game;
 
-	new_game = new active_game;
-
-	if ( new_game == nullptr ) {
-		nprintf(("Network", "Cannot allocate space for new active game structure\n"));
-		return nullptr;
-	}	
-
-	if ( Active_game_head != nullptr ) {
-		new_game->next = Active_game_head->next;
-		new_game->next->prev = new_game;
-		Active_game_head->next = new_game;
-		new_game->prev = Active_game_head;
-	} else {
-		Active_game_head = new_game;
-		Active_game_head->next = Active_game_head->prev = Active_game_head;
+	try {
+			Active_games.push_back(new_game);
+	} catch (const std::bad_alloc&) {
+			// Handle memory allocation failure
+			nprintf(("Network", "Cannot allocate space for new active game structure\n"));
+			return nullptr;
 	}
 
-	Active_game_count++;
-
-	// notify the join game screen of this new item
+	// Notify the join game screen of this new item
 	multi_join_notify_new_game();
-		
-	return new_game;
+
+	return &Active_games.back();
 }
 
 active_game *multi_update_active_games(active_game *ag)
 {
-	active_game *gp = nullptr;
-	active_game *stop = nullptr;		
+	active_game *gp = nullptr;		
 
 	// see if we have a game from this address already -- if not, create one.  In either case, get a pointer
 	// to an active_game structure
-	if ( Active_game_head != nullptr ) {	// no games on list at all
-		int on_list;
+	if ( !Active_games.empty() ) {	// no games on list at all
 
-		gp = Active_game_head;
-		stop = Active_game_head;
+		bool on_list = false;
 
-		on_list = 0;
-		do {
-			if ( psnet_same(&gp->server_addr, &ag->server_addr) /*&& (gp->game.security == game->security)*/ ) {
-				on_list = 1;
+		for (auto game = Active_games.begin(); game != Active_games.end(); ++game) {
+			if (psnet_same(&game->server_addr, &ag->server_addr)) {
+				on_list = true;
+				gp = &(*game);
 				break;
 			}
-			gp = gp->next;
-		} while (gp != stop);
+		}
 
 		// insert in the list
 		if (!on_list){
@@ -1712,25 +1700,6 @@ active_game *multi_update_active_games(active_game *ag)
 	}
 
 	return gp;
-}
-
-void multi_free_active_games()
-{
-	active_game *moveup,*backup;	
-
-	moveup = Active_game_head;
-	backup = nullptr;
-	if(moveup != nullptr){
-		do {			
-			backup = moveup;
-			moveup = moveup->next;
-			
-			delete backup;
-			backup = nullptr;
-		} while(moveup != Active_game_head);
-		Active_game_head = nullptr;
-	}	
-	Active_game_count = 0;
 }
 
 server_item *multi_new_server_item( void )
@@ -1854,7 +1823,7 @@ int multi_can_message(net_player *p)
 
 		// verify that it's valid.
 		Assertion(ship_regp != nullptr, "Ship register entry is a nullptr for the player's ship.");
-		if (ship_regp->p_objp->pos_in_wing != 0) 
+		if (ship_regp->p_objp()->pos_in_wing != 0)
 		{
 			return 0;
 		}	
@@ -1906,7 +1875,7 @@ int multi_can_end_mission(net_player *p)
 
 		// double check that the entry is valid.
 		Assertion(ship_regp != nullptr, "Ship register entry is a nullptr for the player's ship.");
-		if (ship_regp->p_objp->pos_in_wing != 0) 
+		if (ship_regp->p_objp()->pos_in_wing != 0)
 		{
 			return 0;
 		}	
@@ -1971,7 +1940,7 @@ int multi_eval_join_request(join_request *jr, net_addr *addr)
 		return JOIN_DENY_JR_STATE;
 	}
 
-	// the standalone has some oddball situations which we must handle seperately
+	// the standalone has some oddball situations which we must handle separately
 	if (Game_mode & GM_STANDALONE_SERVER) {		
 		// if this is the first connection, he will be the host so we must always accept him
 		if(multi_num_players() == 0){
@@ -2050,6 +2019,11 @@ int multi_eval_join_request(join_request *jr, net_addr *addr)
 /*	if((Netgame.game_state != NETGAME_STATE_FORMING) && !(Netgame.type_flags & NG_TYPE_DOGFIGHT)){
 		return JOIN_DENY_JR_TYPE;
 	}	*/
+
+	// can't ingame join a squadwar match
+	if ( (Netgame.game_state != NETGAME_STATE_FORMING) && (Netgame.type_flags & NG_TYPE_SW) ) {
+		return JOIN_DENY_JR_TYPE;
+	}
 
 	// if the player was banned by the standalone
 	if ( (Game_mode & GM_STANDALONE_SERVER) && std_player_is_banned(jr->callsign) ) {
@@ -2433,7 +2407,7 @@ void multi_process_valid_join_request(join_request *jr, net_addr *who_from, int 
 		}
 
 		// set his reliable connect time
-		Net_players[net_player_num].s_info.reliable_connect_time = (int) time(nullptr);
+		Net_players[net_player_num].s_info.reliable_connect_time = time(nullptr);
 
 		// send the accept packet here
 		send_accept_packet(net_player_num, (Net_players[net_player_num].flags & NETINFO_FLAG_INGAME_JOIN) ? ACCEPT_OBSERVER | ACCEPT_INGAME : ACCEPT_OBSERVER);
@@ -2483,7 +2457,7 @@ void multi_process_valid_join_request(join_request *jr, net_addr *who_from, int 
 		}		
 
 		// set his reliable connect time
-		Net_players[net_player_num].s_info.reliable_connect_time = (int) time(nullptr);
+		Net_players[net_player_num].s_info.reliable_connect_time = time(nullptr);
 
 		// if he's joining as a host (on the standalone)
 		if(Net_players[net_player_num].flags & NETINFO_FLAG_GAME_HOST){
@@ -2673,14 +2647,16 @@ int multi_process_restricted_keys(int k)
 // determine the status of available player ships (use team_0 for non team vs. team situations)
 void multi_player_ships_available(int *team_0,int *team_1)
 {
-	ship_obj *moveup;
 	int mp_team_num;
 	
 	*team_0 = 0;
 	*team_1 = 0;
-	
-	moveup = GET_FIRST(&Ship_obj_list);
-	while(moveup!=END_OF_LIST(&Ship_obj_list)){
+
+	for (auto moveup: list_range(&Ship_obj_list))
+	{
+		if (Objects[moveup->objnum].flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
 		// if this ship is flagged as OF_COULD_BE_PLAYER
 		if(Objects[moveup->objnum].flags[Object::Object_Flags::Could_be_player]){
 			// get the team # for this ship
@@ -2691,8 +2667,6 @@ void multi_player_ships_available(int *team_0,int *team_1)
 				(*team_1)++;
 			}
 		}
-		
-		moveup = GET_NEXT(moveup);
 	}	
 }
 
@@ -2962,11 +2936,7 @@ int multi_get_connection_speed()
 	int cspeed;
 	const char *connection_speed;
 
-#ifdef _WIN32	
-	connection_speed = os_config_read_string(nullptr, "ConnectionSpeed", "");	
-#else
 	connection_speed = os_config_read_string(nullptr, "ConnectionSpeed", "Fast");
-#endif
 
 	if ( !stricmp(connection_speed, NOX("Slow")) ) {
 		cspeed = CONNECTION_SPEED_288;
@@ -2978,8 +2948,10 @@ int multi_get_connection_speed()
 		cspeed = CONNECTION_SPEED_CABLE;
 	} else if ( !stricmp(connection_speed, NOX("Fast")) ) {
 		cspeed = CONNECTION_SPEED_T1;
+	} else if (!stricmp(connection_speed, NOX("None"))) {
+		cspeed = CONNECTION_SPEED_T1;	// default to Fast, per the os_config_read_string() call; per #define in multi.h, None doesn't really mean anything
 	} else {
-		cspeed = CONNECTION_SPEED_NONE;
+		cspeed = CONNECTION_SPEED_NONE;	// this will now no longer be returned unless the connection speed string is invalid
 	}
 
 	return cspeed;
@@ -3024,7 +2996,7 @@ void multi_update_valid_missions()
 	}
 	
 	// attempt to open the valid mission config file
-	in = cfopen(MULTI_VALID_MISSION_FILE, "rt", CFILE_NORMAL, CF_TYPE_DATA);
+	in = cfopen(MULTI_VALID_MISSION_FILE, "rt", CF_TYPE_DATA);
 
 	if (in != nullptr) {
 		// read in all listed missions
@@ -3097,7 +3069,7 @@ void multi_update_valid_missions()
 	}
 
 	// now rewrite the outfile with the new mission info
-	in = cfopen(MULTI_VALID_MISSION_FILE, "wt", CFILE_NORMAL, CF_TYPE_DATA);
+	in = cfopen(MULTI_VALID_MISSION_FILE, "wt", CF_TYPE_DATA);
 	if(in == nullptr){
 		// if we're a standalone, kill the validate dialog
 		if(Game_mode & GM_STANDALONE_SERVER){
@@ -3191,10 +3163,6 @@ DCF(multi,"changes multiplayer settings (Multiplayer)")
 #ifndef NDEBUG
 		multi_make_fake_players(MAX_PLAYERS);
 #endif
-
-	} else if (dc_optional_string("givecd")) {
-		extern int Multi_has_cd;
-		Multi_has_cd = 1;
 
 	} else if (dc_optional_string("oo")) {
 		int new_flags;
@@ -3342,7 +3310,7 @@ void bitbuffer_put( bitbuffer *bitbuf, uint data, int bit_count )
 {
 	uint mask;
 
-	mask = 1L << ( bit_count - 1 );
+	mask = 1U << ( bit_count - 1 );
 	while ( mask != 0) {
 		if ( mask & data )	{
 			bitbuf->rack |= bitbuf->mask;
@@ -3362,7 +3330,7 @@ uint bitbuffer_get_unsigned( bitbuffer *bitbuf, int bit_count )
 	uint local_mask;
 	uint return_value;
 
-	local_mask = 1L << ( bit_count - 1 );
+	local_mask = 1U << ( bit_count - 1 );
 	return_value = 0;
 
 	while ( local_mask != 0)	{
@@ -3387,7 +3355,7 @@ int bitbuffer_get_signed( bitbuffer *bitbuf, int bit_count )
 	uint local_mask;
 	uint return_value;
 
-	local_mask = 1L << ( bit_count - 1 );
+	local_mask = 1U << ( bit_count - 1 );
 	return_value = 0;
 	while ( local_mask != 0)	{
 		if ( bitbuf->mask == 0x80 ) {
@@ -3679,10 +3647,124 @@ int multi_pack_unpack_desired_vel_and_desired_rotvel( int write, bool full_physi
 	}
 }
 
+// changed these names since they are used for more than one packet now
+#define MULTI_PACKER_TRUE  1
+#define MULTI_PACKER_FALSE 0
+
+// pack cur_angle data from turrets
+int multi_pack_turret_angles(ubyte* data, ship_subsys* ssp) 
+{
+	bitbuffer buf;
+
+	bitbuffer_init(&buf, data);
+
+	uint contains_section;
+	bool section1 = false; 
+	bool section2 = false;
+
+	// if the first section is valid 
+	if (ssp->submodel_instance_1 != nullptr){
+		contains_section = MULTI_PACKER_TRUE;
+		section1 = true;
+	} else { 
+		contains_section = MULTI_PACKER_FALSE;
+	}
+
+	// place the flag in the packet
+	bitbuffer_put(&buf, contains_section, 1);
+
+	// if the second section is valid 
+	if (ssp->submodel_instance_2 != nullptr){
+		contains_section = MULTI_PACKER_TRUE;
+		section2 = true;
+	} else {
+		contains_section = MULTI_PACKER_FALSE;
+	}
+
+	// place the flag in the packet
+	bitbuffer_put(&buf, contains_section, 1);
+
+	if (!section1 && !section2){
+		return bitbuffer_write_flush(&buf);
+	}
+
+	bool both = (section1 && section2);
+
+	// how much data we can send per angle depends on whether we're sending both
+	// so figure it out here, to be used below. (accuracy is now at least 1/3 of a degree)
+	float factor = both ? 1024.0f : 8192.0f ;
+	int size = both ? 11 : 14;
+
+	if (section1) {
+		int out = fl2i(round(ssp->submodel_instance_1->cur_angle * factor));
+		CAP(out, static_cast<int>(-factor * PI2), static_cast<int>(factor * PI2));
+		bitbuffer_put(&buf, static_cast<uint>(out), size);
+	}
+
+	if (section2) {
+		int out = fl2i(round(ssp->submodel_instance_2->cur_angle * factor));
+		CAP(out, static_cast<int>(-factor * PI2), static_cast<int>(factor * PI2));
+		bitbuffer_put(&buf, static_cast<uint>(out), size);
+	}
+
+	return bitbuffer_write_flush(&buf);
+}
+
+// unpack cur_angle data to store in the engine for use.
+int multi_unpack_turret_angles(ubyte* data, std::pair<bool, float>& angle1, std::pair<bool, float>& angle2) 
+{
+	bitbuffer buf;
+
+	bitbuffer_init(&buf, data);
+
+	uint contains_section;
+	bool section1 = false; 
+	bool section2 = false;
+
+	contains_section = bitbuffer_get_unsigned(&buf, 1);
+
+	if (contains_section == MULTI_PACKER_TRUE) {
+		section1 = true;
+	}
+
+	contains_section = bitbuffer_get_unsigned(&buf, 1);
+
+	if (contains_section == MULTI_PACKER_TRUE){
+		section2 = true;
+	}
+
+	// literally nothing to see here
+	if (!section1 && !section2){
+		return bitbuffer_read_flush(&buf);
+	}
+
+	bool both = (section1 && section2);
+
+	// how much data we receive per angle depends on whether we're sending both
+	// so figure it out here, to be used below. (accuracy is at least .35 degrees)
+	float factor = both ? 1024.0f : 8192.0f ;
+	int size = both ? 11 : 14;
+
+	// we are *not* writing directly to the subsystem, because the timing is stored in the packet,
+	// and things will sync better if we take that into account.  Writing directly to game info is 
+	// hacky (although 90% of our multi code does it).  So shunt it to two parameters passed by pointer.
+	if (section1) {
+		int angle_in = bitbuffer_get_signed(&buf, size);
+		angle1.first = true;
+		angle1.second = static_cast<float>(angle_in) / factor;
+	}
+
+	if (section2) {
+		int angle_in = bitbuffer_get_signed(&buf, size);
+		angle2.first = true;
+		angle2.second = static_cast<float>(angle_in) / factor;
+	}
+
+	return bitbuffer_read_flush(&buf);
+}
+
 #define SUBSYSTEM_LIST_MINI_PACKET_SIZE 7
 #define SUBSYSTEM_PACKER_CUTOFF 128
-#define SUBSYSTEM_PACKER_TRUE  1
-#define SUBSYSTEM_PACKER_FALSE 0
 
 // Cyborg17 - A packing function to manage subsystem info.
 int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>* flags, SCP_vector<float>* subsys_data)
@@ -3729,12 +3811,12 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 			// mark this if there are things to store for this subsystem
 			if (current_flags > 0) {
-				a = SUBSYSTEM_PACKER_TRUE;
+				a = MULTI_PACKER_TRUE;
 				bitbuffer_put( &buf, (uint)a,1);
 
 				// is there health stored?
 				if (current_flags & OO_SUBSYS_HEALTH) {
-					a = SUBSYSTEM_PACKER_TRUE;
+					a = MULTI_PACKER_TRUE;
 					bitbuffer_put( &buf, (uint)a,1);
 
 					// stuff the health of the subsystem.  
@@ -3747,18 +3829,18 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 					// because a lot of times we do not have both health and animation marked.
 					current_flags &= ~OO_SUBSYS_HEALTH;
 					if (current_flags > 0) {
-						a = SUBSYSTEM_PACKER_TRUE;
+						a = MULTI_PACKER_TRUE;
 						bitbuffer_put( &buf, (uint)a,1);
 
 					} // if no other flags, mark as done and go to the next subsystem
 					else {
-						a = SUBSYSTEM_PACKER_FALSE;
+						a = MULTI_PACKER_FALSE;
 						bitbuffer_put( &buf, (uint)a,1);
 						done = true;
 					}					
 				} // no new health info for this subsystem.
 				else {
-					a = SUBSYSTEM_PACKER_FALSE;
+					a = MULTI_PACKER_FALSE;
 					bitbuffer_put(&buf, (uint)a, 1);
 				}
 
@@ -3768,7 +3850,7 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 					// (other types need to be dealt with in other ways.i.e. Dumb rotate needs time syncing, not constant updates)
 					if (current_flags & (OO_SUBSYS_ROTATION_1b)) {
 						// mark as present
-						a = SUBSYSTEM_PACKER_TRUE;
+						a = MULTI_PACKER_TRUE;
 						bitbuffer_put(&buf, (uint)a, 1);
 						// stuff value
 						a = (int)(subsys_data->at(subsys_data_index) * 511);
@@ -3780,13 +3862,13 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 					} // no rotation in this axis
 					else {
-						a = SUBSYSTEM_PACKER_FALSE;
+						a = MULTI_PACKER_FALSE;
 						bitbuffer_put(&buf, (uint)a, 1);
 					}
 
 					if (current_flags & (OO_SUBSYS_ROTATION_1h)) {
 						// mark as present
-						a = SUBSYSTEM_PACKER_TRUE;
+						a = MULTI_PACKER_TRUE;
 						bitbuffer_put(&buf, (uint)a, 1);
 						// stuff value
 						a = (int)(subsys_data->at(subsys_data_index) * 511);
@@ -3798,13 +3880,13 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 					} // no rotation in this axis
 					else {
-						a = SUBSYSTEM_PACKER_FALSE;
+						a = MULTI_PACKER_FALSE;
 						bitbuffer_put(&buf, (uint)a, 1);
 					}
 
 					if (current_flags & (OO_SUBSYS_ROTATION_1p)) {
 						// mark as present
-						a = SUBSYSTEM_PACKER_TRUE;
+						a = MULTI_PACKER_TRUE;
 						bitbuffer_put(&buf, (uint)a, 1);
 						// stuff value
 						a = (int)(subsys_data->at(subsys_data_index) * 511);
@@ -3816,13 +3898,13 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 					} // no rotation in this axis
 					else {
-						a = SUBSYSTEM_PACKER_FALSE;
+						a = MULTI_PACKER_FALSE;
 						bitbuffer_put(&buf, (uint)a, 1);
 					}
 
 					if (current_flags & (OO_SUBSYS_ROTATION_2b)) {
 						// mark as present
-						a = SUBSYSTEM_PACKER_TRUE;
+						a = MULTI_PACKER_TRUE;
 						bitbuffer_put(&buf, (uint)a, 1);
 						// stuff value
 						a = (int)(subsys_data->at(subsys_data_index) * 511);
@@ -3834,13 +3916,13 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 					} // no rotation in this axis
 					else {
-						a = SUBSYSTEM_PACKER_FALSE;
+						a = MULTI_PACKER_FALSE;
 						bitbuffer_put(&buf, (uint)a, 1);
 					}
 
 					if (current_flags & (OO_SUBSYS_ROTATION_2h)) {
 						// mark as present
-						a = SUBSYSTEM_PACKER_TRUE;
+						a = MULTI_PACKER_TRUE;
 						bitbuffer_put(&buf, (uint)a, 1);
 						// stuff value
 						a = (int)(subsys_data->at(subsys_data_index) * 511);
@@ -3852,13 +3934,13 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 					} // no rotation in this axis
 					else {
-						a = SUBSYSTEM_PACKER_FALSE;
+						a = MULTI_PACKER_FALSE;
 						bitbuffer_put(&buf, (uint)a, 1);
 					}
 
 					if (current_flags & (OO_SUBSYS_ROTATION_2p)) {
 						// mark as present
-						a = SUBSYSTEM_PACKER_TRUE;
+						a = MULTI_PACKER_TRUE;
 						bitbuffer_put(&buf, (uint)a, 1);
 						// stuff value
 						a = (int)(subsys_data->at(subsys_data_index) * 511);
@@ -3870,7 +3952,7 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 					} // no rotation in this axis
 					else {
-						a = SUBSYSTEM_PACKER_FALSE;
+						a = MULTI_PACKER_FALSE;
 						bitbuffer_put(&buf, (uint)a, 1);
 					}
 
@@ -3881,7 +3963,7 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 			} // if there was no info to pack, mark it as so, and move on.
 			else {
-				a = SUBSYSTEM_PACKER_FALSE;
+				a = MULTI_PACKER_FALSE;
 				bitbuffer_put( &buf, (uint)a,1);
 			}
 
@@ -3890,12 +3972,12 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 			if (( (i + 1) % 7 == 0) && (i != 0)) {
 				// and if we're at the end or have gone too far, mark it as the end.
 				if ((i >= (last_index - 1)) || (bitbuffer_read_flush(&buf) >= SUBSYSTEM_PACKER_CUTOFF) ){
-					a = SUBSYSTEM_PACKER_FALSE;
+					a = MULTI_PACKER_FALSE;
 					bitbuffer_put( &buf, (uint)a,1);
 					break;
 				} // start a new section right after this bit.
 				else {
-					a = SUBSYSTEM_PACKER_TRUE;
+					a = MULTI_PACKER_TRUE;
 					bitbuffer_put( &buf, (uint)a,1);
 				}
 			}
@@ -3918,11 +4000,11 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 				a = bitbuffer_get_unsigned(&buf, 1);
 			
 				// check to see if there is info to unpack
-				if (a == SUBSYSTEM_PACKER_TRUE) {
+				if (a == MULTI_PACKER_TRUE) {
 
 					// is there health info?
 					a = bitbuffer_get_unsigned(&buf, 1);
-					if (a == SUBSYSTEM_PACKER_TRUE) {
+					if (a == MULTI_PACKER_TRUE) {
 						flags->at(current_subsystem_index) |= OO_SUBSYS_HEALTH;
 
 						a = bitbuffer_get_unsigned(&buf, 7);
@@ -3930,7 +4012,7 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 
 						// check for additional info for this subsystem.
 						a = bitbuffer_get_unsigned(&buf, 1);
-						if (a == SUBSYSTEM_PACKER_FALSE) {
+						if (a == MULTI_PACKER_FALSE) {
 							// no further info, continue.
 							done = true;
 						}
@@ -3939,42 +4021,42 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 					if (!done) {
 						//  now check for each type of subsystem rotation before going on to the next subsystem
 						a = bitbuffer_get_unsigned(&buf, 1);
-						if (a == SUBSYSTEM_PACKER_TRUE) {
+						if (a == MULTI_PACKER_TRUE) {
 							flags->at(current_subsystem_index) |= OO_SUBSYS_ROTATION_1b;
 							a = bitbuffer_get_unsigned(&buf, 9);
 							subsys_data->push_back( ((float) a) / 511.0f);	
 						}
 
 						a = bitbuffer_get_unsigned(&buf, 1);
-						if (a == SUBSYSTEM_PACKER_TRUE) {
+						if (a == MULTI_PACKER_TRUE) {
 							flags->at(current_subsystem_index) |= OO_SUBSYS_ROTATION_1h;
 							a = bitbuffer_get_unsigned(&buf, 9);
 							subsys_data->push_back( ((float) a) / 511.0f);	
 						}
 
 						a = bitbuffer_get_unsigned(&buf, 1);
-						if (a == SUBSYSTEM_PACKER_TRUE) {
+						if (a == MULTI_PACKER_TRUE) {
 							flags->at(current_subsystem_index) |= OO_SUBSYS_ROTATION_1p;
 							a = bitbuffer_get_unsigned(&buf, 9);
 							subsys_data->push_back( ((float) a) / 511.0f);	
 						}
 
 						a = bitbuffer_get_unsigned(&buf, 1);
-						if (a == SUBSYSTEM_PACKER_TRUE) {
+						if (a == MULTI_PACKER_TRUE) {
 							flags->at(current_subsystem_index) |= OO_SUBSYS_ROTATION_2b;
 							a = bitbuffer_get_unsigned(&buf, 9);
 							subsys_data->push_back( ((float) a) / 511.0f);	
 						}
 
 						a = bitbuffer_get_unsigned(&buf, 1);
-						if (a == SUBSYSTEM_PACKER_TRUE) {
+						if (a == MULTI_PACKER_TRUE) {
 							flags->at(current_subsystem_index) |= OO_SUBSYS_ROTATION_2h;
 							a = bitbuffer_get_unsigned(&buf, 9);
 							subsys_data->push_back( ((float) a) / 511.0f);	
 						}
 
 						a = bitbuffer_get_unsigned(&buf, 1);
-						if (a == SUBSYSTEM_PACKER_TRUE) {
+						if (a == MULTI_PACKER_TRUE) {
 							flags->at(current_subsystem_index) |= OO_SUBSYS_ROTATION_2p;
 							a = bitbuffer_get_unsigned(&buf, 9);
 							subsys_data->push_back( ((float) a) / 511.0f);	
@@ -3987,7 +4069,7 @@ int multi_pack_unpack_subsystem_list(bool write, ubyte* data, SCP_vector<ubyte>*
 			}
 
 			a = bitbuffer_get_unsigned(&buf, 1);
-		} while (a == SUBSYSTEM_PACKER_TRUE);
+		} while (a == MULTI_PACKER_TRUE);
 		
 		return bitbuffer_read_flush(&buf);
 	}

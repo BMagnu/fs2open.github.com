@@ -31,6 +31,7 @@
 #include "graphics/tmapper.h"
 #include "iff_defs/iff_defs.h"
 #include "io/key.h"
+#include "io/spacemouse.h"
 #include "io/timer.h"
 #include "jumpnode/jumpnode.h"
 #include "lighting/lighting.h"
@@ -47,6 +48,7 @@
 #include "render/3d.h"
 #include "render/3dinternal.h"
 #include "ship/ship.h"
+#include "sound/audiostr.h"
 #include "starfield/starfield.h"
 #include "weapon/weapon.h"
 
@@ -89,7 +91,6 @@ int Last_cursor_over = -1;
 int last_x = 0;
 int last_y = 0;
 int Lookat_mode = 0;
-int player_start1;
 int rendering_order[MAX_SHIPS];
 int render_count = 0;
 int Show_asteroid_field = 1;
@@ -99,7 +100,11 @@ int Show_grid = 1;
 int Show_grid_positions = 1;
 int Show_horizon = 0;
 int Show_outlines = 0;
-bool Draw_outlines_on_selected_ships = false;
+bool Draw_outlines_on_selected_ships = true;
+bool Draw_outline_at_warpin_position = false;
+bool Always_save_display_names = false;
+bool Error_checker_checks_potential_issues = true;
+bool Error_checker_checks_potential_issues_once = false;
 int Show_stars = 1;
 int Single_axis_constraint = 0;
 int True_rw, True_rh;
@@ -219,7 +224,7 @@ void fredhtl_render_subsystem_bounding_box(subsys_to_render * s2r);
  * @param[in] gridp      The grid we're referencing against
  * @param[in] col_scheme Color scheme?
  */
-void render_model_x(vec3d *pos, grid *gridp, int col_scheme = 0);
+void render_model_x(const vec3d *pos, const grid *gridp, int col_scheme = 0);
 
 /**
  * @brief Draws the X from a elevation line on the grid with HTL
@@ -236,13 +241,6 @@ void render_model_x_htl(vec3d *pos, grid *gridp, int col_scheme = 0);
  * @param[in] objp Object to maybe draw
  */
 void render_one_model_htl(object *objp);
-
-/**
- * @brief Draws a model without HTL
- *
- * @param[in] objp Object to maybe draw
- */
-void render_one_model_nohtl(object *objp);
 
 /**
  * @brief Draws a single briefing icon, if the given object is an icon
@@ -541,7 +539,8 @@ void display_ship_info() {
 							strcpy_s(buf, "Briefing icon");
 
 					} else if (objp->type == OBJ_JUMP_NODE) {
-						strcpy_s(buf, "Jump Node");
+						CJumpNode* jnp = jumpnode_get_by_objnum(OBJ_INDEX(objp));
+						sprintf(buf, "%s\n%s", jnp->GetName(), jnp->GetDisplayName());
 					} else
 						Assert(0);
 				}
@@ -845,8 +844,10 @@ void fredhtl_render_subsystem_bounding_box(subsys_to_render *s2r)
 	vm_vec_add2(&center_pt, &objp->pos);
 	g3_rotate_vertex(&text_center, &center_pt);
 	g3_project_vertex(&text_center);
-	gr_set_color_fast(&colour_white);
-	gr_string( (int)text_center.screen.xyw.x,  (int)text_center.screen.xyw.y, buf.c_str() );
+	if (!(text_center.flags & PF_OVERFLOW)) {
+		gr_set_color_fast(&colour_white);
+		gr_string((int)text_center.screen.xyw.x, (int)text_center.screen.xyw.y, buf.c_str());
+	}
 }
 
 void fred_disable_htl() {
@@ -948,11 +949,19 @@ void game_do_frame() {
 
 	inc_mission_time();
 
+	// sync all timestamps across the entire frame
+	timer_start_frame();
+
 	viewer_position = my_orient.vec.fvec;
 	vm_vec_scale(&viewer_position, my_pos.xyz.z);
 
 	if ((viewpoint == 1) && !query_valid_object(view_obj))
 		viewpoint = 0;
+
+	//If the music player dialog is open and music is selected
+	if (Music_player_dialog.IsPlayerActive()) {
+		Music_player_dialog.DoFrame();
+	}
 
 	key = key_inkey();
 	process_system_keys(key);
@@ -972,14 +981,16 @@ void game_do_frame() {
 		break;
 
 	case 2:  // Control viewpoint object
-		process_controls(&Objects[view_obj].pos, &Objects[view_obj].orient, f2fl(Frametime), key);
-		object_moved(&Objects[view_obj]);
-		control_pos = Objects[view_obj].pos;
-		control_orient = Objects[view_obj].orient;
+		if (!Objects[view_obj].flags[Object::Object_Flags::Locked_from_editing]) {
+			process_controls(&Objects[view_obj].pos, &Objects[view_obj].orient, f2fl(Frametime), key);
+			object_moved(&Objects[view_obj]);
+			control_pos = Objects[view_obj].pos;
+			control_orient = Objects[view_obj].orient;
+		}
 		break;
 
 	case 1:  //	Control the current object's location and orientation
-		if (query_valid_object()) {
+		if (query_valid_object() && !Objects[cur_object_index].flags[Object::Object_Flags::Locked_from_editing]) {
 			vec3d delta_pos, leader_old_pos;
 			matrix leader_orient, leader_transpose, tmp;
 			object *leader;
@@ -1207,10 +1218,12 @@ void level_controlled() {
 		break;
 
 	case 2:  // Control viewpoint object
-		level_object(&Objects[view_obj].orient);
-		object_moved(&Objects[view_obj]);
-		set_modified();
-		FREDDoc_ptr->autosave("level object");
+		if (!Objects[view_obj].flags[Object::Object_Flags::Locked_from_editing]) {
+			level_object(&Objects[view_obj].orient);
+			object_moved(&Objects[view_obj]);
+			set_modified();
+			FREDDoc_ptr->autosave("level object");
+		}
 		break;
 
 	case 1:  //	Control the current object's location and orientation
@@ -1291,7 +1304,6 @@ void move_mouse(int btn, int mdx, int mdy) {
 
 int object_check_collision(object *objp, vec3d *p0, vec3d *p1, vec3d *hitpos) {
 	mc_info mc;
-	mc_info_init(&mc);
 
 	if ((objp->type == OBJ_NONE) || (objp->type == OBJ_POINT))
 		return 0;
@@ -1310,7 +1322,7 @@ int object_check_collision(object *objp, vec3d *p0, vec3d *p1, vec3d *hitpos) {
 			return 0;
 	}
 
-	if (objp->flags[Object::Object_Flags::Hidden])
+	if (objp->flags[Object::Object_Flags::Hidden, Object::Object_Flags::Locked_from_editing])
 		return 0;
 
 	if ((Show_ship_models || Show_outlines) && (objp->type == OBJ_SHIP)) {
@@ -1345,8 +1357,20 @@ int object_check_collision(object *objp, vec3d *p0, vec3d *p1, vec3d *hitpos) {
 }
 
 void process_controls(vec3d *pos, matrix *orient, float frametime, int key, int mode) {
+	static std::unique_ptr<io::spacemouse::SpaceMouse> spacemouse = io::spacemouse::SpaceMouse::searchSpaceMice(0);
+
 	if (Flying_controls_mode) {
 		grid_read_camera_controls(&view_controls, frametime);
+		if (spacemouse != nullptr) {
+			auto spacemouse_movement = spacemouse->getMovement();
+			spacemouse_movement.handleNonlinearities(Fred_spacemouse_nonlinearity);
+			view_controls.pitch += spacemouse_movement.rotation.p;
+			view_controls.vertical += spacemouse_movement.translation.xyz.z;
+			view_controls.heading += spacemouse_movement.rotation.h;
+			view_controls.sideways += spacemouse_movement.translation.xyz.x;
+			view_controls.bank += spacemouse_movement.rotation.b;
+			view_controls.forward += spacemouse_movement.translation.xyz.y;
+		}
 
 		if (key_get_shift_status())
 			memset(&view_controls, 0, sizeof(control_info));
@@ -1364,7 +1388,7 @@ void process_controls(vec3d *pos, matrix *orient, float frametime, int key, int 
 		if (mode)
 			physics_sim_editor(pos, orient, &view_physics, frametime);
 		else
-			physics_sim(pos, orient, &view_physics, frametime);
+			physics_sim(pos, orient, &view_physics, &vmd_zero_vector, frametime);
 
 	} else {
 		vec3d		movement_vec, rel_movement_vec;
@@ -1372,6 +1396,13 @@ void process_controls(vec3d *pos, matrix *orient, float frametime, int key, int 
 		matrix		newmat, rotmat;
 
 		process_movement_keys(key, &movement_vec, &rotangs);
+		if (spacemouse != nullptr) {
+			auto spacemouse_movement = spacemouse->getMovement();
+			spacemouse_movement.handleNonlinearities(Fred_spacemouse_nonlinearity);
+			movement_vec += spacemouse_movement.translation;
+			rotangs += spacemouse_movement.rotation;
+		}
+
 		vm_vec_rotate(&rel_movement_vec, &movement_vec, &The_grid->gmatrix);
 		vm_vec_add2(pos, &rel_movement_vec);
 
@@ -1516,15 +1547,15 @@ void render_frame() {
 		True_rw = rect.Width();
 		True_rh = rect.Height();
 		if (Fixed_briefing_size) {
-			True_rw = BRIEF_GRID_W;
-			True_rh = BRIEF_GRID_H;
+			True_rw = Briefing_window_resolution[0];
+			True_rh = Briefing_window_resolution[1];
 
 		} else {
-			if ((float) True_rh / (float) True_rw > (float) BRIEF_GRID_H / (float) BRIEF_GRID_W) {
-				True_rh = (int) ((float) BRIEF_GRID_H * (float) True_rw / (float) BRIEF_GRID_W);
+			if ((float) True_rh / (float) True_rw > (float) Briefing_window_resolution[1] / (float) Briefing_window_resolution[0]) {
+				True_rh = (int) ((float) Briefing_window_resolution[1] * (float) True_rw / (float) Briefing_window_resolution[0]);
 
 			} else {  // Fred is wider than briefing window
-				True_rw = (int) ((float) BRIEF_GRID_W * (float) True_rh / (float) BRIEF_GRID_H);
+				True_rw = (int) ((float) Briefing_window_resolution[0] * (float) True_rh / (float) Briefing_window_resolution[1]);
 			}
 		}
 
@@ -1675,12 +1706,12 @@ void render_models(void) {
 
 }
 
-void render_model_x(vec3d *pos, grid *gridp, int col_scheme) {
+void render_model_x(const vec3d *pos, const grid *gridp, int col_scheme) {
 	vec3d	gpos;	//	Location of point on grid.
 	vec3d	tpos;
 	float	dxz;
 	plane	tplane;
-	vec3d	*gv;
+	const vec3d	*gv;
 
 	if (!Show_grid_positions)
 		return;
@@ -1772,7 +1803,7 @@ void render_one_model_briefing_screen(object *objp) {
 }
 
 void render_one_model_htl(object *objp) {
-	int j, z;
+	int z;
 	uint debug_flags = 0;
 	object *o2;
 
@@ -1826,7 +1857,7 @@ void render_one_model_htl(object *objp) {
 	if ((Show_ship_models || Show_outlines) && ((objp->type == OBJ_SHIP) || (objp->type == OBJ_START))) {
 		g3_start_instance_matrix(&Eye_position, &Eye_matrix, 0);
 
-		j = MR_NORMAL;
+		uint64_t flags = MR_NORMAL;
 
 		if (Show_dock_points) {
 			debug_flags |= MR_DEBUG_BAY_PATHS;
@@ -1841,28 +1872,47 @@ void render_one_model_htl(object *objp) {
 		model_clear_instance(Ship_info[Ships[z].ship_info_index].model_num);
 
 		if (!Lighting_on) {
-			j |= MR_NO_LIGHTING;
+			flags |= MR_NO_LIGHTING;
 		}
 
 		if (FullDetail) {
-			j |= MR_FULL_DETAIL;
+			flags |= MR_FULL_DETAIL;
 		}
 
 		model_render_params render_info;
 
 		render_info.set_debug_flags(debug_flags);
-		render_info.set_replacement_textures(Ships[z].ship_replacement_textures);
+		render_info.set_replacement_textures(model_get_instance(Ships[z].model_instance_num)->texture_replace);
 
 		if (Fred_outline) {
 			render_info.set_color(Fred_outline >> 16, (Fred_outline >> 8) & 0xff, Fred_outline & 0xff);
-			render_info.set_flags(j | MR_SHOW_OUTLINE_HTL | MR_NO_LIGHTING | MR_NO_POLYS | MR_NO_TEXTURING);
+			render_info.set_flags(flags | MR_SHOW_OUTLINE_HTL | MR_NO_LIGHTING | MR_NO_POLYS | MR_NO_TEXTURING);
 			model_render_immediate(&render_info, Ship_info[Ships[z].ship_info_index].model_num, Ships[z].model_instance_num, &objp->orient, &objp->pos);
+		}
+
+		if (Draw_outline_at_warpin_position
+			&& (Ships[z].arrival_cue != Locked_sexp_true || Ships[z].arrival_delay > 0)
+			&& Ships[z].arrival_cue != Locked_sexp_false
+			&& !Ships[z].flags[Ship::Ship_Flags::No_arrival_warp])
+		{
+			int warp_type = Warp_params[Ships[z].warpin_params_index].warp_type;
+			if (warp_type == WT_DEFAULT || warp_type == WT_KNOSSOS || warp_type == WT_DEFAULT_THEN_KNOSSOS || (warp_type & WT_DEFAULT_WITH_FIREBALL)) {
+				float warpin_dist = shipfx_calculate_arrival_warp_distance(objp);
+
+				// project the ship forward as far as it should go
+				vec3d warpin_pos;
+				vm_vec_scale_add(&warpin_pos, &objp->pos, &objp->orient.vec.fvec, warpin_dist);
+
+				render_info.set_color(65, 65, 65);	// grey; see rgba_defaults
+				render_info.set_flags(flags | MR_SHOW_OUTLINE_HTL | MR_NO_LIGHTING | MR_NO_POLYS | MR_NO_TEXTURING);
+				model_render_immediate(&render_info, Ship_info[Ships[z].ship_info_index].model_num, Ships[z].model_instance_num, &objp->orient, &warpin_pos);
+			}
 		}
 
 		g3_done_instance(0);
 
 		if (Show_ship_models) {
-			render_info.set_flags(j);
+			render_info.set_flags(flags);
 			model_render_immediate(&render_info, Ship_info[Ships[z].ship_info_index].model_num, Ships[z].model_instance_num, &objp->orient, &objp->pos);
 		}
 	} else {
@@ -1911,7 +1961,7 @@ void render_one_model_htl(object *objp) {
 	}
 
 	if (objp->type == OBJ_WAYPOINT) {
-		for (j = 0; j < render_count; j++) {
+		for (int j = 0; j < render_count; j++) {
 			o2 = &Objects[rendering_order[j]];
 			if (o2->type == OBJ_WAYPOINT) {
 				if ((o2->instance == objp->instance - 1) || (o2->instance == objp->instance + 1)) {
@@ -1925,157 +1975,18 @@ void render_one_model_htl(object *objp) {
 	render_count++;
 }
 
-void render_one_model_nohtl(object *objp) {
-	int j, z;
-	uint debug_flags = 0;
-	object *o2;
-
-	Assert(objp->type != OBJ_NONE);
-
-	if (objp->type == OBJ_JUMP_NODE) {
-		return;
-	}
-
-	if ((objp->type == OBJ_WAYPOINT) && !Show_waypoints)
-		return;
-
-	if ((objp->type == OBJ_START) && !Show_starts)
-		return;
-
-	if ((objp->type == OBJ_SHIP) || (objp->type == OBJ_START)) {
-		if (!Show_ships)
-			return;
-
-		if (!Show_iff[Ships[objp->instance].team])
-			return;
-	}
-
-	if (objp->flags[Object::Object_Flags::Hidden])
-		return;
-
-	rendering_order[render_count] = OBJ_INDEX(objp);
-	Fred_outline = 0;
-
-	if (!Draw_outlines_on_selected_ships && ((OBJ_INDEX(objp) == cur_object_index) || (objp->flags[Object::Object_Flags::Marked])))
-		/* don't draw the outlines we would normally draw */;
-
-	else if ((OBJ_INDEX(objp) == cur_object_index) && !Bg_bitmap_dialog)
-		Fred_outline = FRED_COLOUR_WHITE;
-
-	else if ((objp->flags[Object::Object_Flags::Marked]) && !Bg_bitmap_dialog)  // is it a marked object?
-		Fred_outline = FRED_COLOUR_YELLOW_GREEN;
-
-	else if ((objp->type == OBJ_SHIP) && Show_outlines) {
-		color *iff_color = iff_get_color_by_team_and_object(Ships[objp->instance].team, -1, 1, objp);
-
-		Fred_outline = (iff_color->red << 16) | (iff_color->green << 8) | (iff_color->blue);
-
-	} else if ((objp->type == OBJ_START) && Show_outlines) {
-		Fred_outline = 0x007f00;
-
-	} else
-		Fred_outline = 0;
-
-	// build flags
-	if ((Show_ship_models || Show_outlines) && ((objp->type == OBJ_SHIP) || (objp->type == OBJ_START))) {
-		if (Show_ship_models) {
-			j = MR_NORMAL;
-		} else {
-			j = MR_NO_POLYS;
-		}
-
-		if (Show_dock_points) {
-			debug_flags |= MR_DEBUG_BAY_PATHS;
-		}
-
-		if (Show_paths_fred) {
-			debug_flags |= MR_DEBUG_PATHS;
-		}
-
-		z = objp->instance;
-
-		model_clear_instance(Ship_info[Ships[z].ship_info_index].model_num);
-
-		//		if (!viewpoint || OBJ_INDEX(objp) != cur_object_index)
-		{
-			model_render_params render_info;
-
-			if (Fred_outline) {
-				render_info.set_flags(j | MR_SHOW_OUTLINE | MR_NO_TEXTURING | MR_NO_LIGHTING);
-				render_info.set_color(Fred_outline >> 16, (Fred_outline >> 8) & 0xff, Fred_outline & 0xff);
-			} else {
-				render_info.set_flags(j);
-			}
-
-			render_info.set_debug_flags(debug_flags);
-			render_info.set_replacement_textures(Ships[z].ship_replacement_textures);
-
-			model_render_immediate(&render_info, Ship_info[Ships[z].ship_info_index].model_num, &objp->orient, &objp->pos);
-		}
-
-	} else {
-		int r = 0, g = 0, b = 0;
-
-		if (objp->type == OBJ_SHIP) {
-			if (!Show_ships)
-				return;
-
-			color *iff_color = iff_get_color_by_team_and_object(Ships[objp->instance].team, -1, 1, objp);
-
-			r = iff_color->red;
-			g = iff_color->green;
-			b = iff_color->blue;
-
-		} else if (objp->type == OBJ_START) {
-			r = 0;	g = 127;	b = 0;
-
-		} else if (objp->type == OBJ_WAYPOINT) {
-			r = 96;	g = 0;	b = 112;
-
-		} else if (objp->type == OBJ_POINT) {
-			if (objp->instance != BRIEFING_LOOKAT_POINT_ID) {
-				return;
-			}
-
-			r = 196;	g = 32;	b = 196;
-
-		} else
-			Assert(0);
-
-		if (Fred_outline)
-			draw_orient_sphere2(Fred_outline, objp, r, g, b);
-		else
-			draw_orient_sphere(objp, r, g, b);
-	}
-
-	if (objp->type == OBJ_WAYPOINT) {
-		for (j = 0; j < render_count; j++) {
-			o2 = &Objects[rendering_order[j]];
-			if (o2->type == OBJ_WAYPOINT)
-				if ((o2->instance == objp->instance - 1) || (o2->instance == objp->instance + 1))
-					rpd_line(&o2->pos, &objp->pos);
-		}
-	}
-
-	render_model_x(&objp->pos, The_grid);
-	render_count++;
-}
-
 void render_waypoints(void) {
 	vertex v;
 
-	SCP_list<waypoint_list>::iterator ii;
-	SCP_vector<waypoint>::iterator jj;
-
-	for (ii = Waypoint_lists.begin(); ii != Waypoint_lists.end(); ++ii) {
-		vec3d *prev_vec = NULL;
-		for (jj = ii->get_waypoints().begin(); jj != ii->get_waypoints().end(); ++jj) {
-			g3_rotate_vertex(&v, jj->get_pos());
+	for (const auto &ii: Waypoint_lists) {
+		const vec3d *prev_vec = nullptr;
+		for (const auto &jj: ii.get_waypoints()) {
+			g3_rotate_vertex(&v, jj.get_pos());
 			if (!(v.codes & CC_BEHIND)) {
 				if (!(g3_project_vertex(&v) & PF_OVERFLOW)) {
-					if (cur_waypoint_list == &(*ii) && cur_waypoint == &(*jj))
+					if (jj.get_objnum() == cur_waypoint->get_objnum())
 						gr_set_color(255, 255, 255);
-					else if (Objects[jj->get_objnum()].flags[Object::Object_Flags::Marked])
+					else if (Objects[jj.get_objnum()].flags[Object::Object_Flags::Marked])
 						gr_set_color(160, 255, 0);
 					else
 						gr_set_color(160, 96, 0);
@@ -2092,12 +2003,12 @@ void render_waypoints(void) {
 				}
 			}
 
-			render_model_x(jj->get_pos(), The_grid, 1);
+			render_model_x(jj.get_pos(), The_grid, 1);
 
 			gr_set_color(160, 96, 0);
 			if (prev_vec != NULL)
-				rpd_line(prev_vec, jj->get_pos());
-			prev_vec = jj->get_pos();
+				rpd_line(prev_vec, jj.get_pos());
+			prev_vec = jj.get_pos();
 		}
 	}
 }
@@ -2112,7 +2023,7 @@ int select_object(int cx, int cy) {
 	if (Briefing_dialog) {
 		best = Briefing_dialog->check_mouse_hit(cx, cy);
 		if (best >= 0) {
-			if (Selection_lock && !(Objects[best].flags[Object::Object_Flags::Marked])) {
+			if ((Selection_lock && !Objects[best].flags[Object::Object_Flags::Marked]) || Objects[best].flags[Object::Object_Flags::Locked_from_editing]) {
 				return -1;
 			}
 			return best;
@@ -2150,7 +2061,7 @@ int select_object(int cx, int cy) {
 	}
 
 	if (best >= 0) {
-		if (Selection_lock && !(Objects[best].flags[Object::Object_Flags::Marked])) {
+		if ((Selection_lock && !Objects[best].flags[Object::Object_Flags::Marked]) || Objects[best].flags[Object::Object_Flags::Locked_from_editing]) {
 			return -1;
 		}
 		return best;
@@ -2172,7 +2083,7 @@ int select_object(int cx, int cy) {
 		ptr = GET_NEXT(ptr);
 	}
 
-	if (Selection_lock && !(Objects[best].flags[Object::Object_Flags::Marked])) {
+	if ((Selection_lock && !Objects[best].flags[Object::Object_Flags::Marked]) || Objects[best].flags[Object::Object_Flags::Locked_from_editing]) {
 		return -1;
 	}
 
@@ -2193,10 +2104,12 @@ void verticalize_controlled() {
 		break;
 
 	case 2:  // Control viewpoint object
-		verticalize_object(&Objects[view_obj].orient);
-		object_moved(&Objects[view_obj]);
-		FREDDoc_ptr->autosave("align object");
-		set_modified();
+		if (!Objects[view_obj].flags[Object::Object_Flags::Locked_from_editing]) {
+			verticalize_object(&Objects[view_obj].orient);
+			object_moved(&Objects[view_obj]);
+			FREDDoc_ptr->autosave("align object");
+			set_modified();
+		}
 		break;
 
 	case 1:  //	Control the current object's location and orientation

@@ -18,6 +18,7 @@
 
 #define MAX_HUD_LINE_LEN			256			// maximum number of characters for a HUD message
 
+// If these are changed, the lua 'addMessageToScrollback' method in mission.cpp should be updated.
 #define HUD_SOURCE_COMPUTER		0
 #define HUD_SOURCE_TRAINING		1
 #define HUD_SOURCE_HIDDEN		2
@@ -36,17 +37,16 @@ typedef struct HUD_message_data {
 } HUD_message_data;
 
 typedef struct line_node {
-	line_node* next;
-	line_node* prev;
 	fix time;  // timestamp when message was added
+	int timer_padding; // the mission timer padding, in seconds, at the time the message was added
 	int source;  // who/what the source of the message was (for color coding)
 	int x;
 	int y;
 	int underline_width;
-	char *text;
+	SCP_string text;
 } line_node;
 
-extern line_node Msg_scrollback_used_list;
+extern SCP_vector<line_node> Msg_scrollback_vec;
 
 typedef struct Hud_display_info {
 	HUD_message_data msg;
@@ -74,7 +74,6 @@ void HUD_init_fixed_text();			//	Clear all pending fixed text.
 void HUD_add_to_scrollback(const char *text, int source);
 void hud_add_line_to_scrollback(const char *text, int source, int t, int x, int y, int w);
 void hud_add_msg_to_scrollback(const char *text, int source, int t);
-void hud_free_scrollback_list();
 
 class HudGaugeMessages: public HudGauge // HUD_MESSAGE_LINES
 {
@@ -113,7 +112,7 @@ public:
 	void addPending(const char *text, int source, int x = 0);
 	void scrollMessages();
 	void preprocess() override;
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void initialize() override;
 	void pageIn() override;
 };
@@ -136,9 +135,9 @@ public:
 	void initAnimOffsets(int x, int y);
 	void initAnimSizes(int w, int h);
 	void pageIn() override;
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void initialize() override;
-	bool canRender() override;
+	bool canRender() const override;
 };
 
 class HudGaugeFixedMessages: public HudGauge
@@ -147,7 +146,7 @@ class HudGaugeFixedMessages: public HudGauge
 public:
 	HudGaugeFixedMessages();
 	void initCenterText(bool center);
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void pageIn() override;
 };
 

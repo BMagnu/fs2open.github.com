@@ -203,8 +203,8 @@ int ConnectToChatServer(char *serveraddr, char *nickname, char *trackerid)
 			{
 				// make sure that we don't have any connect() errors (since it's non-blocking)
 				int err_val = 0;
-				size_t err_val_size = sizeof(err_val);
-				getsockopt(Chatsock, SOL_SOCKET, SO_ERROR, (char*)&err_val, (socklen_t*)&err_val_size);
+				socklen_t err_val_size = static_cast<socklen_t>(sizeof(err_val));
+				getsockopt(Chatsock, SOL_SOCKET, SO_ERROR, (char*)&err_val, &err_val_size);
 
 				if (err_val)
 				{
@@ -473,7 +473,7 @@ char *ChatGetString(void)
 	struct timeval timeout; 
 	char ch[2];
 	char *p;
-	int bytesread;
+	long bytesread;
 	static char return_string[MAXCHATBUFFER];
 	
 	timeout.tv_sec=0;            
@@ -1305,7 +1305,7 @@ char *GetTrackerIdByUser(char *nickname)
 	return NULL;
 }
 
-char *GetChannelByUser(char *nickname)
+char *GetChannelByUser(const char *nickname)
 {
 	char szWhoisCmd[100];
 	
@@ -1332,5 +1332,5 @@ char *GetChannelByUser(char *nickname)
 		SendChatString(szWhoisCmd,1);
 		GettingUserChannel = 1;
 	}
-	return NULL;
+	return nullptr;
 }

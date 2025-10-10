@@ -23,6 +23,7 @@ CJumpNode::CJumpNode()
     gr_init_alphacolor(&m_display_color, 0, 255, 0, 255);
 
 	m_name[0] = '\0';
+	m_display[0] = '\0';
 	
     m_pos.xyz.x = 0.0f;
     m_pos.xyz.y = 0.0f;
@@ -38,11 +39,12 @@ CJumpNode::CJumpNode(const vec3d* position)
 	
 	gr_init_alphacolor(&m_display_color, 0, 255, 0, 255);
 	
-	// Set m_name
+	// Set m_name and m_display
 	sprintf(m_name, XSTR( "Jump Node %d", 632), Jump_nodes.size());
+	m_display[0] = '\0';
 	
 	// Set m_modelnum and m_radius
-	m_modelnum = model_load(NOX("subspacenode.pof"), 0, NULL, 0);
+	m_modelnum = model_load(NOX(JN_DEFAULT_MODEL), nullptr, ErrorType::WARNING);
 	if (m_modelnum == -1) {
 		Warning(LOCATION, "Could not load default model for %s", m_name);
 	} else {
@@ -81,6 +83,7 @@ CJumpNode::CJumpNode(CJumpNode&& other) noexcept
 	m_pos = other.m_pos;
 
 	strcpy_s(m_name, other.m_name);
+	strcpy_s(m_display, other.m_display);
 }
 
 CJumpNode& CJumpNode::operator=(CJumpNode&& other) noexcept
@@ -103,6 +106,7 @@ CJumpNode& CJumpNode::operator=(CJumpNode&& other) noexcept
 		m_pos = other.m_pos;
 
 		strcpy_s(m_name, other.m_name);
+		strcpy_s(m_display, other.m_display);
 	}
 
 	return *this;
@@ -129,15 +133,26 @@ CJumpNode::~CJumpNode()
 /**
  * @return Name of jump node
  */
-const char *CJumpNode::GetName()
+const char *CJumpNode::GetName() const
 {
 	return m_name;
 }
 
 /**
+ * @return Display Name of jump node
+ */
+const char* CJumpNode::GetDisplayName() const
+{
+	if (HasDisplayName())
+		return m_display;
+	else
+		return m_name;
+}
+
+/**
  * @return Handle to model
  */
-int CJumpNode::GetModelNumber()
+int CJumpNode::GetModelNumber() const
 {
 	return m_modelnum;
 }
@@ -145,7 +160,7 @@ int CJumpNode::GetModelNumber()
 /**
  * @return Index into Objects[]
  */
-int CJumpNode::GetSCPObjectNumber()
+int CJumpNode::GetSCPObjectNumber() const
 {
 	return m_objnum;
 }
@@ -153,7 +168,7 @@ int CJumpNode::GetSCPObjectNumber()
 /**
  * @return Object
  */
-object *CJumpNode::GetSCPObject()
+const object *CJumpNode::GetSCPObject() const
 {
 	Assert(m_objnum != -1);
     return &Objects[m_objnum];
@@ -162,7 +177,7 @@ object *CJumpNode::GetSCPObject()
 /**
  * @return Color of jump node when rendered
  */
-color CJumpNode::GetColor()
+const color &CJumpNode::GetColor() const
 {
 	return m_display_color;
 }
@@ -170,7 +185,7 @@ color CJumpNode::GetColor()
 /**
  * @return World position of jump node
  */
-vec3d *CJumpNode::GetPosition()
+const vec3d *CJumpNode::GetPosition() const
 {
 	return &m_pos;
 }
@@ -178,7 +193,7 @@ vec3d *CJumpNode::GetPosition()
 /*
 * @return Polymodel Instance Index
 */
-int CJumpNode::GetPolymodelInstanceNum() 
+int CJumpNode::GetPolymodelInstanceNum() const
 {
 	return m_polymodel_instance_num;
 }
@@ -200,7 +215,15 @@ void CJumpNode::SetAlphaColor(int r, int g, int b, int alpha)
 	CLAMP(b, 0, 255);
 	CLAMP(alpha, 0, 255);
 	
-	m_flags |= JN_USE_DISPLAY_COLOR;
+	// see whether this is actually the default color
+	// (which actually means to use the HUD color rather than this exact color;
+	// it might be useful to change this design in the future, but beware of
+	// FRED calling this function in the background)
+	if (r == 0 && g == 255 && b == 0 && alpha == 255)
+		m_flags &= ~JN_USE_DISPLAY_COLOR;
+	else
+		m_flags |= JN_USE_DISPLAY_COLOR;
+
 	gr_init_alphacolor(&m_display_color, r, g, b, alpha);
 }
 
@@ -215,7 +238,7 @@ void CJumpNode::SetModel(const char *model_name, bool show_polys)
 	Assert(model_name != NULL);
 	
 	//Try to load the new model; if we can't, then we can't set it
-	int new_model = model_load(model_name, 0, NULL, 0);
+	int new_model = model_load(model_name, nullptr, ErrorType::WARNING);
 	
 	if(new_model == -1)
 	{
@@ -249,11 +272,46 @@ void CJumpNode::SetName(const char *new_name)
 	Assert(new_name != NULL);
     
 	#ifndef NDEBUG
-	CJumpNode* check = jumpnode_get_by_name(new_name);
+	auto check = jumpnode_get_by_name(new_name);
 	Assertion((check == this || !check), "Jumpnode %s is being renamed to %s, but a jump node with that name already exists in the mission!\n", m_name, new_name);
 	#endif
-    
+
 	strcpy_s(m_name, new_name);
+
+	// if this name has a hash, create a default display name
+	if (get_pointer_to_first_hash_symbol(new_name))
+	{
+		strcpy_s(m_display, new_name);
+		end_string_at_first_hash_symbol(m_display);
+		m_flags |= JN_HAS_DISPLAY_NAME;
+	}
+	else
+	{
+		*m_display = '\0';
+		m_flags &= ~JN_HAS_DISPLAY_NAME;
+	}
+}
+
+/**
+ * Set jump node display name
+ *
+ * @param new_display_name New name to set
+ */
+void CJumpNode::SetDisplayName(const char *new_display_name)
+{
+	Assert(new_display_name != NULL);
+
+	// if display name matches the actual name, clear it
+	if (stricmp(new_display_name, m_name) == 0)
+	{
+		*m_display = '\0';
+		m_flags &= ~JN_HAS_DISPLAY_NAME;
+	}
+	else
+	{
+		strcpy_s(m_display, new_display_name);
+		m_flags |= JN_HAS_DISPLAY_NAME;
+	}
 }
 
 /**
@@ -270,8 +328,9 @@ void CJumpNode::SetVisibility(bool enabled)
 	else
 	{
 		// Untarget this node if it is already targeted
-		if ( Player_ai->target_objnum == m_objnum )
+		if ((Game_mode & GM_IN_MISSION) && Player_ai->target_objnum == m_objnum) {
 			Player_ai->target_objnum = -1;
+		}
 		m_flags|=JN_HIDE;
 	}
 }
@@ -281,7 +340,7 @@ void CJumpNode::SetVisibility(bool enabled)
 /**
  * @return Is the jump node hidden when rendering?
  */
-bool CJumpNode::IsHidden()
+bool CJumpNode::IsHidden() const
 {
 	if(m_flags & JN_HIDE)
 		return true;
@@ -292,7 +351,7 @@ bool CJumpNode::IsHidden()
 /**
  * @return Is the jump node colored any other color than default white?
  */
-bool CJumpNode::IsColored()
+bool CJumpNode::IsColored() const
 {
 	return ((m_flags & JN_USE_DISPLAY_COLOR) != 0);
 }
@@ -300,9 +359,17 @@ bool CJumpNode::IsColored()
 /**
  * @return Is the jump node model set differently from the default one?
  */
-bool CJumpNode::IsSpecialModel()
+bool CJumpNode::IsSpecialModel() const
 {
 	return ((m_flags & JN_SPECIAL_MODEL) != 0);
+}
+
+/**
+ * @return Does the jump node have a display name?
+ */
+bool CJumpNode::HasDisplayName() const
+{
+	return ((m_flags & JN_HAS_DISPLAY_NAME) != 0);
 }
 
 /**
@@ -311,7 +378,7 @@ bool CJumpNode::IsSpecialModel()
 * @param pos		World position
 * @param view_pos	Viewer's world position, can be NULL
 */
-void CJumpNode::Render(vec3d *pos, vec3d *view_pos)
+void CJumpNode::Render(const vec3d *pos, const vec3d *view_pos) const
 {
 	model_draw_list scene;
 
@@ -332,7 +399,7 @@ void CJumpNode::Render(vec3d *pos, vec3d *view_pos)
 * @param pos		World position
 * @param view_pos	Viewer's world position, can be NULL
 */
-void CJumpNode::Render(model_draw_list* scene, vec3d *pos, vec3d *view_pos)
+void CJumpNode::Render(model_draw_list *scene, const vec3d *pos, const vec3d *view_pos) const
 {
 	Assert(pos != NULL);
 	// Assert(view_pos != NULL); - view_pos can be NULL
@@ -345,7 +412,7 @@ void CJumpNode::Render(model_draw_list* scene, vec3d *pos, vec3d *view_pos)
 
 	matrix node_orient = IDENTITY_MATRIX;
 
-	int mr_flags = MR_NO_LIGHTING | MR_NO_BATCH;
+	uint64_t mr_flags = MR_NO_LIGHTING | MR_NO_BATCH;
 	if(!(m_flags & JN_SHOW_POLYS)) {
 		mr_flags |= MR_NO_CULL | MR_NO_POLYS | MR_SHOW_OUTLINE | MR_SHOW_OUTLINE_HTL | MR_NO_TEXTURING;
 	}
@@ -426,6 +493,24 @@ CJumpNode *jumpnode_get_by_objnum(int objnum)
 
 	for (CJumpNode &jnp : Jump_nodes) {
 		if (jnp.GetSCPObjectNumber() == objnum)
+			return &(jnp);
+	}
+
+	return nullptr;
+}
+
+/**
+ * Get jump node object by the object pointer
+ *
+ * @param objp to search for
+ * @return Jump node object pointer
+ */
+CJumpNode *jumpnode_get_by_objp(const object *objp)
+{
+	Assert(objp != nullptr);
+
+	for (CJumpNode &jnp : Jump_nodes) {
+		if (jnp.GetSCPObject() == objp)
 			return &(jnp);
 	}
 

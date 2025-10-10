@@ -14,11 +14,12 @@
 
 #include "controlconfig/controlsconfig.h"
 #include "globalincs/pstypes.h"
+#include "scripting/hook_api.h"
 
 extern int Mouse_sensitivity;
 extern bool Use_mouse_to_fly;
 
-extern const std::shared_ptr<scripting::Hook> OnMouseWheelHook;
+extern const std::shared_ptr<scripting::Hook<>> OnMouseWheelHook;
 
 // call once to init the mouse
 void mouse_init();
@@ -93,6 +94,9 @@ void mouse_flush();
  * @returns 0 if the button is not down, or
  * 
  * @returns 1 if the given button is down
+ * 
+ * @note Calls mousewheel_decay() if the mousewheel direction is "down".  
+ *       Please ensure mouse_down() is called only once per frame.
  */
 int mouse_down(const CC_bind &bind);
 

@@ -30,11 +30,13 @@ class GPUMemoryHeap;
 } // namespace util
 } // namespace graphics
 namespace scripting {
+template<typename condition_t>
 class OverridableHook;
 }
 
 extern const float Default_min_draw_distance;
 extern const float Default_max_draw_distance;
+extern float Min_draw_distance_cockpit;
 extern float Min_draw_distance;
 extern float Max_draw_distance;
 extern int Gr_inited;
@@ -75,7 +77,7 @@ extern bool High_dynamic_range;
 
 extern os::ViewportState Gr_configured_window_state;
 
-extern const std::shared_ptr<scripting::OverridableHook> OnFrameHook;
+extern const std::shared_ptr<scripting::OverridableHook<void>> OnFrameHook;
 
 class material;
 class model_material;
@@ -101,7 +103,7 @@ public:
 		Stack.push_back(Current_transform);
 	}
 
-	matrix4 &get_transform()
+	const matrix4 &get_transform() const
 	{
 		return Current_transform;
 	}
@@ -114,7 +116,7 @@ public:
 		Stack.push_back(Current_transform);
 	}
 
-	void push_and_replace(matrix4 new_transform)
+	void push_and_replace(const matrix4 &new_transform)
 	{
 		Current_transform = new_transform;
 		Stack.push_back(Current_transform);
@@ -198,7 +200,11 @@ enum shader_type {
 	SDR_TYPE_NANOVG,
 	SDR_TYPE_DECAL,
 	SDR_TYPE_SCENE_FOG,
+	SDR_TYPE_VOLUMETRIC_FOG,
 	SDR_TYPE_ROCKET_UI,
+	SDR_TYPE_COPY,
+	SDR_TYPE_COPY_WORLD,
+	SDR_TYPE_MSAA_RESOLVE,
 
 	SDR_TYPE_POST_PROCESS_SMAA_EDGE,
 	SDR_TYPE_POST_PROCESS_SMAA_BLENDING_WEIGHT,
@@ -211,31 +217,8 @@ enum shader_type {
 	NUM_SHADER_TYPES
 };
 
-// Shader flags
-#define SDR_FLAG_MODEL_LIGHT		(1<<0)
-#define SDR_FLAG_MODEL_FOG			(1<<1)
-#define SDR_FLAG_MODEL_DIFFUSE_MAP	(1<<2)
-#define SDR_FLAG_MODEL_GLOW_MAP		(1<<3)
-#define SDR_FLAG_MODEL_SPEC_MAP		(1<<4)
-#define SDR_FLAG_MODEL_NORMAL_MAP	(1<<5)
-#define SDR_FLAG_MODEL_HEIGHT_MAP	(1<<6)
-#define SDR_FLAG_MODEL_ENV_MAP		(1<<7)
-#define SDR_FLAG_MODEL_ANIMATED		(1<<8)
-#define SDR_FLAG_MODEL_MISC_MAP		(1<<9)
-#define SDR_FLAG_MODEL_TEAMCOLOR	(1<<10)
-#define SDR_FLAG_MODEL_TRANSFORM	(1<<11)
-#define SDR_FLAG_MODEL_DEFERRED		(1<<12)
-#define SDR_FLAG_MODEL_SHADOW_MAP	(1<<13)
-#define SDR_FLAG_MODEL_GEOMETRY		(1<<14)
-#define SDR_FLAG_MODEL_SHADOWS		(1<<15)
-#define SDR_FLAG_MODEL_THRUSTER		(1<<16)
-#define SDR_FLAG_MODEL_CLIP			(1<<17)
-#define SDR_FLAG_MODEL_HDR			(1<<18)
-#define SDR_FLAG_MODEL_AMBIENT_MAP	(1<<19)
-#define SDR_FLAG_MODEL_NORMAL_ALPHA	(1<<20)
-#define SDR_FLAG_MODEL_THICK_OUTLINES (1<<21) // Renders the model geometry as an outline with configurable line width
-#define SDR_FLAG_MODEL_ALPHA_MULT (1<<22) 
 
+// Shader flags
 #define SDR_FLAG_PARTICLE_POINT_GEN			(1<<0)
 
 #define SDR_FLAG_BLUR_HORIZONTAL			(1<<0)
@@ -244,6 +227,20 @@ enum shader_type {
 #define SDR_FLAG_NANOVG_EDGE_AA		(1<<0)
 
 #define SDR_FLAG_DECAL_USE_NORMAL_MAP (1<<0)
+
+#define SDR_FLAG_MSAA_SAMPLES_4 (1 << 0)
+#define SDR_FLAG_MSAA_SAMPLES_8 (1 << 1)
+#define SDR_FLAG_MSAA_SAMPLES_16 (1 << 2)
+
+#define SDR_FLAG_VOLUMETRICS_DO_EDGE_SMOOTHING (1<<0)
+#define SDR_FLAG_VOLUMETRICS_NOISE (1<<1)
+
+#define SDR_FLAG_COPY_FROM_ARRAY (1 << 0)
+
+#define SDR_FLAG_TONEMAPPING_LINEAR_OUT (1 << 0)
+
+#define SDR_FLAG_ENV_MAP (1 << 0)
+
 
 enum class uniform_block_type {
 	Lights = 0,
@@ -270,20 +267,23 @@ struct vertex_format_data
 		COLOR4,
 		COLOR4F,
 		TEX_COORD2,
-		TEX_COORD3,
+		TEX_COORD4,
 		NORMAL,
 		TANGENT,
 		MODEL_ID,
 		RADIUS,
 		UVEC,
+		MATRIX4,
 	};
 
 	vertex_format format_type;
 	size_t stride;
 	size_t offset;
+	size_t divisor;
+	size_t buffer_number;
 
-	vertex_format_data(vertex_format i_format_type, size_t i_stride, size_t i_offset) :
-	format_type(i_format_type), stride(i_stride), offset(i_offset) {}
+	vertex_format_data(vertex_format i_format_type, size_t i_stride, size_t i_offset, size_t i_divisor, size_t i_buffer_number) :
+	format_type(i_format_type), stride(i_stride), offset(i_offset), divisor(i_divisor), buffer_number(i_buffer_number) {}
 
 	static inline uint mask(vertex_format v_format) { return 1 << v_format; }
 
@@ -296,7 +296,7 @@ class vertex_layout
 	SCP_vector<vertex_format_data> Vertex_components;
 
 	uint Vertex_mask = 0;
-	size_t Vertex_stride = 0;
+	SCP_unordered_map<size_t, size_t> Vertex_stride;
 public:
 	vertex_layout() {}
 
@@ -306,9 +306,9 @@ public:
 	
 	bool resident_vertex_format(vertex_format_data::vertex_format format_type) const;
 
-	void add_vertex_component(vertex_format_data::vertex_format format_type, size_t stride, size_t offset);
+	void add_vertex_component(vertex_format_data::vertex_format format_type, size_t stride, size_t offset, size_t divisor = 0, size_t buffer_number = 0);
 
-	size_t get_vertex_stride() { return Vertex_stride; }
+	size_t get_vertex_stride(size_t buffer_number = 0) const { return Vertex_stride.at(buffer_number); }
 
 	bool operator==(const vertex_layout& other) const;
 
@@ -323,7 +323,7 @@ template<> struct hash<vertex_layout> {
 };
 }
 
-typedef enum gr_capability {
+enum class gr_capability {
 	CAPABILITY_ENVIRONMENT_MAP,
 	CAPABILITY_NORMAL_MAP,
 	CAPABILITY_HEIGHT_MAP,
@@ -332,13 +332,23 @@ typedef enum gr_capability {
 	CAPABILITY_POST_PROCESSING,
 	CAPABILITY_DEFERRED_LIGHTING,
 	CAPABILITY_SHADOWS,
+	CAPABILITY_THICK_OUTLINE,
 	CAPABILITY_BATCHED_SUBMODELS,
-	CAPABILITY_POINT_PARTICLES,
 	CAPABILITY_TIMESTAMP_QUERY,
 	CAPABILITY_SEPARATE_BLEND_FUNCTIONS,
 	CAPABILITY_PERSISTENT_BUFFER_MAPPING,
-	CAPABILITY_BPTC
-} gr_capability;
+	CAPABILITY_BPTC,
+	CAPABILITY_LARGE_SHADER,
+	CAPABILITY_INSTANCED_RENDERING
+};
+
+struct gr_capability_def {
+	gr_capability capability;
+	const char* parse_name;
+};
+
+extern gr_capability_def gr_capabilities[];
+extern const size_t gr_capabilities_num;
 
 enum class gr_property
 {
@@ -359,7 +369,6 @@ extern int gr_stencil_mode;
  * of the values you want to use in the shade primitive.
  */
 typedef struct shader {
-	uint screen_sig;  // current mode this is in
 	ubyte r, g, b, c; // factors and constant
 	ubyte lookup[256];
 } shader;
@@ -372,7 +381,6 @@ typedef struct shader {
 // If you need to get the rgb values of a "color" struct call
 // gr_get_colors after calling gr_set_colors_fast.
 typedef struct color {
-	uint		screen_sig;
 	int		is_alphacolor;
 	int		alphacolor;
 	int		magic;
@@ -653,7 +661,6 @@ enum class BufferUsageHint { Static, Dynamic, Streaming, PersistentMapping };
 typedef void* gr_sync;
 
 typedef struct screen {
-	uint signature = 0;       // changes when mode or palette or width or height changes
 	int max_w = 0, max_h = 0; // Width and height
 	int max_w_unscaled = 0, max_h_unscaled = 0;
 	int max_w_unscaled_zoomed = 0, max_h_unscaled_zoomed = 0;
@@ -706,6 +713,8 @@ typedef struct screen {
 
 	// switch onscreen, offscreen
 	std::function<void()> gf_flip;
+
+	std::function<void()> gf_setup_frame;
 
 	// sets the clipping region
 	std::function<void(int x, int y, int w, int h, int resize_mode)> gf_set_clip;
@@ -801,6 +810,7 @@ typedef struct screen {
 	std::function<void()> gf_post_process_restore_zbuffer;
 
 	std::function<void(bool clearNonColorBufs)> gf_deferred_lighting_begin;
+	std::function<void()> gf_deferred_lighting_msaa;
 	std::function<void()> gf_deferred_lighting_end;
 	std::function<void()> gf_deferred_lighting_finish;
 
@@ -887,7 +897,9 @@ typedef struct screen {
 		primitive_type prim_type,
 		vertex_layout* layout,
 		int num_elements,
-		const indexed_vertex_source& buffers)>
+		const indexed_vertex_source& buffers,
+		const gr_buffer_handle& instance_buffer,
+		int num_instances)>
 		gf_render_decals;
 	void (*gf_render_rocket_primitives)(interface_material* material_info,
 		primitive_type prim_type,
@@ -919,7 +931,53 @@ typedef struct screen {
 	std::function<void(gr_sync sync)> gf_sync_delete;
 
 	std::function<void(int x, int y, int width, int height)> gf_set_viewport;
+
+	std::function<void(bool set_override)> gf_override_fog;
+
+	//OpenXR functions
+	std::function<SCP_vector<const char*>()> gf_openxr_get_extensions;
+	std::function<bool()> gf_openxr_test_capabilities;
+	std::function<bool()> gf_openxr_create_session;
+	std::function<int64_t(const SCP_vector<int64_t>&)> gf_openxr_get_swapchain_format;
+	std::function<bool()> gf_openxr_acquire_swapchain_buffers;
+	std::function<bool()> gf_openxr_flip;
 } screen;
+
+/**
+ * @brief Scripting context render values
+ */
+typedef struct lua_screen {
+	bool active = false;
+	bool force_fso_context = false;
+	color current_color = {
+		0,   // is_alphacolor
+		0,   // alphacolor
+		0,   // magic
+		255, // red
+		255, // green
+		255, // blue
+		255, // alpha
+		0,   // ac_type
+		0    // raw8
+	};
+	float line_width = 1.0f;
+	int current_font_index = 0;
+} lua_screen;
+
+extern lua_screen gr_lua_screen;
+
+bool gr_lua_context_active();
+
+// Macros to easily choose been which context to use for color and line width
+// Note that font is handled slightly differently for the normal game context by using it's own global in the FontManager namespace
+// So FontManager::getCurrentFontIndex() is effectively its own macro
+
+// Gets the current color between the game context and the lua context if active
+#define GR_CURRENT_COLOR (gr_lua_context_active() ? gr_lua_screen.current_color : gr_screen.current_color)
+
+// Gets the current line width between the game context and the lua contet if active
+#define GR_CURRENT_LINE_WIDTH (gr_lua_context_active() ? gr_lua_screen.line_width : gr_screen.line_width)
+
 
 // handy macro
 #define GR_MAYBE_CLEAR_RES(bmap)		do  { int bmw = -1; int bmh = -1; if(bmap != -1){ bm_get_info( bmap, &bmw, &bmh, NULL, NULL, NULL); if((bmw != gr_screen.max_w) || (bmh != gr_screen.max_h)){gr_clear();} } else {gr_clear();} } while(false);
@@ -973,6 +1031,7 @@ extern screen gr_screen;
 #define GR_RESIZE_MENU				3
 #define GR_RESIZE_MENU_ZOOMED		4
 #define GR_RESIZE_MENU_NO_OFFSET	5
+#define GR_RESIZE_REPLACE			6
 
 void gr_set_screen_scale(int x, int y, int zoom_x = -1, int zoom_y = -1, int max_x = gr_screen.max_w, int max_y = gr_screen.max_h, int center_x = gr_screen.center_w, int center_y = gr_screen.center_h, bool force_stretch = false);
 void gr_reset_screen_scale();
@@ -993,7 +1052,7 @@ extern void gr_printf_menu_zoomed( int x, int y, const char * format, SCP_FORMAT
 extern void gr_printf_no_resize( int x, int y, const char * format, SCP_FORMAT_STRING ... )  SCP_FORMAT_STRING_ARGS(3, 4);
 
 // Returns the size of the string in pixels in w and h
-extern void gr_get_string_size( int *w, int *h, const char * text, int len = 9999 );
+extern void gr_get_string_size( int *w, int *h, const char * text, float scaleMultiplier = 1.0f, size_t len = std::string::npos);
 
 // Returns the height of the current font
 extern int gr_get_font_height();
@@ -1017,6 +1076,10 @@ extern void gr_activate(int active);
 
 //#define gr_flip				GR_CALL(gr_screen.gf_flip)
 void gr_flip(bool execute_scripting = true);
+
+inline void gr_setup_frame() {
+	gr_screen.gf_setup_frame();
+}
 
 //#define gr_set_clip			GR_CALL(gr_screen.gf_set_clip)
 inline void gr_set_clip(int x, int y, int w, int h, int resize_mode=GR_RESIZE_FULL)
@@ -1101,6 +1164,7 @@ inline void gr_post_process_restore_zbuffer()
 }
 
 #define gr_deferred_lighting_begin		GR_CALL(gr_screen.gf_deferred_lighting_begin)
+#define gr_deferred_lighting_msaa		GR_CALL(gr_screen.gf_deferred_lighting_msaa)
 #define gr_deferred_lighting_end		GR_CALL(gr_screen.gf_deferred_lighting_end)
 #define gr_deferred_lighting_finish		GR_CALL(gr_screen.gf_deferred_lighting_finish)
 
@@ -1122,6 +1186,8 @@ inline void gr_post_process_restore_zbuffer()
 #define gr_shadow_map_start				GR_CALL(gr_screen.gf_shadow_map_start)
 #define gr_shadow_map_end				GR_CALL(gr_screen.gf_shadow_map_end)
 #define gr_render_shield_impact			GR_CALL(gr_screen.gf_render_shield_impact)
+
+#define gr_override_fog					GR_CALL(gr_screen.gf_override_fog)
 
 inline void gr_render_primitives(material* material_info,
 	primitive_type prim_type,
@@ -1276,18 +1342,27 @@ inline void gr_sync_delete(gr_sync sync)
 	gr_screen.gf_sync_delete(sync);
 }
 
+//OpenXR
+#define gr_openxr_get_extensions GR_CALL(gr_screen.gf_openxr_get_extensions)
+#define gr_openxr_test_capabilities GR_CALL(gr_screen.gf_openxr_test_capabilities)
+#define gr_openxr_create_session GR_CALL(gr_screen.gf_openxr_create_session)
+#define gr_openxr_get_swapchain_format GR_CALL(gr_screen.gf_openxr_get_swapchain_format)
+#define gr_openxr_acquire_swapchain_buffers GR_CALL(gr_screen.gf_openxr_acquire_swapchain_buffers)
+#define gr_openxr_flip GR_CALL(gr_screen.gf_openxr_flip)
+
 // color functions
 void gr_init_color(color *c, int r, int g, int b);
 void gr_init_alphacolor( color *clr, int r, int g, int b, int alpha, int type = AC_TYPE_HUD );
 void gr_set_color( int r, int g, int b );
-void gr_set_color_fast(color *dst);
+void gr_set_color_fast(const color *dst);
+bool gr_compare_color_values(const color& clr1, const color& clr2);
 
 // shader functions
 void gr_create_shader(shader *shade, ubyte r, ubyte g, ubyte b, ubyte c);
 void gr_set_shader(shader *shade);
 
 // new bitmap functions
-void gr_bitmap(int x, int y, int resize_mode = GR_RESIZE_FULL);
+void gr_bitmap(int x, int y, int resize_mode = GR_RESIZE_FULL, bool mirror = false, float scale_factor = 1.0f);
 void gr_bitmap_uv(int _x, int _y, int _w, int _h, float _u0, float _v0, float _u1, float _v1, int resize_mode = GR_RESIZE_FULL);
 
 // special function for drawing polylines. this function is specifically intended for
@@ -1333,7 +1408,7 @@ class DebugScope {
 };
 }
 
-#ifndef NDEBUG
+#if !defined(NDEBUG) || defined(FS_OPENGL_DEBUG)
 #define GR_DEBUG_SCOPE(name) ::graphics::DebugScope SCP_TOKEN_CONCAT(gr_scope, __LINE__)(name)
 #else
 #define GR_DEBUG_SCOPE(name) do {} while(false)
@@ -1403,6 +1478,8 @@ void gr_heap_deallocate(GpuHeap heap_type, size_t data_offset);
 void gr_set_gamma(float gamma);
 
 void gr_get_post_process_effect_names(SCP_vector<SCP_string> &names);
+
+bool gr_is_viewport_window();
 
 // Include this last to make the 2D rendering function available everywhere
 #include "graphics/render.h"

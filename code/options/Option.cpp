@@ -1,5 +1,6 @@
-//
-//
+//Provides an API to create and interface with built-in game options
+//through scripting. Includes methods for instantly persisting value changes
+//or saving changes to persist upon restart of the game.
 
 #include "Option.h"
 #include "OptionsManager.h"
@@ -98,7 +99,7 @@ bool boolean_deserializer(const json_t* value)
 	return b != 0;
 }
 json_t* boolean_serializer(bool value) { return json_pack("b", value ? 1 : 0); }
-SCP_string boolean_display(bool value) { return value ? "On" : "Off"; }
+SCP_string boolean_display(bool value) { return value ? XSTR("On", 1285) : XSTR("Off", 1286); }
 template<>
 void set_defaults<bool>(Option<bool>& opt) {
 	opt.setDeserializer(boolean_deserializer);
@@ -120,35 +121,70 @@ OptionBase::OptionBase(SCP_string config_key, SCP_string title, SCP_string descr
 {
 	_parent = OptionsManager::instance();
 }
-std::unique_ptr<json_t> OptionBase::getConfigValue() const { return _parent->getValueFromConfig(_config_key); }
 
+//Return the option value from the config
+std::optional<std::unique_ptr<json_t>> OptionBase::getConfigValue() const { return _parent->getValueFromConfig(_config_key); }
+
+//Return the option expert_level value
 ExpertLevel OptionBase::getExpertLevel() const { return _expert_level; }
+
+//Set the option expert_level value
 void OptionBase::setExpertLevel(ExpertLevel expert_level) { _expert_level = expert_level; }
 
+//Set option preset value
 void OptionBase::setPreset(PresetKind preset, const SCP_string& value) { _preset_values.emplace(preset, value); }
 
-const SCP_string& OptionBase::getCategory() const { return _category; }
-void OptionBase::setCategory(const SCP_string& category) { _category = category; }
+//Return the option category
+const SCP_string OptionBase::getCategory() const { return XSTR(_category.first, _category.second); }
 
+//Set the option category
+void OptionBase::setCategory(const std::pair<const char*, int>& category)
+{
+	_category = category;
+}
+
+//Return unique built-in key for the option
 const SCP_string& OptionBase::getConfigKey() const {
 	return _config_key;
 }
+
+//Return option title
 const SCP_string& OptionBase::getTitle() const {
 	return _title;
 }
+
+//Return option description
 const SCP_string& OptionBase::getDescription() const {
 	return _description;
 }
+
+//Return option importance, used for sorting
 int OptionBase::getImportance() const {
 	return _importance;
 }
+
+//Set option importance, used for sorting
 void OptionBase::setImportance(int importance) {
 	_importance = importance;
 }
+
+//Get option min/max range values
+std::pair<float, float> OptionBase::getRangeValues() const {
+	return std::make_pair(_min, _max);
+}
+
+//Set option min/max range values
+void OptionBase::setRangeValues(float min, float max)
+{
+	_min = min;
+	_max = max;
+}
+
 bool operator<(const OptionBase& lhs, const OptionBase& rhs) {
-	if (lhs._category < rhs._category)
+	auto val = stricmp(lhs._category.first, rhs._category.first);
+	if (val < 0)
 		return true;
-	if (rhs._category < lhs._category)
+	if (val > 0)
 		return false;
 	return lhs._importance > rhs._importance; // Importance is sorted from highest to lowest
 }
@@ -161,12 +197,26 @@ bool operator<=(const OptionBase& lhs, const OptionBase& rhs) {
 bool operator>=(const OptionBase& lhs, const OptionBase& rhs) {
 	return !(lhs < rhs);
 }
+
+//Return current flags for this option
 const flagset<OptionFlags>& OptionBase::getFlags() const {
 	return _flags;
 }
+
+//Set flags for this option
 void OptionBase::setFlags(const flagset<OptionFlags>& flags) {
 	_flags = flags;
 }
+
+bool OptionBase::getIsOnce() const {
+	return _is_once;
+}
+
+void OptionBase::setIsOnce(bool is_once) {
+	_is_once = is_once;
+}
+
+//persists any changes made to this specific option and returns whether or not it was successful
 bool OptionBase::persistChanges() const { return _parent->persistOptionChanges(this); }
 
 } // namespace options

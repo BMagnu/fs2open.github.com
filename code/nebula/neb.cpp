@@ -15,6 +15,7 @@
 #include "debugconsole/console.h"
 #include "freespace.h"
 #include "jpgutils/jpgutils.h"
+#include "math/bitarray.h"
 #include "mission/missionparse.h"
 #include "nebula/neb.h"
 #include "object/object.h"
@@ -59,22 +60,18 @@ SCP_vector<poof_info> Poof_info;
 
 float Poof_dist_threshold;
 vec3d Poof_last_gen_pos;
-float Poof_accum[MAX_NEB2_POOFS];
+SCP_vector<float> Poof_accum;
 float Poof_density_multiplier;
 
 const float UPKEEP_DIST_MULT = 1.2f;
 
 const float PROBABLY_TOO_MANY_POOFS = 100000.0f;
 
-// array of neb2 poofs
-int32_t Neb2_poof_flags = 0;
+// bit array of neb2 poofs
+std::unique_ptr<ubyte[]> Neb2_poof_flags;
 
 // array of neb2 bitmaps
-char Neb2_bitmap_filenames[MAX_NEB2_BITMAPS][MAX_FILENAME_LEN] = {
-	"", "", "", "", "", ""
-};
-int Neb2_bitmap[MAX_NEB2_BITMAPS] = { -1, -1, -1, -1, -1, -1 };
-int Neb2_bitmap_count = 0;
+SCP_vector<SCP_string> Neb2_bitmap_filenames;
 
 // texture to use for this level
 char Neb2_texture_name[MAX_FILENAME_LEN] = "";
@@ -132,19 +129,42 @@ SCP_vector<poof> Neb2_poofs;
 
 int Neb2_background_color[3] = {0, 0, 255};			// rgb background color (used for lame rendering)
 
-const SCP_vector<std::pair<int, SCP_string>> DetailLevelValues = {{ 0, "Minimum" },
-                                                                  { 1, "Low" },
-                                                                  { 2, "Medium" },
-                                                                  { 3, "High" },
-                                                                  { 4, "Ultra" }, };
+const SCP_vector<std::pair<int, std::pair<const char*, int>>> DetailLevelValues = {{ 0, {"Minimum", 1680}},
+                                                                                   { 1, {"Low", 1160}},
+                                                                                   { 2, {"Medium", 1161}},
+                                                                                   { 3, {"High", 1162}},
+                                                                                   { 4, {"Ultra", 1721}}};
 
-const auto ModelDetailOption = options::OptionBuilder<int>("Graphics.NebulaDetail",
-                                                           "Nebula Detail",
-                                                           "Detail level of nebulas").category("Graphics").values(
-	DetailLevelValues).default_val(MAX_DETAIL_LEVEL).importance(7).change_listener([](int val, bool) {
-	Detail.nebula_detail = val;
-	return true;
-}).finish();
+static void parse_nebula_detail_func()
+{
+	constexpr int num_detail_presets = static_cast<int>(DefaultDetailPreset::Num_detail_presets);
+	int value[num_detail_presets];
+	stuff_int_list(value, num_detail_presets, ParseLookupType::RAW_INTEGER_TYPE);
+
+	for (int i = 0; i < num_detail_presets; i++) {
+
+		if (value[i] < 0 || value[i] > MAX_DETAIL_VALUE) {
+			error_display(0, "%i is an invalid detail level value!", value[i]);
+		} else {
+			change_default_detail_level(static_cast<DefaultDetailPreset>(i), DetailSetting::NebulaDetail, value[i]);
+		}
+	}
+}
+
+const auto NebulaDetailOption __UNUSED = options::OptionBuilder<int>("Graphics.NebulaDetail",
+                     std::pair<const char*, int>{"Nebula Detail", 1361},
+                     std::pair<const char*, int>{"Detail level of nebulas", 1697})
+                     .category(std::make_pair("Graphics", 1825))
+                     .values(DetailLevelValues)
+                     .default_func([]() { return Detail.nebula_detail; })
+                     .importance(7)
+                     .change_listener([](int val, bool) {
+                          Detail.nebula_detail = val;
+                          return true;
+                     })
+                     .flags({options::OptionFlags::RetailBuiltinOption})
+                     .parser(parse_nebula_detail_func)
+                     .finish();
 
 // --------------------------------------------------------------------------------------------------------
 // NEBULA FORWARD DECLARATIONS
@@ -163,94 +183,165 @@ void neb2_get_eye_orient(matrix *eye_matrix);
 // NEBULA FUNCTIONS
 //
 
-// initialize neb2 stuff at game startup
-void neb2_init()
+static poof_info* get_nebula_poof_pointer(char* nebula_name)
+{
+	for (size_t i = 0; i < Poof_info.size(); i++) {
+		if (!stricmp(nebula_name, Poof_info[i].name)) {
+			return &Poof_info[i];
+		}
+	}
+
+	// Didn't find anything.
+	return nullptr;
+}
+
+void parse_nebula_table(const char* filename)
 {
 	char name[MAX_FILENAME_LEN];
 
 	try
 	{
 		// read in the nebula.tbl
-		read_file_text("nebula.tbl", CF_TYPE_TABLES);
+		read_file_text(filename, CF_TYPE_TABLES);
 		reset_parse();
 
+		// allow modular tables to not define bitmaps
+		bool skip_background_bitmaps = false;
+		if (Parsing_modular_table && (check_for_string("+Poof:") || check_for_string("$Name:")))
+			skip_background_bitmaps = true;
+
 		// background bitmaps
-		Neb2_bitmap_count = 0;
-		while (!optional_string("#end")) {
+		while (!skip_background_bitmaps && !optional_string("#end")) {
 			// nebula
-			required_string("+Nebula:");
+			optional_string("+Nebula:");
 			stuff_string(name, F_NAME, MAX_FILENAME_LEN);
 
-			if (Neb2_bitmap_count < MAX_NEB2_BITMAPS) {
-				strcpy_s(Neb2_bitmap_filenames[Neb2_bitmap_count++], name);
+			if (!generic_bitmap_exists(name) && !generic_anim_exists(name)) {
+				error_display(0, "Nebula bitmap %s was not found!, skipping!", name);
+				continue;
 			}
-			else {
-				WarningEx(LOCATION, "nebula.tbl\nExceeded maximum number of nebulas (%d)!\nSkipping %s.", MAX_NEB2_BITMAPS, name);
-			}
+
+			Neb2_bitmap_filenames.push_back(name);
 		}
 
-		// poofs
+		// allow modular tables to not define poofs
+		if (Parsing_modular_table && check_for_eof())
+			return;
+
+		// poofs (see also check_for_string above)
 		while (required_string_one_of(3, "#end", "+Poof:", "$Name:")) {
+			bool create_if_not_found = true;
+			poof_info pooft;
+			poof_info* poofp;
+			bool poof_new = true;
 
-			if (Poof_info.size() < MAX_NEB2_POOFS) {
-				poof_info new_poof;
+			if (optional_string("+Poof:")) { // retail style
+				stuff_string(name, F_NAME, MAX_FILENAME_LEN);
+				strcpy_s(pooft.bitmap_filename, name);
 
-				if (optional_string("+Poof:")) { // retail style
-					stuff_string(name, F_NAME, MAX_FILENAME_LEN);
-					strcpy_s(new_poof.bitmap_filename, name);
+				strcpy_s(pooft.name, name);
 
-					strcpy_s(new_poof.name, name);
+				if (!generic_bitmap_exists(pooft.bitmap_filename) && !generic_anim_exists(pooft.bitmap_filename)) {
+					error_display(0, "Bitmap defined for nebula poof %s was not found. Skipping!", pooft.name);
+					continue;
+				}
 
-					generic_anim_init(&new_poof.bitmap, name);
+				generic_anim_init(&pooft.bitmap, name);
 
-					Poof_info.push_back(new_poof);
-				} else if (optional_string("$Name:")) { // new style
-					stuff_string(new_poof.name, F_NAME, NAME_LENGTH);
+				Poof_info.push_back(pooft);
+			} else if (optional_string("$Name:")) { // new style
+				stuff_string(pooft.name, F_NAME, NAME_LENGTH);
 
+				if (optional_string("+nocreate")) {
+					if (!Parsing_modular_table) {
+						Warning(LOCATION, "+nocreate flag used for nebula poof in non-modular table\n");
+					}
+					create_if_not_found = false;
+				}
+
+				// Does this poof exist already?
+				// If so, load this new info into it
+				poofp = get_nebula_poof_pointer(pooft.name);
+				if (poofp != nullptr) {
+					if (!Parsing_modular_table) {
+						error_display(1,
+							"Error:  Nebula Poof %s already exists.  All nebula poof names must be unique.",
+							pooft.name);
+					}
+					poof_new = false;
+				} else {
+					// Don't create poof if it has +nocreate and is in a modular table.
+					if (!create_if_not_found && Parsing_modular_table) {
+						if (!skip_to_start_of_string_either("$Name:", "#end")) {
+							error_display(1, "Missing [#end] or [$Name] after nebula poof %s", pooft.name);
+						}
+						continue;
+					}
+					Poof_info.push_back(pooft);
+					poofp = &Poof_info[Poof_info.size() - 1];
+				}
+
+				if (poof_new) {
 					required_string("$Bitmap:");
 					stuff_string(name, F_NAME, MAX_FILENAME_LEN);
-
-					strcpy_s(new_poof.bitmap_filename, name);
-					generic_anim_init(&new_poof.bitmap, name);
-
-					if (optional_string("$Scale:"))
-						new_poof.scale = ::util::parseUniformRange<float>(0.01f, 100000.0f);
-
-					if (optional_string("$Density:")) {
-						stuff_float(&new_poof.density);
-						if (new_poof.density <= 0.0f) {
-							Warning(LOCATION, "Poof %s must have a density greater than 0.", new_poof.name);
-							new_poof.density = 150.0f;
-						}
-						new_poof.density = 1 / (new_poof.density * new_poof.density * new_poof.density);
+					strcpy_s(poofp->bitmap_filename, name);
+					generic_anim_init(&poofp->bitmap, name);
+				} else {
+					if (optional_string("$Bitmap:")) {
+						stuff_string(name, F_NAME, MAX_FILENAME_LEN);
+						strcpy_s(poofp->bitmap_filename, name);
+						generic_anim_init(&poofp->bitmap, name);
 					}
-
-					if (optional_string("$Rotation:"))
-						new_poof.rotation = ::util::parseUniformRange<float>(-1000.0f, 1000.0f);
-
-					if (optional_string("$View Distance:")) {
-						stuff_float(&new_poof.view_dist);
-						if (new_poof.view_dist < 0.0f) {
-							Warning(LOCATION, "Poof %s must have a positive view distance.", new_poof.name);
-							new_poof.view_dist = 360.f;
-						}
-
-						float volume = PI * 4 / 3 * (new_poof.view_dist * new_poof.view_dist * new_poof.view_dist);
-						if (volume * new_poof.density > PROBABLY_TOO_MANY_POOFS) {
-							Warning(LOCATION, "Poof %s will have over 100,000 poofs on the field at once, and could cause serious performance issues. "
-								"Remember that as $Density decreases and $View Distance increases, the total number of poofs increases exponentially.", new_poof.name);
-						}
-					}
-
-					if (optional_string("$Alpha:")) {
-						new_poof.alpha = ::util::parseUniformRange<float>(0.0f, 1.0f);
-					}
-
-					Poof_info.push_back(new_poof);
 				}
-			}
-			else {
-				WarningEx(LOCATION, "nebula.tbl\nExceeded maximum number of nebula poofs (%d)!\nSkipping %s.", (int)MAX_NEB2_POOFS, name);
+
+				//We can't skip here because we'd have to back out the entire poof from the vector-Mjn
+				if (!generic_bitmap_exists(poofp->bitmap_filename) && !generic_anim_exists(poofp->bitmap_filename))
+					error_display(0, "Bitmap defined for nebula poof %s was not found!", poofp->name);
+
+				if (optional_string("$Scale:"))
+					poofp->scale = ::util::ParsedRandomFloatRange::parseRandomRange(0.01f, 100000.0f);
+
+				if (optional_string("$Density:")) {
+					stuff_float(&poofp->density);
+					if (poofp->density <= 0.0f) {
+						Warning(LOCATION, "Poof %s must have a density greater than 0.", poofp->name);
+						poofp->density = 150.0f;
+					}
+					poofp->density = 1 / (poofp->density * poofp->density * poofp->density);
+				}
+
+				if (optional_string("$Alignment:")) {
+					SCP_string type;
+					stuff_string(type, F_NAME);
+
+					if (!stricmp(type.c_str(), "VERTICAL"))
+						poofp->alignment = vmd_y_vector;
+					else
+						Warning(LOCATION, "Unrecognized alignment type '%s' for nebula poof %s", type.c_str(), poofp->name);
+				}
+
+				if (optional_string("$Rotation:"))
+					poofp->rotation = util::ParsedRandomFloatRange::parseRandomRange(-1000.0f, 1000.0f);
+
+				if (optional_string("$View Distance:")) {
+					stuff_float(&poofp->view_dist);
+					if (poofp->view_dist < 0.0f) {
+						Warning(LOCATION, "Poof %s must have a positive view distance.", poofp->name);
+						poofp->view_dist = 360.f;
+					}
+
+					float volume = PI * 4 / 3 * (poofp->view_dist * poofp->view_dist * poofp->view_dist);
+					if (volume * poofp->density > PROBABLY_TOO_MANY_POOFS) {
+						Warning(LOCATION, "Poof %s will have over 100,000 poofs on the field at once, and could cause serious performance issues. "
+							"Remember that as $Density decreases and $View Distance increases, the total number of "
+							"poofs increases exponentially.",
+							poofp->name);
+					}
+				}
+
+				if (optional_string("$Alpha:")) {
+					poofp->alpha = util::ParsedRandomFloatRange::parseRandomRange(0.0f, 1.0f);
+				}
 			}
 		}
 	}
@@ -261,8 +352,38 @@ void neb2_init()
 	}
 }
 
+// initialize neb2 stuff at game startup
+void neb2_init()
+{
+	// first parse the default table
+	parse_nebula_table("nebula.tbl");
+
+	// parse any modular tables
+	parse_modular_table("*-neb.tbm", parse_nebula_table);
+
+	// align Poof_accum with Poof_info
+	Poof_accum.resize(Poof_info.size());
+
+	// set up bit string
+	Neb2_poof_flags = std::make_unique<ubyte[]>(calculate_num_bytes(Poof_info.size()));
+	clear_all_bits(Neb2_poof_flags.get(), Poof_info.size());
+}
+
+// set the bits for poofs from a list of poof names
+void neb2_set_poof_bits(const SCP_vector<SCP_string>& list)
+{
+	clear_all_bits(Neb2_poof_flags.get(), Poof_info.size()); //Make absolutely sure flags are zero'd before we start adding to it-Mjn
+	for (const SCP_string& thisPoof : list) {
+		for (size_t i = 0; i < Poof_info.size(); i++) {
+			if (lcase_equal(Poof_info[i].name, thisPoof)) {
+				set_bit(Neb2_poof_flags.get(), i);
+			}
+		}
+	}
+}
+
 bool poof_is_used(size_t idx) {
-	return (Neb2_poof_flags & (1 << idx)) != 0;
+	return get_bit(Neb2_poof_flags.get(), idx) != 0;
 }
 
 void neb2_get_fog_color(ubyte *r, ubyte *g, ubyte *b)
@@ -272,6 +393,18 @@ void neb2_get_fog_color(ubyte *r, ubyte *g, ubyte *b)
 	if (b) *b = Neb2_fog_color[2];
 }
 
+void neb2_pre_level_init()
+{
+	Neb2_awacs = -1.0f;
+	Neb2_fog_near_mult = 1.0f;
+	Neb2_fog_far_mult = 1.0f;
+
+	strcpy_s(Neb2_texture_name, "");
+	clear_all_bits(Neb2_poof_flags.get(), Poof_info.size());
+
+	strcpy_s(Mission_parse_storm_name, "none");
+}
+
 void neb2_level_init()
 {
 	Nebula_sexp_used = false;
@@ -279,8 +412,9 @@ void neb2_level_init()
 
 float nNf_near, nNf_density;
 
-void neb2_poof_setup() {
-	if (!Neb2_poof_flags)
+void neb2_poof_setup()
+{
+	if (!any_bits_set(Neb2_poof_flags.get(), Poof_info.size()))
 		return;
 
 	// make the total density of poofs be the average of all poofs, and each poofs density is its relative proportion compared to others
@@ -301,7 +435,7 @@ void neb2_poof_setup() {
 		}
 	}
 	Poof_density_multiplier = Poof_density_sum_square / (Poof_density_sum * Poof_density_sum);
-	Poof_density_multiplier *= (Detail.nebula_detail + 0.5f) / (MAX_DETAIL_LEVEL + 0.5f); // scale the poofs down based on detail level
+	Poof_density_multiplier *= (Detail.nebula_detail + 0.5f) / (MAX_DETAIL_VALUE + 0.5f); // scale the poofs down based on detail level
 }
 
 void neb2_generate_fog_color(const char *fog_color_palette, ubyte fog_color[])
@@ -374,15 +508,16 @@ void neb2_post_level_init(bool fog_color_override)
 	// load in all nebula bitmaps
 	for (poof_info &pinfo : Poof_info) {
 		if (pinfo.bitmap.first_frame < 0) {
-			pinfo.bitmap.first_frame = bm_load(pinfo.bitmap_filename);
-
-			if (pinfo.bitmap.first_frame >= 0) {
-				pinfo.bitmap.num_frames = 1;
-				pinfo.bitmap.total_time = 1.0f;
-			}		// fall back to an animated type
-			else if (generic_anim_load(&pinfo.bitmap)) {
-				mprintf(("Could not find a usable bitmap for nebula poof '%s'!\n", pinfo.name));
-				Warning(LOCATION, "Could not find a usable bitmap (%s) for nebula poof '%s'!\n", pinfo.bitmap_filename, pinfo.name);
+			if (generic_anim_load(&pinfo.bitmap)) {
+				// fall back to non-animated type
+				pinfo.bitmap.first_frame = bm_load(pinfo.bitmap_filename);
+				if (pinfo.bitmap.first_frame >= 0) {
+					pinfo.bitmap.num_frames = 1;
+					pinfo.bitmap.total_time = 1.0f;
+				} else {
+					mprintf(("Could not find a usable bitmap for nebula poof '%s'!\n", pinfo.name));
+					Warning(LOCATION, "Could not find a usable bitmap (%s) for nebula poof '%s'!\n", pinfo.bitmap_filename, pinfo.name);
+				}
 			}
 		}
 	}
@@ -403,17 +538,6 @@ void neb2_post_level_init(bool fog_color_override)
 	if ( !(The_mission.flags[Mission::Mission_Flags::Fullneb]) ) {
 		Neb2_render_mode = NEB2_RENDER_NONE;
 		Neb2_awacs = -1.0f;
-	}
-
-	// truncate the poof flags down to the poofs we have
-	if (Poof_info.size() < MAX_NEB2_POOFS) {
-		int available_poofs_mask = (1 << Poof_info.size()) - 1;
-
-		// check for negative here too, because if we're not at max, 32, then we're gauranteed not to have the sign bit
-		if (Neb2_poof_flags > available_poofs_mask || Neb2_poof_flags < 0)
-			Warning(LOCATION, "One or more invalid nebula poofs detected!");
-
-		Neb2_poof_flags = Neb2_poof_flags & available_poofs_mask;
 	}
 
 	// set the mission fog near dist and density
@@ -554,7 +678,8 @@ int neb2_skip_render(object *objp, float z_depth)
 			}
 			break;
 
-		// any ship less than 3% visible at their closest point
+		// any ship or raw pof less than 3% visible at their closest point
+		case OBJ_RAW_POF:
 		case OBJ_SHIP:
 			if (fog < 0.03f)
 				return 1;
@@ -654,21 +779,86 @@ float neb2_get_alpha_2shell(float alpha, float inner_radius, float outer_radius,
 	return 0.0f;
 }
 
+// Calculate the alpha multiplier for a poof type. This is used for fading in and out
+void neb2_calc_poof_fades() {
+
+	for (size_t i = 0; i < Poof_info.size(); i++) {
+
+		poof_info* pinfo = &Poof_info[i];
+
+		if (pinfo->fade_duration > -1) {
+
+			// Initialize variables
+			if (pinfo->fade_start == TIMESTAMP::invalid()) {
+				pinfo->fade_start = _timestamp();
+			}
+
+			// Calculate the elapsed time in milliseconds
+			auto elapsedTime = timestamp_since(pinfo->fade_start);
+
+			// fade duration of 0 can be reasonably set to 1 to prevent divide by 0
+			if (pinfo->fade_duration == 0) {
+				pinfo->fade_duration = 1;
+			}
+
+			if (pinfo->fade_in) {
+				// Make sure to enable this poof type if we're fading it in
+				if (pinfo->fade_multiplier < 0) {
+					set_bit(Neb2_poof_flags.get(), i);
+					neb2_poof_setup();
+				}
+				pinfo->fade_multiplier = 0.0f + ((float)elapsedTime / pinfo->fade_duration);
+			} else {
+				pinfo->fade_multiplier = 1.0f - ((float)elapsedTime / pinfo->fade_duration);
+			}
+
+			// if we're finished then reset pf_info
+			if ((pinfo->fade_multiplier >= 1.0f && pinfo->fade_in) || (pinfo->fade_multiplier <= 0.0f && !pinfo->fade_in)) {
+
+				// turn off any faded out poof types
+				if (!pinfo->fade_in) {
+					clear_bit(Neb2_poof_flags.get(), i);
+					neb2_poof_setup();
+				}
+
+				// reset the values to default
+				pinfo->fade_duration = -1;
+				pinfo->fade_start = TIMESTAMP::invalid();
+				pinfo->fade_in = true;
+				pinfo->fade_multiplier = -1.0f;
+			}
+		}
+	}
+}
+
 // -------------------------------------------------------------------------------------------------
 // WACKY LOCAL PLAYER NEBULA STUFF
 //
 
-void neb2_toggle_poof(int poof_idx, bool enabling) {
+void neb2_toggle_poof(int poof_idx, bool enabling)
+{
+	if (enabling)
+		set_bit(Neb2_poof_flags.get(), poof_idx);
+	else
+		clear_bit(Neb2_poof_flags.get(), poof_idx);
+}
 
-	if (enabling) Neb2_poof_flags |= (1 << poof_idx);
-	else Neb2_poof_flags &= ~(1 << poof_idx);
-
+void neb2_toggle_poof_finalize()
+{
 	Neb2_poofs.clear();
 
 	// a bit awkward but this will force a full sphere gen
 	vm_vec_make(&Poof_last_gen_pos, 999999.0f, 999999.0f, 999999.0f);
 
 	neb2_poof_setup();
+}
+
+void neb2_fade_poof(int poof_idx, int time, bool type)
+{
+	poof_info* pinfo = &Poof_info[poof_idx];
+
+	pinfo->fade_duration = time;
+	pinfo->fade_in = type;
 }
 
 void new_poof(size_t poof_info_idx, vec3d* pos) {
@@ -682,7 +872,10 @@ void new_poof(size_t poof_info_idx, vec3d* pos) {
 	new_poof.rot_speed = fl_radians(pinfo->rotation.next());
 	new_poof.alpha = pinfo->alpha.next();
 	new_poof.anim_time = frand_range(0.0f, pinfo->bitmap.total_time);
-	vm_vec_rand_vec(&new_poof.up_vec);
+	if (pinfo->alignment == vmd_zero_vector)
+		vm_vec_rand_vec(&new_poof.up_vec);
+	else
+		new_poof.up_vec = pinfo->alignment;
 
 	Neb2_poofs.push_back(new_poof);
 }
@@ -697,7 +890,11 @@ void upkeep_poofs()
 	// cull distant poofs
 	if (!Neb2_poofs.empty()) {
 		for (size_t i = 0; i < Neb2_poofs.size();) {
-			if (vm_vec_dist(&Neb2_poofs[i].pt, &eye_pos) > Poof_info[Neb2_poofs[i].poof_info_index].view_dist * UPKEEP_DIST_MULT) {
+
+			// If the poof type is not used or if the poof is too far then cull it
+			if (!poof_is_used(Neb2_poofs[i].poof_info_index) || (
+					vm_vec_dist(&Neb2_poofs[i].pt, &eye_pos) >
+					Poof_info[Neb2_poofs[i].poof_info_index].view_dist * UPKEEP_DIST_MULT)) {
 				Neb2_poofs[i] = Neb2_poofs.back();
 				Neb2_poofs.pop_back();
 			}
@@ -765,6 +962,9 @@ void neb2_render_poofs()
     memset(&p, 0, sizeof(p));
 	memset(&ptemp, 0, sizeof(ptemp));
 
+	// upkeep poof fade stuff
+	neb2_calc_poof_fades();
+
 	// get eye position and orientation
 	neb2_get_eye_pos(&eye_pos);
 	neb2_get_eye_orient(&eye_orient);
@@ -788,6 +988,13 @@ void neb2_render_poofs()
 		if (pinfo->bitmap.first_frame < 0)
 			continue;
 
+		// It's possible for some faded-out poofs to get rendered after a poof type has finished a fade out
+		// and reset it's multiplier but before the poof is culled from the poof vector. So this small safety
+		// prevents them from flickering.
+		if (!poof_is_used(pf.poof_info_index)) {
+			continue;
+		}
+
 		// do animation upkeep
 		int framenum = 0;
 		if (pinfo->bitmap.num_frames > 1) {
@@ -809,13 +1016,19 @@ void neb2_render_poofs()
 		vec3d view_pos;
 		{
 			float scalar = -1 / powf((vm_vec_dist(&eye_pos, &pf.pt) / (10 * pf.radius)), 3.f);
+			if (pinfo->alignment != vmd_zero_vector)
+				scalar = 0.0f;
 
 			vm_vec_scale_add(&view_pos, &eye_pos, &eye_orient.vec.fvec, scalar);
 
 			view_pos -= pf.pt;
+
+			if (pinfo->alignment != vmd_zero_vector)
+				vm_project_point_onto_plane(&view_pos, &view_pos, &pinfo->alignment, &vmd_zero_vector);
+
 			vm_vec_normalize(&view_pos);
 
-			vm_vector_2_matrix(&orient, &view_pos, &pf.up_vec, nullptr);
+			vm_vector_2_matrix_norm(&orient, &view_pos, &pf.up_vec, nullptr);
 		}
 
 		// update the poof's up vector to be perpindicular to the camera and also rotated by however much its rotating
@@ -832,13 +1045,17 @@ void neb2_render_poofs()
 		// get the proper alpha value
 		alpha = neb2_get_alpha_2shell(pf.alpha, pf.radius, pinfo->view_dist, pf.radius/4, &pf.pt);
 
+		if (pinfo->fade_duration > -1) {
+			alpha = alpha * pinfo->fade_multiplier;
+		}
+
 		// optimization 2 - don't draw 0.0f or less poly's
 		// this amounts to big savings
 		if (alpha <= 0.0f)
 			continue;
 
 		// render!
-		batching_add_polygon(pinfo->bitmap.first_frame + framenum, &pf.pt, &orient, pf.radius, pf.radius, alpha);
+		batching_add_volume_polygon(pinfo->bitmap.first_frame + framenum, &pf.pt, &orient, pf.radius, pf.radius, alpha);
 	}
 
 	// gr_set_color_fast(&Color_bright_red);
@@ -920,7 +1137,7 @@ void neb2_get_adjusted_fog_values(float *fnear, float *ffar, float *fdensity, ob
 
 // given a position, returns 0 - 1 the fog visibility of that position, 0 = completely obscured
 // distance_mult will multiply the result, use for things that can be obscured but can 'shine through' the nebula more than normal
-float neb2_get_fog_visibility(vec3d *pos, float distance_mult)
+float neb2_get_fog_visibility(const vec3d *pos, float distance_mult)
 {
 	float pct;
 
@@ -930,6 +1147,27 @@ float neb2_get_fog_visibility(vec3d *pos, float distance_mult)
     CLAMP(pct, 0.0f, 1.0f);
 
 	return pct;
+}
+
+bool nebula_handle_alpha(float& alpha, const vec3d* pos, float distance_mult) {
+
+	bool bHasNebula = false;
+	float fAlphaMult = 1.0f;
+
+	if (The_mission.flags[Mission::Mission_Flags::Fullneb])
+	{
+		fAlphaMult *= neb2_get_fog_visibility(pos, distance_mult);
+		bHasNebula = true;
+	}
+
+	if (The_mission.volumetrics)
+	{
+		fAlphaMult *= The_mission.volumetrics->getAlphaToPos(*pos, distance_mult);
+		bHasNebula = true;
+	}
+
+	alpha *= fAlphaMult;
+	return bHasNebula;
 }
 
 // fogging stuff --------------------------------------------------------------------
@@ -1043,10 +1281,10 @@ DCF(neb2_select, "Enables/disables a poof bitmap")
 
 	dc_stuff_int(&bmap);
 
-	if ( (bmap >= 0) && (bmap < (int)Poof_info.size()) ) {
+	if ( (bmap >= 0) && (bmap < static_cast<int>(Poof_info.size())) ) {
 		dc_stuff_boolean(&val_b);
 
-		val_b ? (Neb2_poof_flags |= (1<<bmap)) : (Neb2_poof_flags &= ~(1<<bmap));
+		val_b ? (set_bit(Neb2_poof_flags.get(), bmap)) : (clear_bit(Neb2_poof_flags.get(), bmap));
 	}
 }
 

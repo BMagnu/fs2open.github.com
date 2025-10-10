@@ -18,30 +18,23 @@
 const int packer_code = PACKER_CODE;
 const int transparent_code = 254;
 
-void anim_check_for_palette_change(anim_instance *instance) {
-	if ( instance->parent->screen_sig != gr_screen.signature ) {
-		instance->parent->screen_sig = gr_screen.signature;
-		anim_set_palette(instance->parent);
-	}
-}
-
 anim_instance *init_anim_instance(anim *ptr, int bpp)
 {
 	anim_instance *inst;
 
+	Assertion(ptr, "Bad pointer in init_anim_instance(), please report to the SCP!");
 	if (!ptr) {
-		Int3();
 		return NULL;
 	}
 
 	if ( ptr->flags & ANF_STREAMED ) {
+		Assertion(ptr->file_offset > -1, "Bad file offset of %d in init_anim_instance(), please report to the SCP!", ptr->file_offset);
 		if ( ptr->file_offset < 0 ) {
-			Int3();
 			return NULL;
 		}
 	} else {
+		Assertion(ptr->data, "Bad data in init_anim_instance(), please report to the SCP!");
 		if ( !ptr->data ) {
-			Int3();
 			return NULL;
 		}
 	}
@@ -96,8 +89,6 @@ ubyte *anim_get_next_raw_buffer(anim_instance *inst, int xlate_pal, int aabitmap
 		inst->file_offset = inst->parent->file_offset;
 		return NULL;
 	}
-
-	anim_check_for_palette_change(inst);
 
 	if ( anim_instance_is_streamed(inst) ) {
 		if ( xlate_pal ){

@@ -15,6 +15,8 @@
 
 #include "def_files/def_files.h"
 #include "mod_table/mod_table.h"
+#include "network/multi.h"
+#include "network/multimsgs.h"
 #include "scripting/api/objs/asteroid.h"
 #include "scripting/api/objs/beam.h"
 #include "scripting/api/objs/debris.h"
@@ -170,9 +172,9 @@ int ade_index_handler(lua_State* L) {
 	lua_pop(L, 1);    //WMC - metatable
 
 	if (type_name != nullptr) {
-		LuaError(L, "Could not find index '%s' in type '%s'", lua_tostring(L, key_ldx), type_name);
+		LuaError(L, "Could not find index '%s' in type '%s'", lua_tostring_nullsafe(L, key_ldx), type_name);
 	} else {
-		LuaError(L, "Could not find index '%s'", lua_tostring(L, key_ldx));
+		LuaError(L, "Could not find index '%s'", lua_tostring_nullsafe(L, key_ldx));
 	}
 	return 0;
 }
@@ -262,7 +264,7 @@ const SCP_vector<SCP_string>& ade_manager::getTypeNames() const { return _type_n
 
 static int deprecatedFunctionHandler(lua_State* L)
 {
-	const char* functionName = lua_tostring(L, lua_upvalueindex(1));
+	const char* functionName = lua_tostring_nullsafe(L, lua_upvalueindex(1));
 	LuaError(L,
 			 "Deprecated function '%s' has been called that is not available in the targeted engine version. Check "
 			 "the documentation for a possible replacement.",
@@ -542,7 +544,7 @@ std::unique_ptr<DocumentationElement> ade_table_entry::ToDocumentationElement(
 			obj->type = ElementType::Function;
 		}
 
-		auto typeNames = ade_manager::getInstance()->getTypeNames();
+		const auto& typeNames = ade_manager::getInstance()->getTypeNames();
 
 		if (ReturnType != nullptr) {
 			type_parser type_parser(typeNames);
@@ -594,7 +596,7 @@ std::unique_ptr<DocumentationElement> ade_table_entry::ToDocumentationElement(
 		std::unique_ptr<DocumentationElementProperty> obj(new DocumentationElementProperty());
 		obj->type = ElementType::Property;
 
-		auto typeNames = ade_manager::getInstance()->getTypeNames();
+		const auto& typeNames = ade_manager::getInstance()->getTypeNames();
 
 		//***Type Name(ShortName)
 		if (ReturnType != nullptr) {
@@ -682,7 +684,7 @@ SCP_string ade_table_entry::GetFullPath() const
 
 	size_t currentIdx = ParentIdx;
 	while (currentIdx != UINT_MAX) {
-		const auto entry = ade_manager::getInstance()->getEntry(currentIdx);
+		const auto& entry = ade_manager::getInstance()->getEntry(currentIdx);
 
 		SCP_string entryName(entry.GetName());
 
@@ -837,7 +839,7 @@ SCP_string ade_tostring(lua_State *L, int argnum, bool add_typeinfo)
 			break;
 
 		case LUA_TSTRING:
-			s = lua_tostring(L, argnum);
+			s = lua_tostring_nullsafe(L, argnum);
 			if (add_typeinfo)
 				sprintf(buf, "String [%s]", s);
 			else
@@ -866,13 +868,10 @@ SCP_string ade_tostring(lua_State *L, int argnum, bool add_typeinfo)
 				lua_pushnil(L);
 				if (lua_next(L, argnum))
 				{
-					firstkey = lua_tostring(L, -2);
-					if (firstkey != nullptr)
-					{
-						buf += ", First key: [";
-						buf += firstkey;
-						buf += "]";
-					}
+					firstkey = lua_tostring_nullsafe(L, -2);
+					buf += ", First key: [";
+					buf += firstkey;
+					buf += "]";
 					lua_pop(L, 1);	//Key
 				}
 				lua_pop(L, 1);	//Nil
@@ -887,7 +886,7 @@ SCP_string ade_tostring(lua_State *L, int argnum, bool add_typeinfo)
 			if (upname != nullptr)
 			{
 				buf += " ";
-				buf += lua_tostring(L, -1);
+				buf += lua_tostring_nullsafe(L, -1);
 				buf += "()";
 				lua_pop(L, 1);
 			}
@@ -920,7 +919,7 @@ SCP_string ade_tostring(lua_State *L, int argnum, bool add_typeinfo)
 
 		default:
 			if (add_typeinfo)
-				sprintf(buf, "<UNKNOWN>: %s (%f) (%s)", lua_typename(L, type), lua_tonumber(L, argnum), lua_tostring(L, argnum));
+				sprintf(buf, "<UNKNOWN>: %s (%f) (%s)", lua_typename(L, type), lua_tonumber(L, argnum), lua_tostring_nullsafe(L, argnum));
 			else
 				buf = "Unknown Lua type";
 			break;
@@ -1018,7 +1017,7 @@ void load_default_script(lua_State* L, const char* name)
 		// Load from disk (or built-in file)
 		source_name = name;
 
-		auto cfp = cfopen(name, "rb", CFILE_NORMAL, CF_TYPE_SCRIPTS);
+		auto cfp = cfopen(name, "rb", CF_TYPE_SCRIPTS);
 		Assertion(cfp != nullptr, "Failed to open default file!");
 
 		auto length = cfilelength(cfp);
@@ -1064,4 +1063,40 @@ const string_conv* ade_get_operator(const char *funcname)
 
 ade_table_entry& internal::getTableEntry(size_t idx) { return ade_manager::getInstance()->getEntry(idx); }
 
+namespace internal {
+
+#define DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(type, multi_accessor) \
+template<> \
+void ade_multi_deserialize_fundamental<type>(lua_State* /*L*/, const scripting::ade_table_entry& /*tableEntry*/, char* data_ptr, ubyte* data, int& offset) { \
+	type temp; \
+	GET_##multi_accessor(temp); \
+	new(data_ptr) type(std::move(temp)); \
+} \
+template<> \
+void ade_multi_serialize_fundamental<type>(lua_State* L, const scripting::ade_table_entry& /*tableEntry*/, const luacpp::LuaValue& value, ubyte* data, int& packet_size) { \
+	value.pushValue(L); \
+	type temp = *reinterpret_cast<type*>(lua_touserdata(L, -1)); \
+	lua_remove(L, -1); \
+	ADD_##multi_accessor(temp); \
 }
+
+//These are all fundamental data types supported by our multi code. If you get an unresolved function error
+//for ade_multi_(de)serialize_fundamental, you need to add an endinaness-safe multi GET_/ADD_ function and 
+//the corresponding DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL macro
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(int8_t, DATA)
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(uint8_t, DATA)
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(int16_t, SHORT)
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(uint16_t, USHORT)
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(int32_t, INT)
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(uint32_t, UINT)
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(int64_t, LONG)
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(uint64_t, ULONG)
+DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL(float, FLOAT)
+
+#undef DEFINE_MULTI_SERIALIZERS_FUNDAMENTAL
+
+}
+
+}
+
+lua_net_exception::lua_net_exception(const char* msg) : std::runtime_error(msg) { }

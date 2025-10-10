@@ -20,12 +20,10 @@
 #include <io.h>
 #include <direct.h>
 #include <windows.h>
-#include <winbase.h>		/* needed for memory mapping of file functions */
 #endif
 
 #ifdef SCP_UNIX
 #include <glob.h>
-#include <sys/mman.h>
 #endif
 
 #include "cfile/cfile.h"
@@ -59,8 +57,6 @@ cf_pathtype Pathtypes[CF_MAX_PATH_TYPES]  = {
 	{ CF_TYPE_MODELS,				"data" DIR_SEPARATOR_STR "models",											".pof",								CF_TYPE_DATA	},
 	{ CF_TYPE_TABLES,				"data" DIR_SEPARATOR_STR "tables",											".tbl .tbm .lua",						CF_TYPE_DATA	},
 	{ CF_TYPE_SOUNDS,				"data" DIR_SEPARATOR_STR "sounds",											".wav .ogg",						CF_TYPE_DATA	},
-	{ CF_TYPE_SOUNDS_8B22K,			"data" DIR_SEPARATOR_STR "sounds" DIR_SEPARATOR_STR "8b22k",				".wav .ogg",						CF_TYPE_SOUNDS	},
-	{ CF_TYPE_SOUNDS_16B11K,		"data" DIR_SEPARATOR_STR "sounds" DIR_SEPARATOR_STR "16b11k",				".wav .ogg",						CF_TYPE_SOUNDS	},
 	{ CF_TYPE_VOICE,				"data" DIR_SEPARATOR_STR "voice",											"",									CF_TYPE_DATA	},
 	{ CF_TYPE_VOICE_BRIEFINGS,		"data" DIR_SEPARATOR_STR "voice" DIR_SEPARATOR_STR "briefing",				".wav .ogg",						CF_TYPE_VOICE	},
 	{ CF_TYPE_VOICE_CMD_BRIEF,		"data" DIR_SEPARATOR_STR "voice" DIR_SEPARATOR_STR "command_briefings",		".wav .ogg",						CF_TYPE_VOICE	},
@@ -70,7 +66,7 @@ cf_pathtype Pathtypes[CF_MAX_PATH_TYPES]  = {
 	{ CF_TYPE_VOICE_TRAINING,		"data" DIR_SEPARATOR_STR "voice" DIR_SEPARATOR_STR "training",				".wav .ogg",						CF_TYPE_VOICE	},
 	{ CF_TYPE_MUSIC,				"data" DIR_SEPARATOR_STR "music",											".wav .ogg",						CF_TYPE_DATA	},
 	{ CF_TYPE_MOVIES,				"data" DIR_SEPARATOR_STR "movies",											".mve .msb .ogg .mp4 .srt .webm .png",CF_TYPE_DATA	},
-	{ CF_TYPE_INTERFACE,			"data" DIR_SEPARATOR_STR "interface",										".pcx .ani .dds .tga .eff .png .jpg",	CF_TYPE_DATA	},
+	{ CF_TYPE_INTERFACE,			"data" DIR_SEPARATOR_STR "interface",										".pcx .ani .dds .tga .eff .png .jpg .rml .rcss",	CF_TYPE_DATA	},
 	{ CF_TYPE_FONT,					"data" DIR_SEPARATOR_STR "fonts",											".vf .ttf .otf",						CF_TYPE_DATA	},
 	{ CF_TYPE_EFFECTS,				"data" DIR_SEPARATOR_STR "effects",											".ani .eff .pcx .neb .tga .jpg .png .dds .sdr",	CF_TYPE_DATA	},
 	{ CF_TYPE_HUD,					"data" DIR_SEPARATOR_STR "hud",												".pcx .ani .eff .tga .jpg .png .dds",	CF_TYPE_DATA	},
@@ -79,6 +75,7 @@ cf_pathtype Pathtypes[CF_MAX_PATH_TYPES]  = {
 	{ CF_TYPE_SQUAD_IMAGES,			"data" DIR_SEPARATOR_STR "players" DIR_SEPARATOR_STR "squads",				".pcx .png .dds",						CF_TYPE_PLAYERS	},
 	{ CF_TYPE_SINGLE_PLAYERS,		"data" DIR_SEPARATOR_STR "players" DIR_SEPARATOR_STR "single",				".pl2 .cs2 .plr .csg .css .json",	CF_TYPE_PLAYERS	},
 	{ CF_TYPE_MULTI_PLAYERS,		"data" DIR_SEPARATOR_STR "players" DIR_SEPARATOR_STR "multi",				".plr .json",						CF_TYPE_PLAYERS	},
+	{ CF_TYPE_PLAYER_BINDS,			"data" DIR_SEPARATOR_STR "players" DIR_SEPARATOR_STR "presets",				".json",							CF_TYPE_PLAYERS	},
 	{ CF_TYPE_CACHE,				"data" DIR_SEPARATOR_STR "cache",											".clr .tmp .bx",					CF_TYPE_DATA	}, 	//clr=cached color
 	{ CF_TYPE_MULTI_CACHE,			"data" DIR_SEPARATOR_STR "multidata",										".pcx .png .jpg .dds .fs2 .txt",		CF_TYPE_DATA	},
 	{ CF_TYPE_MISSIONS,				"data" DIR_SEPARATOR_STR "missions",										".fs2 .fc2 .ntl .ssv",				CF_TYPE_DATA	},
@@ -88,19 +85,14 @@ cf_pathtype Pathtypes[CF_MAX_PATH_TYPES]  = {
 	{ CF_TYPE_INTEL_ANIMS,			"data" DIR_SEPARATOR_STR "intelanims",										".pcx .ani .eff .tga .jpg .png .dds",	CF_TYPE_DATA	},
 	{ CF_TYPE_SCRIPTS,				"data" DIR_SEPARATOR_STR "scripts",											".lua .lc .fnl",						CF_TYPE_DATA	},
 	{ CF_TYPE_FICTION,				"data" DIR_SEPARATOR_STR "fiction",											".txt",								CF_TYPE_DATA	}, 
-	{ CF_TYPE_FREDDOCS,				"data" DIR_SEPARATOR_STR "freddocs",										".html",							CF_TYPE_DATA	},
-	{ CF_TYPE_INTERFACE_MARKUP,		"data" DIR_SEPARATOR_STR "interface" DIR_SEPARATOR_STR "markup",			".rml",								CF_TYPE_INTERFACE	},
-	{ CF_TYPE_INTERFACE_CSS,		"data" DIR_SEPARATOR_STR "interface" DIR_SEPARATOR_STR "css",				".rcss",							CF_TYPE_INTERFACE	},
-	{ CF_TYPE_PLAYER_BINDS,			"data" DIR_SEPARATOR_STR "players" DIR_SEPARATOR_STR "presets",				".json",							CF_TYPE_PLAYERS	},
+	{ CF_TYPE_FREDDOCS,				"data" DIR_SEPARATOR_STR "freddocs",										".html",							CF_TYPE_DATA	}
 };
 // clang-format on
 
-#define CFILE_STACK_MAX	8
 
 int cfile_inited = 0;
-static int Cfile_stack_pos = 0;
 
-static char Cfile_stack[CFILE_STACK_MAX][CFILE_ROOT_DIRECTORY_LEN];
+static SCP_vector<SCP_string> Cfile_stack;
 
 std::array<CFILE, MAX_CFILE_BLOCKS> Cfile_block_list;
 
@@ -113,12 +105,6 @@ static int cfget_cfile_block();
 static CFILE *cf_open_fill_cfblock(const char* source, int line, const char* original_filename, FILE * fp, int type);
 static CFILE *cf_open_packed_cfblock(const char* source, int line, const char* original_filename, FILE *fp, int type, size_t offset, size_t size);
 static CFILE *cf_open_memory_fill_cfblock(const char* source, int line, const char* original_filename, const void* data, size_t size, int dir_type);
-
-#if defined _WIN32
-static CFILE *cf_open_mapped_fill_cfblock(const char* source, int line, const char* original_filename, HANDLE hFile, int type);
-#elif defined SCP_UNIX
-static CFILE *cf_open_mapped_fill_cfblock(const char* source, int line, const char* original_filename, FILE *fp, int type);
-#endif
 
 static void cf_chksum_long_init();
 
@@ -334,17 +320,16 @@ int cfile_push_chdir(int type)
 
 	_getcwd(OriginalDirectory, CFILE_ROOT_DIRECTORY_LEN - 1);
 
-	Assert(Cfile_stack_pos < CFILE_STACK_MAX);
-
-	if (Cfile_stack_pos >= CFILE_STACK_MAX) {
-		return -1;
-	}
-
-	strcpy_s(Cfile_stack[Cfile_stack_pos++], OriginalDirectory);
-
 	cf_create_default_path_string(dir, type, NULL);
 
-	return _cfile_chdir(dir.c_str(), OriginalDirectory);
+	int rc = _cfile_chdir(dir.c_str(), OriginalDirectory);
+
+	// if success then push the original directory on to the stack
+	if (rc == 0) {
+		Cfile_stack.push_back(OriginalDirectory);
+	}
+
+	return rc;
 }
 
 /**
@@ -367,13 +352,16 @@ int cfile_chdir(const char *dir)
 
 int cfile_pop_dir()
 {
-	Assert(Cfile_stack_pos);
-
-	if ( !Cfile_stack_pos )
+	if (Cfile_stack.empty())
 		return -1;
 
-	Cfile_stack_pos--;
-	return cfile_chdir(Cfile_stack[Cfile_stack_pos]);
+	int rc = cfile_chdir(Cfile_stack.back().c_str());
+
+	Assertion(rc == 0, "Failed to chdir() to previous directory (%s)!", Cfile_stack.back().c_str());
+
+	Cfile_stack.pop_back();
+
+	return rc;
 }
 
 // flush (delete all files in) the passed directory (by type), return the # of files deleted
@@ -442,7 +430,7 @@ int cfile_flush_dir(int dir_type)
 //    filename = name of filename or filepath to process
 //    ext = extension to add.  Must start with the period
 //    Returns: new filename or filepath with extension.
-char *cf_add_ext(const char *filename, const char *ext)
+const char *cf_add_ext(const char *filename, const char *ext)
 {
 	static char path[MAX_PATH_LEN];
 
@@ -473,7 +461,7 @@ int cf_delete(const char *filename, int path_type, uint32_t location_flags)
 
 	Assert(CF_TYPE_SPECIFIED(path_type));
 
-	cf_create_default_path_string(longname, path_type, filename, false, location_flags);
+	cf_create_default_path_string(longname, path_type, filename, location_flags);
 
 	return (_unlink(longname.c_str()) != -1);
 }
@@ -623,7 +611,7 @@ void cf_create_directory(int dir_type, uint32_t location_flags)
 	int i;
 
 	for (i=num_dirs-1; i>=0; i-- )	{
-		cf_create_default_path_string(longname, dir_tree[i], nullptr, false, location_flags);
+		cf_create_default_path_string(longname, dir_tree[i], nullptr, location_flags);
 		if (stat(longname.c_str(), &statbuf) != 0) {
 			mprintf(( "CFILE: Creating new directory '%s'\n", longname.c_str() ));
 			mkdir_recursive(longname.c_str());
@@ -636,19 +624,14 @@ void cf_create_directory(int dir_type, uint32_t location_flags)
 // parameters:  *filepath ==> name of file to open (may be path+name)
 //              *mode     ==> specifies how file should be opened (eg "rb" for read binary)
 //                            passing NULL to mode triggers an assert and returns NULL
-//               type     ==> one of:    CFILE_NORMAL
-//                                       CFILE_MEMORY_MAPPED
 //					  dir_type	=>	override extension check, value is one of CF_TYPE* #defines
-//
-//               NOTE: type parameter is an optional parameter.  The default value is CFILE_NORMAL
-//
 //
 // returns:		success ==> address of CFILE structure
 //					error   ==> NULL
 //
 
-CFILE* _cfopen(const char* source, int line, const char* file_path, const char* mode, int type, int dir_type,
-               bool localize, uint32_t location_flags)
+CFILE* _cfopen(const char* source, int line, const char* file_path, const char* mode, int dir_type,
+               bool /* localize */, uint32_t location_flags)
 {
 	/* Bobboau, what is this doing here? 31 is way too short... - Goober5000
 	if( strlen(file_path) > 31 )
@@ -663,12 +646,6 @@ CFILE* _cfopen(const char* source, int line, const char* file_path, const char* 
 	// Check that all the parameters make sense
 	Assert(file_path && strlen(file_path));
 	Assert( mode != NULL );
-	
-	// Can only open read-only binary files in memory mapped mode.
-	if ( (type & CFILE_MEMORY_MAPPED) && strcmp(mode,"rb") != 0 ) {
-		Int3();				
-		return NULL;
-	}
 
 	//===========================================================
 	// If in write mode, just try to open the file straight off
@@ -685,13 +662,14 @@ CFILE* _cfopen(const char* source, int line, const char* file_path, const char* 
 		} else {
 			// Path type given?
 			Assert( dir_type != CF_TYPE_ANY );
+			if (dir_type == CF_TYPE_ANY)
+				return NULL;
 
 			// Create the directory if necessary
 			cf_create_directory(dir_type, location_flags);
 
-			cf_create_default_path_string(longname, dir_type, file_path, false, location_flags);
+			cf_create_default_path_string(longname, dir_type, file_path, location_flags);
 		}
-		Assert( !(type & CFILE_MEMORY_MAPPED) );
 
 		// JOHN: TODO, you should create the path if it doesn't exist.
 		
@@ -739,40 +717,14 @@ CFILE* _cfopen(const char* source, int line, const char* file_path, const char* 
 	//================================================
 	// Search for file on disk, on cdrom, or in a packfile
 
-	char copy_file_path[MAX_PATH_LEN];  // FIX change in memory from cf_find_file_location
-	strcpy_s(copy_file_path, file_path);
+	auto find_res = cf_find_file_location(file_path, dir_type, location_flags);
 
-	auto find_res = cf_find_file_location( copy_file_path, dir_type, localize, location_flags );
 	if ( find_res.found ) {
-
 		// Fount it, now create a cfile out of it
 		nprintf(("CFileDebug", "Requested file %s found at: %s\n", file_path, find_res.full_name.c_str()));
 
-		if ( type & CFILE_MEMORY_MAPPED ) {
-		
-			// Can't open memory mapped files out of pack or memory files
-			if ( find_res.offset == 0 && find_res.data_ptr != nullptr )	{
-#if defined _WIN32
-				HANDLE hFile;
-
-				hFile = CreateFile(find_res.full_name.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-
-				if (hFile != INVALID_HANDLE_VALUE)	{
-					return cf_open_mapped_fill_cfblock(source, line, file_path, hFile, dir_type);
-				}
-#elif defined SCP_UNIX
-				FILE* fp = fopen(find_res.full_name.c_str(), "rb");
-				if (fp) {
-					return cf_open_mapped_fill_cfblock(source, line, file_path, fp, dir_type);
-				}
-#endif
-			} 
-
-		} else {
-			// since cfopen_special already has all the code to handle the opening we can just use that here
-			return _cfopen_special(source, line, find_res, mode, dir_type);
-		}
-
+		// since cfopen_special already has all the code to handle the opening we can just use that here
+		return _cfopen_special(source, line, find_res, mode, dir_type);
 	}
 
 	return NULL;
@@ -897,27 +849,7 @@ int cfclose( CFILE * cfile )
 	Assert(cfile != NULL);
 
 	result = 0;
-	if ( cfile->data && cfile->mem_mapped ) {
-		// close memory mapped file
-#if defined _WIN32
-		result = UnmapViewOfFile((void*)cfile->data);
-		Assert(result);
-		result = CloseHandle(cfile->hInFile);
-		Assert(result);	// Ensure file handle is closed properly
-		result = CloseHandle(cfile->hMapFile);
-		Assert(result);	// Ensure file handle is closed properly
-		result = 0;
-#elif defined SCP_UNIX
-		// FIXME: result is wrong after munmap() but it is successful
-		//result = munmap(cfile->data, cfile->data_length);
-		//Assert(result);
-		// This const_cast is safe since the pointer returned by mmap was also non-const
-		munmap(const_cast<void*>(cfile->data), cfile->data_length);
-		if ( cfile->fp != nullptr)
-			result = fclose(cfile->fp);
-#endif
-
-	} else if ( cfile->fp != nullptr )	{
+	if ( cfile->fp != nullptr )	{
 		Assert(cfile->fp != nullptr);
 		result = fclose(cfile->fp);
 	} else {
@@ -962,7 +894,6 @@ static CFILE *cf_open_fill_cfblock(const char* source, int line, const char* ori
 	} else {
 		CFILE *cfp = &Cfile_block_list[cfile_block_index];
 		cfp->data = nullptr;
-		cfp->mem_mapped = false;
 		cfp->fp = fp;
 		cfp->dir_type = type;
 		cfp->max_read_len = 0;
@@ -971,7 +902,7 @@ static CFILE *cf_open_fill_cfblock(const char* source, int line, const char* ori
 		cfp->source_file = source;
 		cfp->line_num = line;
 		
-		int pos = ftell(fp);
+		auto pos = ftell(fp);
 		if(pos == -1L)
 			pos = 0;
 		cf_init_lowlevel_read_code(cfp,0,filelength(fileno(fp)), 0 );
@@ -1001,7 +932,6 @@ static CFILE *cf_open_packed_cfblock(const char* source, int line, const char* o
 
 		cfp->data = nullptr;
 		cfp->fp = fp;
-		cfp->mem_mapped = false;
 		cfp->dir_type = type;
 		cfp->max_read_len = 0;
 
@@ -1014,70 +944,6 @@ static CFILE *cf_open_packed_cfblock(const char* source, int line, const char* o
 		return cfp;
 	}
 
-}
-
-
-
-// cf_open_mapped_fill_cfblock() will fill up a Cfile_block element in the Cfile_block_list[] array
-// for the case of a file being opened by cf_open_mapped();
-//
-// returns:   ptr CFILE structure.  
-//
-#if defined _WIN32
-static CFILE *cf_open_mapped_fill_cfblock(const char* source, int line, const char* original_filename, HANDLE hFile, int type)
-#elif defined SCP_UNIX
-static CFILE *cf_open_mapped_fill_cfblock(const char* source, int line, const char* original_filename, FILE *fp, int type)
-#endif
-{
-	int cfile_block_index;
-
-	cfile_block_index = cfget_cfile_block();
-	if ( cfile_block_index == -1 ) {
-#ifdef SCP_UNIX
-		fclose(fp);
-#endif
-		return NULL;
-	}
-	else {
-		CFILE *cfp = &Cfile_block_list[cfile_block_index];
-
-		cfp->max_read_len = 0;
-		cfp->fp = nullptr;
-		cfp->mem_mapped = true;
-#if defined _WIN32
-		cfp->hInFile = hFile;
-#endif
-		cfp->dir_type = type;
-
-		cfp->original_filename = original_filename;
-		cfp->source_file = source;
-		cfp->line_num = line;
-
-		cf_init_lowlevel_read_code(cfp, 0, 0, 0 );
-		
-#if defined _WIN32
-		cfp->hMapFile = CreateFileMapping(cfp->hInFile, NULL, PAGE_READONLY, 0, 0, NULL);
-		if (cfp->hMapFile == NULL) {
-			nprintf(("Error", "Could not create file-mapping object.\n")); 
-			return NULL;
-		} 
-	
-		cfp->data = (ubyte*)MapViewOfFile(cfp->hMapFile, FILE_MAP_READ, 0, 0, 0);
-		Assert( cfp->data != NULL );
-#elif defined SCP_UNIX
-		cfp->fp = fp;
-		cfp->data_length = filelength(fileno(fp));
-		cfp->data = mmap(nullptr,                        // start
-		                 cfp->data_length,    // length
-		                 PROT_READ,                // prot
-		                 MAP_SHARED,                // flags
-		                 fileno(fp),                // fd
-		                 0);                        // offset
-		Assert(cfp->data != nullptr);
-#endif
-
-		return cfp;
-	}
 }
 
 static CFILE *cf_open_memory_fill_cfblock(const char* source, int line, const char* original_filename, const void* data, size_t size, int dir_type)
@@ -1093,7 +959,6 @@ static CFILE *cf_open_memory_fill_cfblock(const char* source, int line, const ch
 
 		cfp->max_read_len = 0;
 		cfp->fp = nullptr;
-		cfp->mem_mapped = false;
 		cfp->dir_type = dir_type;
 
 		cfp->original_filename = original_filename;
@@ -1336,9 +1201,6 @@ int cfwrite_string_len(const char *buf, CFILE *file)
 // Get the filelength
 int cfilelength(CFILE* cfile) {
 	Assert(cfile != NULL);
-
-	// TODO: return length of memory mapped file
-	Assert(!cfile->mem_mapped);
 
 	// cfile->size gets set at cfopen
 
@@ -1732,7 +1594,7 @@ int cf_chksum_short(const char *filename, ushort *chksum, int max_size, int cf_t
 	*chksum = 0;
 
 	// attempt to open the file
-	cfile = cfopen(filename,"rt",CFILE_NORMAL,cf_type);
+	cfile = cfopen(filename,"rt",cf_type);
 	if(cfile == NULL){		
 		return 0;
 	}
@@ -1782,7 +1644,7 @@ int cf_chksum_long(const char *filename, uint *chksum, int max_size, int cf_type
 	*chksum = 0;
 
 	// attempt to open the file
-	cfile = cfopen(filename,"rt",CFILE_NORMAL,cf_type);
+	cfile = cfopen(filename,"rt",cf_type);
 	if(cfile == NULL){		
 		return 0;
 	}
@@ -1848,28 +1710,53 @@ int cfile_get_path_type(const SCP_string& dir)
 {
 	SCP_string buf = dir;
 
-	// Remove trailing slashes; avoid buffer overflow on 1-char strings
-	while (buf.size() > 0 && (buf[buf.size() - 1] == '\\' || buf[buf.size() - 1] == '/')) {
-		buf.resize(buf.size() - 1);
+	// remove leading and trailing slashes
+	if ( !buf.empty() ) {
+		auto start = buf.find_first_not_of("\\/");
+		auto end = buf.find_last_not_of("\\/");
+
+		if (start == SCP_string::npos) {
+			buf = "";
+		} else if ( (start > 0) || (end < buf.length()-1) ) {
+			buf = buf.substr(start, end-start+1);
+		}
 	}
 
-	// Remove leading slashes
-	while (buf.size() > 0 && (buf[0] == '\\' || buf[0] == '/')) {
-		buf = buf.substr(1);
+	if (buf.empty()) {
+		return CF_TYPE_ROOT;
 	}
 
 	// Use official DIR_SEPARATOR_CHAR
-	for (char& c : buf) {
-		if (c == '\\' || c == '/') {
-			c = DIR_SEPARATOR_CHAR;
-		}
-	}
+	extern void normalize_directory_separators(SCP_string &str);
+	normalize_directory_separators(buf);
+
+	// identify path type
+	auto best_match = CF_TYPE_INVALID;
 
 	for (auto& Pathtype : Pathtypes) {
-		if (Pathtype.path != nullptr && buf == Pathtype.path) {
-			return Pathtype.index;
+		if ( !Pathtype.path ) {
+			continue;
+		}
+
+		// skip root, it should have been detected before getting here
+		if (Pathtype.index == CF_TYPE_ROOT) {
+			continue;
+		}
+
+		// don't allow unknown subdirs directly under data
+		if (Pathtype.index == CF_TYPE_DATA) {
+			if (buf == Pathtype.path) {
+				best_match = CF_TYPE_DATA;
+			}
+
+			continue;
+		}
+
+		// for everything else just find closest match, allowing for unknown subdirectories
+		if ( !strnicmp(buf.c_str(), Pathtype.path, strlen(Pathtype.path)) ) {
+			best_match = Pathtype.index;
 		}
 	}
 
-	return CF_TYPE_INVALID;
+	return best_match;
 }

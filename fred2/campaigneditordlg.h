@@ -30,6 +30,8 @@ class campaign_editor : public CFormView
 private:
 	int m_num_links;
 	int m_last_mission;
+	CString	m_current_campaign_path;
+	CString GetPathWithoutFile() const;
 
 protected:
 	campaign_editor();           // protected constructor used by dynamic creation
@@ -39,15 +41,15 @@ protected:
 public:
 	void mission_selected(int num);
 	void insert_handler(int old, int node);
-	void swap_handler(int node1, int node2);
+	void move_handler(int node1, int node2, bool insert_before);
 	void update();
 	void load_tree(int save = 1);
 	void save_tree(int clear = 1);
 	int handler(int code, int node, char *str = NULL);
-	void initialize( int init_files = 1 );
-	void load_campaign();
+	void initialize( bool init_files, bool clear_path );
+	void load_campaign(const char *filename, const char *full_path);
 	void update_loop_desc_window();
-	void campaign_editor::save_loop_desc_window();
+	void save_loop_desc_window();
 	//{{AFX_DATA(campaign_editor)
 	enum { IDD = IDD_CAMPAIGN };
 	campaign_sexp_tree	m_tree;
@@ -62,6 +64,9 @@ public:
 	BOOL	m_custom_tech_db;
 	//}}AFX_DATA
 
+	void SetCurrentCampaignPath(const CString& path);
+	const CString &GetCurrentCampaignPath() const;
+
 // Attributes
 public:
 
@@ -73,6 +78,7 @@ public:
 	//{{AFX_VIRTUAL(campaign_editor)
 	public:
 	virtual BOOL Create(LPCTSTR lpszClassName, LPCTSTR lpszWindowName, DWORD dwStyle, const RECT& rect, CWnd* pParentWnd, UINT nID, CCreateContext* pContext = NULL);
+	virtual BOOL PreTranslateMessage(MSG* pMsg);
 	protected:
 	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
 	virtual void OnUpdate(CView* pSender, LPARAM lHint, CObject* pHint);
@@ -85,6 +91,8 @@ protected:
 	virtual void AssertValid() const;
 	virtual void Dump(CDumpContext& dc) const;
 #endif
+
+	CToolTipCtrl* m_SubstituteMainHallToolTip;
 
 	// Generated message map functions
 	//{{AFX_MSG(campaign_editor)
@@ -104,8 +112,10 @@ protected:
 	afx_msg void OnBrowseLoopAni();
 	afx_msg void OnBrowseLoopSound();
 	afx_msg void OnChangeMainHall();
+	afx_msg void OnChangeSubstituteMainHall();
 	afx_msg void OnChangeDebriefingPersona();
 	afx_msg void OnCustomTechDB();
+	afx_msg void OnCustomData();
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
 };

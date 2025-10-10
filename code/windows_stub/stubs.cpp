@@ -43,7 +43,7 @@ int filelength(int fd)
 	if (fstat (fd, &buf) == -1)
 		return -1;
 
-	return buf.st_size;
+	return static_cast<int>(buf.st_size);
 }
 
 
@@ -141,20 +141,6 @@ SCP_string dump_stacktrace()
 #endif
 }
 
-// get a filename minus any leading path
-char *clean_filename(char *name)
-{
-	char *p = name + strlen(name)-1;
-
-	// Move p to point to first letter of EXE filename
-	while( (p > name) && (*p != '\\') && (*p != '/') && (*p != ':') )
-		p--;
-
-	p++;
-
-	return p;
-}
-
 // retrieve the current working directory
 int _getcwd(char *out_buf, unsigned int len)
 {
@@ -213,7 +199,7 @@ void _splitpath (const char *path, char * /*drive*/, char *dir, char *fname, cha
 			lp = ls + strlen(ls);	// move to the end
 		}
 
-		int dist = lp-ls;
+		auto dist = lp-ls;
 
 		if (dist > (_MAX_FNAME-1))
 			dist = _MAX_FNAME-1;

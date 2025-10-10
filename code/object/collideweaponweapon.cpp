@@ -10,9 +10,11 @@
 
 
 #include "freespace.h"
+#include "math/curve.h"
 #include "network/multi.h"
 #include "object/objcollide.h"
 #include "object/object.h"
+#include "scripting/global_hooks.h"
 #include "scripting/scripting.h"
 #include "scripting/api/objs/vecmath.h"
 #include "ship/ship.h"
@@ -38,9 +40,11 @@ int collide_weapon_weapon( obj_pair * pair )
 	if (A->parent_sig == B->parent_sig)
 		return 1;
 
+	float dot = vm_vec_dot(&A->orient.vec.fvec, &B->orient.vec.fvec);
+
 	//	Only shoot down teammate's missile if not traveling in nearly same direction.
 	if (Weapons[A->instance].team == Weapons[B->instance].team)
-		if (vm_vec_dot(&A->orient.vec.fvec, &B->orient.vec.fvec) > 0.7f)
+		if (dot > 0.7f)
 			return 1;
 
 	//	Ignore collisions involving a bomb if the bomb is not yet armed.
@@ -55,16 +59,24 @@ int collide_weapon_weapon( obj_pair * pair )
 	A_radius = A->radius;
 	B_radius = B->radius;
 
+	float A_time_alive = f2fl(Missiontime - wpA->creation_time);
+	float B_time_alive = f2fl(Missiontime - wpB->creation_time);
+
 	if (wipA->weapon_hitpoints > 0) {
 		if (!(wipA->wi_flags[Weapon::Info_Flags::No_radius_doubling])) {
 			A_radius *= 2;		// Makes bombs easier to hit
 		}
+
+		// the erroneous extra time a bomb stays invulnerable without the fix
+		float extra_buggy_time = 0.0f;
+		if (!(The_mission.ai_profile->flags[AI::Profile_Flags::Aspect_invulnerability_fix]) && wipA->is_locked_homing())
+			extra_buggy_time = (wipA->lifetime * LOCKED_HOMING_EXTENDED_LIFE_FACTOR) - wipA->lifetime;
 		
 		if ((The_mission.ai_profile->flags[AI::Profile_Flags::Aspect_invulnerability_fix]) && (wipA->is_locked_homing()) && (wpA->homing_object != &obj_used_list)) {
-			if ( (wipA->max_lifetime - wpA->lifeleft) < The_mission.ai_profile->delay_bomb_arm_timer[Game_skill_level] )
+			if (A_time_alive < The_mission.ai_profile->delay_bomb_arm_timer[Game_skill_level] )
 				return 0;
 		}
-		else if ( (wipA->lifetime - wpA->lifeleft) < The_mission.ai_profile->delay_bomb_arm_timer[Game_skill_level] )
+		else if (A_time_alive - extra_buggy_time < The_mission.ai_profile->delay_bomb_arm_timer[Game_skill_level] )
 			return 0;
 	}
 
@@ -72,11 +84,17 @@ int collide_weapon_weapon( obj_pair * pair )
 		if (!(wipB->wi_flags[Weapon::Info_Flags::No_radius_doubling])) {
 			B_radius *= 2;		// Makes bombs easier to hit
 		}
+
+		// the erroneous extra time a bomb stays invulnerable without the fix
+		float extra_buggy_time = 0.0f;
+		if (!(The_mission.ai_profile->flags[AI::Profile_Flags::Aspect_invulnerability_fix]) && wipB->is_locked_homing())
+			extra_buggy_time = (wipB->lifetime * LOCKED_HOMING_EXTENDED_LIFE_FACTOR) - wipB->lifetime;
+
 		if ((The_mission.ai_profile->flags[AI::Profile_Flags::Aspect_invulnerability_fix]) && (wipB->is_locked_homing()) && (wpB->homing_object != &obj_used_list)) {
-			if ( (wipB->max_lifetime - wpB->lifeleft) < The_mission.ai_profile->delay_bomb_arm_timer[Game_skill_level] )
+			if (B_time_alive < The_mission.ai_profile->delay_bomb_arm_timer[Game_skill_level] )
 				return 0;
 		}
-		else if ( (wipB->lifetime - wpB->lifeleft) < The_mission.ai_profile->delay_bomb_arm_timer[Game_skill_level] )
+		else if (B_time_alive - extra_buggy_time < The_mission.ai_profile->delay_bomb_arm_timer[Game_skill_level] )
 			return 0;
 	}
 
@@ -85,39 +103,63 @@ int collide_weapon_weapon( obj_pair * pair )
 	{
 		bool a_override = false, b_override = false;
 
-		if (Script_system.IsActiveAction(CHA_COLLIDEWEAPON)) {
-			Script_system.SetHookObjects(4, "Self", A, "Object", B, "Weapon", A, "WeaponB", B);
-			Script_system.SetHookVar("Hitpos", 'o', scripting::api::l_Vector.Set(B->pos));
-			a_override = Script_system.IsConditionOverride(CHA_COLLIDEWEAPON, A, B);
-			Script_system.RemHookVars({"Self", "Object", "Weapon", "WeaponB", "Hitpos" });
-
-			// Yes, this should be reversed.
-			Script_system.SetHookObjects(4, "Self", B, "Object", A, "Weapon", B, "WeaponB", A);
-			Script_system.SetHookVar("Hitpos", 'o', scripting::api::l_Vector.Set(A->pos));
-			b_override = Script_system.IsConditionOverride(CHA_COLLIDEWEAPON, B, A);
-			Script_system.RemHookVars({ "Self", "Object", "Weapon", "WeaponB", "Hitpos" });
+		if (scripting::hooks::OnWeaponCollision->isActive()) {
+			a_override = scripting::hooks::OnWeaponCollision->isOverride(scripting::hooks::CollisionConditions{ {A, B} },
+				scripting::hook_param_list(scripting::hook_param("Self", 'o', A),
+					scripting::hook_param("Object", 'o', B),
+					scripting::hook_param("Weapon", 'o', A),
+					scripting::hook_param("WeaponB", 'o', B),
+					scripting::hook_param("Hitpos", 'o', B->pos)));
+			//Yes, this should be reversed
+			b_override = scripting::hooks::OnWeaponCollision->isOverride(scripting::hooks::CollisionConditions{ {A, B} },
+				scripting::hook_param_list(scripting::hook_param("Self", 'o', B),
+					scripting::hook_param("Object", 'o', A),
+					scripting::hook_param("Weapon", 'o', B),
+					scripting::hook_param("WeaponB", 'o', A),
+					scripting::hook_param("Hitpos", 'o', A->pos)));
 		}
 
 		// damage calculation should not be done on clients, the server will tell the client version of the bomb when to die
 		if(!a_override && !b_override && !MULTIPLAYER_CLIENT)
 		{
+			float dot_curve = -dot;
 			float aDamage = wipA->damage;
+			aDamage *= wipA->weapon_hit_curves.get_output(weapon_info::WeaponHitCurveOutputs::DAMAGE_MULT, std::forward_as_tuple(*wpA, *B, dot_curve), &wpA->modular_curves_instance);
+			aDamage *= wipA->weapon_hit_curves.get_output(weapon_info::WeaponHitCurveOutputs::HULL_DAMAGE_MULT, std::forward_as_tuple(*wpA, *B, dot_curve), &wpA->modular_curves_instance);
 			if (wipB->armor_type_idx >= 0)
-				aDamage = Armor_types[wipB->armor_type_idx].GetDamage(aDamage, wipA->damage_type_idx, 1.0f);
+				aDamage = Armor_types[wipB->armor_type_idx].GetDamage(aDamage, wipA->damage_type_idx, 1.0f, false);
 
 			float bDamage = wipB->damage;
+			bDamage *= wipB->weapon_hit_curves.get_output(weapon_info::WeaponHitCurveOutputs::DAMAGE_MULT, std::forward_as_tuple(*wpB, *A, dot_curve), &wpB->modular_curves_instance);
+			bDamage *= wipB->weapon_hit_curves.get_output(weapon_info::WeaponHitCurveOutputs::HULL_DAMAGE_MULT, std::forward_as_tuple(*wpB, *A, dot_curve), &wpB->modular_curves_instance);
 			if (wipA->armor_type_idx >= 0)
-				bDamage = Armor_types[wipA->armor_type_idx].GetDamage(bDamage, wipB->damage_type_idx, 1.0f);
+				bDamage = Armor_types[wipA->armor_type_idx].GetDamage(bDamage, wipB->damage_type_idx, 1.0f, false);
 
 			if (wipA->weapon_hitpoints > 0) {
 				if (wipB->weapon_hitpoints > 0) {		//	Two bombs collide, detonate both.
 					if ((wipA->wi_flags[Weapon::Info_Flags::Bomb]) && (wipB->wi_flags[Weapon::Info_Flags::Bomb])) {
-						wpA->lifeleft = 0.001f;
-						wpA->weapon_flags.set(Weapon::Weapon_Flags::Begun_detonation);
 						wpA->weapon_flags.set(Weapon::Weapon_Flags::Destroyed_by_weapon);
-						wpB->lifeleft = 0.001f;
-						wpB->weapon_flags.set(Weapon::Weapon_Flags::Begun_detonation);
+						std::array<std::optional<ConditionData>, NumHitTypes> impact_data_b = {};
+						impact_data_b[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+							ImpactCondition(wipB->armor_type_idx),
+							HitType::HULL,
+							aDamage,
+							B->hull_strength,
+							i2fl(wipB->weapon_hitpoints),
+						};
+						bool a_armed = weapon_hit(A, B, &A->pos, -1);
+						maybe_play_conditional_impacts(impact_data_b, A, B, a_armed, -1, &A->pos);
 						wpB->weapon_flags.set(Weapon::Weapon_Flags::Destroyed_by_weapon);
+						std::array<std::optional<ConditionData>, NumHitTypes> impact_data_a = {};
+						impact_data_a[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+							ImpactCondition(wipA->armor_type_idx),
+							HitType::HULL,
+							bDamage,
+							A->hull_strength,
+							i2fl(wipA->weapon_hitpoints),
+						};
+						bool b_armed = weapon_hit(B, A, &B->pos, -1);
+						maybe_play_conditional_impacts(impact_data_a, B, A, b_armed, -1, &B->pos);
 					} else {
 						A->hull_strength -= bDamage;
 						B->hull_strength -= aDamage;
@@ -132,36 +174,84 @@ int collide_weapon_weapon( obj_pair * pair )
 						}
 						
 						if (A->hull_strength < 0.0f) {
-							wpA->lifeleft = 0.001f;
-							wpA->weapon_flags.set(Weapon::Weapon_Flags::Begun_detonation);
 							wpA->weapon_flags.set(Weapon::Weapon_Flags::Destroyed_by_weapon);
+							std::array<std::optional<ConditionData>, NumHitTypes> impact_data_b = {};
+							impact_data_b[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+								ImpactCondition(wipB->armor_type_idx),
+								HitType::HULL,
+								aDamage,
+								B->hull_strength,
+								i2fl(wipB->weapon_hitpoints),
+							};
+							bool a_armed = weapon_hit(A, B, &A->pos, -1);
+							maybe_play_conditional_impacts(impact_data_b, A, B, a_armed, -1, &A->pos);
 						}
 						if (B->hull_strength < 0.0f) {
-							wpB->lifeleft = 0.001f;
-							wpB->weapon_flags.set(Weapon::Weapon_Flags::Begun_detonation);
 							wpB->weapon_flags.set(Weapon::Weapon_Flags::Destroyed_by_weapon);
+							std::array<std::optional<ConditionData>, NumHitTypes> impact_data_a = {};
+							impact_data_a[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+								ImpactCondition(wipA->armor_type_idx),
+								HitType::HULL,
+								bDamage,
+								A->hull_strength,
+								i2fl(wipA->weapon_hitpoints),
+							};
+							bool b_armed = weapon_hit(B, A, &B->pos, -1);
+							maybe_play_conditional_impacts(impact_data_a, B, A, b_armed, -1, &B->pos);
 						}
 					}
 				} else {
 					A->hull_strength -= bDamage;
-					wpB->lifeleft = 0.001f;
-					wpB->weapon_flags.set(Weapon::Weapon_Flags::Begun_detonation);
 					wpB->weapon_flags.set(Weapon::Weapon_Flags::Destroyed_by_weapon);
+					std::array<std::optional<ConditionData>, NumHitTypes> impact_data_a = {};
+					impact_data_a[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+						ImpactCondition(wipA->armor_type_idx),
+						HitType::HULL,
+						bDamage,
+						A->hull_strength,
+						i2fl(wipA->weapon_hitpoints),
+					};
+					bool b_armed = weapon_hit(B, A, &B->pos, -1);
+					maybe_play_conditional_impacts(impact_data_a, B, A, b_armed, -1, &B->pos);
 					if (A->hull_strength < 0.0f) {
-						wpA->lifeleft = 0.001f;
-						wpA->weapon_flags.set(Weapon::Weapon_Flags::Begun_detonation);
 						wpA->weapon_flags.set(Weapon::Weapon_Flags::Destroyed_by_weapon);
+						std::array<std::optional<ConditionData>, NumHitTypes> impact_data_b = {};
+						impact_data_b[static_cast<std::underlying_type_t<HitType>>(HitType::HULL)] = ConditionData {
+							ImpactCondition(wipB->armor_type_idx),
+							HitType::HULL,
+							aDamage,
+							B->hull_strength,
+							i2fl(wipB->weapon_hitpoints),
+						};
+						bool a_armed = weapon_hit(A, B, &A->pos, -1);
+						maybe_play_conditional_impacts(impact_data_b, A, B, a_armed, -1, &A->pos);
 					}
 				}
 			} else if (wipB->weapon_hitpoints > 0) {
 				B->hull_strength -= aDamage;
-				wpA->lifeleft = 0.001f;
-				wpA->weapon_flags.set(Weapon::Weapon_Flags::Begun_detonation);
 				wpA->weapon_flags.set(Weapon::Weapon_Flags::Destroyed_by_weapon);
+				std::array<std::optional<ConditionData>, NumHitTypes> impact_data_b = {};
+				impact_data_b[0] = ConditionData {
+					ImpactCondition(wipB->armor_type_idx),
+					HitType::HULL,
+					aDamage,
+					B->hull_strength,
+					i2fl(wipB->weapon_hitpoints),
+				};
+				bool a_armed = weapon_hit(A, B, &A->pos, -1);
+				maybe_play_conditional_impacts(impact_data_b, A, B, a_armed, -1, &A->pos);
 				if (B->hull_strength < 0.0f) {
-					wpB->lifeleft = 0.001f;
-					wpB->weapon_flags.set(Weapon::Weapon_Flags::Begun_detonation);
 					wpB->weapon_flags.set(Weapon::Weapon_Flags::Destroyed_by_weapon);
+					std::array<std::optional<ConditionData>, NumHitTypes> impact_data_a = {};
+					impact_data_a[0] = ConditionData {
+						ImpactCondition(wipA->armor_type_idx),
+						HitType::HULL,
+						bDamage,
+						A->hull_strength,
+						i2fl(wipA->weapon_hitpoints),
+					};
+					bool b_armed = weapon_hit(B, A, &B->pos, -1);
+					maybe_play_conditional_impacts(impact_data_a, B, A, b_armed, -1, &B->pos);
 				}
 			}
 
@@ -186,24 +276,28 @@ int collide_weapon_weapon( obj_pair * pair )
 			}
 		}
 
-		if (!Script_system.IsActiveAction(CHA_COLLIDEWEAPON)) {
+		if (!scripting::hooks::OnWeaponCollision->isActive()) {
 			return 1;
 		}
 
 		if(!(b_override && !a_override))
 		{
-			Script_system.SetHookObjects(4, "Self", A, "Object", B, "Weapon", A, "WeaponB", B);
-			Script_system.SetHookVar("Hitpos", 'o', scripting::api::l_Vector.Set(B->pos));
-			Script_system.RunCondition(CHA_COLLIDEWEAPON, A, B);
-			Script_system.RemHookVars({ "Self", "Object", "Weapon", "WeaponB", "Hitpos" });
+			scripting::hooks::OnWeaponCollision->run(scripting::hooks::CollisionConditions{ {A, B} },
+				scripting::hook_param_list(scripting::hook_param("Self", 'o', A),
+					scripting::hook_param("Object", 'o', B),
+					scripting::hook_param("Weapon", 'o', A),
+					scripting::hook_param("WeaponB", 'o', B),
+					scripting::hook_param("Hitpos", 'o', B->pos)));
 		}
 		else
 		{
 			// Yes, this should be reversed.
-			Script_system.SetHookObjects(4, "Self", B, "Object", A, "Weapon", B, "WeaponB", A);
-			Script_system.SetHookVar("Hitpos", 'o', scripting::api::l_Vector.Set(A->pos));
-			Script_system.RunCondition(CHA_COLLIDEWEAPON, B, A);
-			Script_system.RemHookVars({ "Self", "Object", "Weapon", "WeaponB", "Hitpos" });
+			scripting::hooks::OnWeaponCollision->run(scripting::hooks::CollisionConditions{ {A, B} },
+				scripting::hook_param_list(scripting::hook_param("Self", 'o', B),
+					scripting::hook_param("Object", 'o', A),
+					scripting::hook_param("Weapon", 'o', B),
+					scripting::hook_param("WeaponB", 'o', A),
+					scripting::hook_param("Hitpos", 'o', A->pos)));
 		}
 
 		return 1;

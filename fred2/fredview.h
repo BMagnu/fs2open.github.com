@@ -44,7 +44,7 @@ protected: // create from serialization only
 public:
 
 	int global_error_check_mixed_player_wing(int w);
-	int fred_check_sexp(int sexp, int type, const char *msg, ...);
+	int fred_check_sexp(int sexp, int type, const char *location, ...);
 	int internal_error(const char *msg, ...);
 	int error(const char *msg, ...);
 	int global_error_check();
@@ -126,6 +126,7 @@ protected:
 	afx_msg void OnUpdateChangeViewpointFollow(CCmdUI* pCmdUI);
 	afx_msg void OnChangeViewpointFollow();
 	afx_msg void OnEditorsGoals();
+	afx_msg void OnEditorsCutscenes();
 	afx_msg void OnSpeed1();
 	afx_msg void OnSpeed2();
 	afx_msg void OnSpeed5();
@@ -213,13 +214,21 @@ protected:
 	afx_msg void OnEditorsMessage();
 	afx_msg void OnEditorsStarfield();
 	afx_msg void OnEditorsBgBitmaps();
+	afx_msg void OnEditorsVolumetrics();
 	afx_msg void OnEditorsReinforcement();
 	afx_msg void OnErrorChecker();
 	afx_msg void OnEditorsWaypoint();
+	afx_msg void OnEditorsJumpnode();
 	afx_msg void OnViewOutlines();
 	afx_msg void OnUpdateViewOutlines(CCmdUI* pCmdUI);
 	afx_msg void OnViewOutlinesOnSelected();
 	afx_msg void OnUpdateViewOutlinesOnSelected(CCmdUI* pCmdUI);
+	afx_msg void OnViewOutlineAtWarpin();
+	afx_msg void OnUpdateViewOutlineAtWarpin(CCmdUI* pCmdUI);
+	afx_msg void OnAlwaysSaveDisplayNames();
+	afx_msg void OnUpdateAlwaysSaveDisplayNames(CCmdUI* pCmdUI);
+	afx_msg void OnErrorCheckerChecksPotentialIssues();
+	afx_msg void OnUpdateErrorCheckerChecksPotentialIssues(CCmdUI* pCmdUI);
 	afx_msg void OnUpdateNewShipType(CCmdUI* pCmdUI);
 	afx_msg void OnShowStarfield();
 	afx_msg void OnUpdateShowStarfield(CCmdUI* pCmdUI);
@@ -254,8 +263,10 @@ protected:
 	afx_msg void OnRevert();
 	afx_msg void OnUpdateRevert(CCmdUI* pCmdUI);
 	afx_msg BOOL OnSetCursor(CWnd* pWnd, UINT nHitTest, UINT message);
-	afx_msg void OnHideObjects();
+	afx_msg void OnHideMarkedObjects();
 	afx_msg void OnShowHiddenObjects();
+	afx_msg void OnLockMarkedObjects();
+	afx_msg void OnUnlockAllObjects();
 	afx_msg void OnEditUndo();
 	afx_msg void OnUpdateEditUndo(CCmdUI* pCmdUI);
 	afx_msg void OnEditorsBriefing();
@@ -269,6 +280,7 @@ protected:
 	afx_msg void OnUpdateLookatObj(CCmdUI* pCmdUI);
 	afx_msg void OnEditorsAdjustGrid();
 	afx_msg void OnCalcRelativeCoords();
+	afx_msg void OnMusicPlayer();
 	afx_msg void OnEditorsShieldSys();
 	afx_msg void OnLevelObj();
 	afx_msg void OnAlignObj();
@@ -364,9 +376,8 @@ extern int Show_paths_fred;
 extern int Selection_lock;
 extern int Cursor_over;
 extern int Cur_bitmap;
-extern int Id_select_type_jump_node;
-extern int Id_select_type_start;
-extern int Id_select_type_waypoint;
+extern UINT_PTR Id_select_type_waypoint;
+extern UINT_PTR Id_select_type_jump_node;
 extern int Hide_ship_cues, Hide_wing_cues;
 extern int Move_ships_when_undocking;
 extern int Highlight_selectable_subsys;

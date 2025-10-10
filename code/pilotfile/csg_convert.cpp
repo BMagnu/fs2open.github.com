@@ -204,7 +204,7 @@ void pilotfile_convert::csg_import_ships_weapons()
 	}
 
 	// create list of medals (since it's missing from the old files)
-	list_size = Num_medals;
+	list_size = (int)Medals.size();
 
 	for (idx = 0; idx < list_size; idx++) {
 		ilist.name = Medals[idx].name;
@@ -656,7 +656,8 @@ void pilotfile_convert::csg_import(bool inferno)
 
 	csg_import_missions(inferno);
 
-	csg->main_hall = cfread_ubyte(cfp);
+	ubyte hall_index = cfread_ubyte(cfp);
+	sprintf(csg->main_hall, "%u", hall_index);
 
 	csg_import_red_alert();
 
@@ -1166,7 +1167,7 @@ bool pilotfile_convert::csg_convert(const char *fname, bool inferno)
 
 	filename.reserve(200);
 
-	cf_create_default_path_string(filename, CF_TYPE_SINGLE_PLAYERS, (inferno) ? "inferno" : nullptr, false,
+	cf_create_default_path_string(filename, CF_TYPE_SINGLE_PLAYERS, (inferno) ? "inferno" : nullptr,
 	                              CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
 
 	if (inferno) {
@@ -1178,7 +1179,7 @@ bool pilotfile_convert::csg_convert(const char *fname, bool inferno)
 
 	mprintf(("    CS2 => Converting '%s'...\n", filename.c_str()));
 
-	cfp = cfopen(filename.c_str(), "rb", CFILE_NORMAL);
+	cfp = cfopen(filename.c_str(), "rb");
 
 	if ( !cfp ) {
 		mprintf(("    CS2 => Unable to open '%s' for import!\n", fname));
@@ -1208,7 +1209,7 @@ bool pilotfile_convert::csg_convert(const char *fname, bool inferno)
 	filename.assign(fname);
 	filename.append(".csg");
 
-	cfp = cfopen(filename.c_str(), "wb", CFILE_NORMAL, CF_TYPE_PLAYERS, false,
+	cfp = cfopen(filename.c_str(), "wb", CF_TYPE_PLAYERS, false,
 	             CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
 
 	if ( !cfp ) {

@@ -4,48 +4,70 @@
 
 #include "iff_defs/iff_defs.h"
 #include "localization/localize.h"
+#include "mission/missiongoals.h"
 #include "mission/missionmessage.h"
 #include "object/waypoint.h"
 #include "parse/parselo.h"
 #include "parse/sexp.h"
 #include "parse/sexp/sexp_lookup.h"
+#include "scripting/api/objs/enums.h"
+#include "scripting/api/objs/event.h"
+#include "scripting/api/objs/goal.h"
+#include "scripting/api/objs/hudgauge.h"
 #include "scripting/api/objs/message.h"
+#include "scripting/api/objs/model.h"
 #include "scripting/api/objs/oswpt.h"
 #include "scripting/api/objs/sexpvar.h"
 #include "scripting/api/objs/ship.h"
 #include "scripting/api/objs/shipclass.h"
 #include "scripting/api/objs/sound.h"
+#include "scripting/api/objs/subsystem.h"
 #include "scripting/api/objs/team.h"
 #include "scripting/api/objs/waypoint.h"
 #include "scripting/api/objs/weaponclass.h"
 #include "scripting/api/objs/wing.h"
 #include "scripting/scripting.h"
 #include "ship/ship.h"
+#include "utils/string_utils.h"
 #include "weapon/weapon.h"
 
 using namespace luacpp;
 
 namespace sexp {
 
-static SCP_unordered_map<SCP_string, int> parameter_type_mapping{{ "boolean",      OPF_BOOL },
+static SCP_unordered_map<SCP_string, int> parameter_type_mapping {
+														  { "boolean",      OPF_BOOL },
 														  { "number",       OPF_NUMBER },
+														  { "string",       OPF_STRING },
 														  { "ship",         OPF_SHIP },
 														  { "shipname",     OPF_SHIP },
-														  { "string",       OPF_STRING },
 														  { "team",         OPF_IFF },
 														  { "waypointpath", OPF_WAYPOINT_PATH },
+														  { "waypoint",     OPF_POINT },
 														  { "variable",     OPF_VARIABLE_NAME },
 														  { "message",      OPF_MESSAGE },
 														  { "wing",         OPF_WING },
 														  { "shipclass",    OPF_SHIP_CLASS_NAME },
 														  { "weaponclass",  OPF_WEAPON_NAME },
 														  { "soundentry",   OPF_GAME_SND }, 
-														  { "ship+waypoint",   OPF_SHIP_POINT },
-														  { "ship+wing",   OPF_SHIP_WING },
+														  { "ship+waypoint",OPF_SHIP_POINT },
+														  { "ship+wing",    OPF_SHIP_WING },
 														  { "ship+wing+team",   OPF_SHIP_WING_WHOLETEAM },
 														  { "ship+wing+ship_on_team+waypoint",   OPF_SHIP_WING_SHIPONTEAM_POINT },
 														  { "ship+wing+waypoint",   OPF_SHIP_WING_POINT },
-														  { "ship+wing+waypoint+none",   OPF_SHIP_WING_POINT_OR_NONE }, };
+														  { "ship+wing+waypoint+none",   OPF_SHIP_WING_POINT_OR_NONE },
+														  { "subsystem",    OPF_SUBSYSTEM },
+														  { "subsystemname",    OPF_SUBSYSTEM },
+														  { "dockpoint",    OPF_DOCKER_POINT },
+														  { "hudgauge",     OPF_ANY_HUD_GAUGE },
+														  { "event",        OPF_EVENT_NAME },
+														  { "goal",         OPF_GOAL_NAME },
+														  { "child_enum",   OPF_CHILD_LUA_ENUM },
+                                                          { "custom_string",OPF_MISSION_CUSTOM_STRING },
+														  { "enum",         First_available_opf_id } };
+
+// If a parameter requires a parent parameter then it must be listed here!
+static SCP_vector<SCP_string> parent_parameter_required{"subsystem", "subsystemname", "dockpoint", "child_enum"};
 
 std::pair<SCP_string, int> LuaSEXP::get_parameter_type(const SCP_string& name)
 {
@@ -74,26 +96,6 @@ int LuaSEXP::get_return_type(const SCP_string& name)
 	} else {
 		return iter->second;
 	}
-}
-
-int LuaSEXP::get_category(const SCP_string& name) {
-	for (auto& subcat : op_menu) {
-		if (subcat.name == name) {
-			return subcat.id;
-		}
-	}
-
-	return -1;
-}
-
-int LuaSEXP::get_subcategory(const SCP_string& name, int category) {
-	for (auto& subcat : op_submenu) {
-		if (subcat.name == name && (subcat.id & OP_CATEGORY_MASK) == category) {
-			return subcat.id;
-		}
-	}
-
-	return -1;
 }
 
 LuaSEXP::LuaSEXP(const SCP_string& name) : DynamicSEXP(name) {
@@ -136,7 +138,7 @@ std::pair<SCP_string, int> LuaSEXP::getArgumentInternalType(int argnum) const {
 int LuaSEXP::getArgumentType(int argnum) const {
 	return getArgumentInternalType(argnum).second;
 }
-luacpp::LuaValue LuaSEXP::sexpToLua(int node, int argnum) const {
+luacpp::LuaValue LuaSEXP::sexpToLua(int node, int argnum, int parent_node) const {
 	using namespace scripting::api;
 	auto argtype = getArgumentInternalType(argnum);
 
@@ -183,12 +185,12 @@ luacpp::LuaValue LuaSEXP::sexpToLua(int node, int argnum) const {
 			return LuaValue::createValue(_action.getLuaState(), ship_entry ? ship_entry->name : "");
 		}
 
-		if (!ship_entry || ship_entry->status != ShipStatus::PRESENT) {
+		if (!ship_entry || !ship_entry->has_objp()) {
 			// Name is invalid
 			return LuaValue::createValue(_action.getLuaState(), l_Ship.Set(object_h()));
 		}
 
-		auto objp = ship_entry->objp;
+		auto objp = ship_entry->objp();
 
 		// The other SEXP code does not validate the object type so this should be safe
 		Assertion(objp->type == OBJ_SHIP,
@@ -214,7 +216,7 @@ luacpp::LuaValue LuaSEXP::sexpToLua(int node, int argnum) const {
 	}
 	case OPF_WING: {
 		auto wingp = eval_wing(node);
-		int wingnum = static_cast<int>(wingp - Wings);
+		int wingnum = WING_INDEX(wingp);
 
 		return LuaValue::createValue(_action.getLuaState(), l_Wing.Set(wingnum));
 	}
@@ -234,6 +236,10 @@ luacpp::LuaValue LuaSEXP::sexpToLua(int node, int argnum) const {
 		auto text = CTEXT(node);
 		return LuaValue::createValue(_action.getLuaState(), text);
 	}
+	case OPF_POINT: {
+		auto wpt = find_matching_waypoint(CTEXT(node));
+		return LuaValue::createValue(_action.getLuaState(), l_Waypoint.Set(object_h(wpt->get_objnum())));
+	}
 	case OPF_SHIP_POINT:
 	case OPF_SHIP_WING:
 	case OPF_SHIP_WING_WHOLETEAM:
@@ -244,10 +250,131 @@ luacpp::LuaValue LuaSEXP::sexpToLua(int node, int argnum) const {
 		eval_object_ship_wing_point_team(&oswpt, node);
 		return LuaValue::createValue(_action.getLuaState(), l_OSWPT.Set(oswpt));
 	}
-	default:
-		UNREACHABLE("Unhandled argument type! Someone added an argument type but didn't add handling code to execute().");
-		return LuaValue::createNil(_action.getLuaState());
+	case OPF_SUBSYSTEM: {
+		auto name = CTEXT(node);
+
+		// if this is a subsystemname type, we want the name of a valid subsystem but not the subsystem itself
+		if (argtype.first == "subsystemname") {
+			return LuaValue::createValue(_action.getLuaState(), name);
+		}
+
+		//Use the parent node to get the index of the parameter we should
+		//look at to find the parent object
+		int index = get_dynamic_parameter_index(_name, argnum);
+		if (index < 0)
+			error_display(1, "Expected to find a dynamic lua parent parameter for node %i in operator %s but found nothing!", argnum, _name.c_str());
+
+		int this_node = parent_node;
+		for (int i = 0; i <= index; i++) {
+			this_node = CDR(this_node);
+		}
+
+		auto ship_entry = eval_ship(this_node);
+
+		if (!ship_entry || !ship_entry->has_shipp()) {
+			// Name is invalid
+			return LuaValue::createValue(_action.getLuaState(), l_Ship.Set(object_h()));
+		}
+
+		ship_subsys* ss = ship_get_subsys(ship_entry->shipp(), name);
+		
+		return LuaValue::createValue(_action.getLuaState(), l_Subsystem.Set(ship_subsys_h(ship_entry->objp(), ss)));
 	}
+	case OPF_DOCKER_POINT: {
+		auto name = CTEXT(node);
+
+		// Use the parent node to get the index of the parameter we should
+		// look at to find the parent object
+		int index = get_dynamic_parameter_index(_name, argnum);
+
+		if (index < 0)
+			error_display(1,
+				"Expected to find a dynamic lua parent parameter for node %i in operator %s but found nothing!",
+				argnum,
+				_name.c_str());
+
+		int this_node = parent_node;
+		for (int i = 0; i <= index; i++) {
+			this_node = CDR(this_node);
+		}
+
+		auto ship_entry = eval_ship(this_node);
+		if (!ship_entry || !ship_entry->has_shipp()) {
+			// Name is invalid
+			return LuaValue::createValue(_action.getLuaState(), l_Ship.Set(object_h()));
+		}
+
+		auto docker_pm = model_get(Ship_info[ship_entry->shipp()->ship_info_index].model_num);
+		auto dockindex = model_find_dock_name_index(Ship_info[ship_entry->shipp()->ship_info_index].model_num, name);
+
+		return LuaValue::createValue(_action.getLuaState(), l_Dockingbay.Set(dockingbay_h(docker_pm, dockindex)));
+  }
+	case OPF_ANY_HUD_GAUGE: {
+		auto name = CTEXT(node);
+		return LuaValue::createValue(_action.getLuaState(), l_HudGauge.Set(hud_get_gauge(name, true)));
+	}
+	case OPF_EVENT_NAME: {
+		auto name = CTEXT(node);
+		int i = mission_event_lookup(name);
+		return LuaValue::createValue(_action.getLuaState(), l_Event.Set(i));
+	}
+	case OPF_GOAL_NAME: {
+		auto name = CTEXT(node);
+		int i = mission_goal_lookup(name);
+		return LuaValue::createValue(_action.getLuaState(), l_Goal.Set(i));
+	}
+	case OPF_CHILD_LUA_ENUM: {
+		auto text = CTEXT(node);
+		return LuaValue::createValue(_action.getLuaState(), text);
+	}
+	case OPF_MISSION_CUSTOM_STRING: {
+		auto cs = get_custom_string_by_name(CTEXT(node));
+		auto table = luacpp::LuaTable::create(_action.getLuaState());
+
+		table.addValue("Name", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs->name));
+		table.addValue("Value", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs->value));
+		table.addValue("String", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs->text));
+
+		return table;
+	}
+	default:
+		if ((strcmp(argtype.first.c_str(), "enum")) == 0) {
+			auto text = CTEXT(node);
+			return LuaValue::createValue(_action.getLuaState(), text);
+		} else {
+			UNREACHABLE(
+				"Unhandled argument type! Someone added an argument type but didn't add handling code to execute().");
+			return LuaValue::createNil(_action.getLuaState());
+		}
+	}
+}
+bool LuaSEXP::maybeExtractSexpSpecialRetVal(const luacpp::LuaValue& value, int& sexp_retval) {
+	// see if this return value is actually a SEXP_ enum
+	if (value.getValueType() == ValueType::USERDATA) {
+		try {
+			using namespace scripting::api;
+			enum_h enumeration;
+			value.getValue(l_Enum.Get(&enumeration));	// this might throw a LuaException
+			switch (enumeration.index) {
+				case LE_SEXP_TRUE:
+				case LE_SEXP_FALSE:
+				case LE_SEXP_KNOWN_FALSE:
+				case LE_SEXP_KNOWN_TRUE:
+				case LE_SEXP_UNKNOWN:
+				case LE_SEXP_NAN:
+				case LE_SEXP_NAN_FOREVER:
+				case LE_SEXP_CANT_EVAL:
+					sexp_retval = *enumeration.value;
+					return true;
+				default:
+					break;
+			}
+		} catch (const LuaException& le) {
+			// just ignore the exception because we follow a different code path if the conversion failed
+			SCP_UNUSED(le);
+		}
+	}
+	return false;
 }
 int LuaSEXP::getSexpReturnValue(const LuaValueList& retVals) const {
 	switch (_return_type) {
@@ -259,6 +386,10 @@ int LuaSEXP::getSexpReturnValue(const LuaValueList& retVals) const {
 					retVals.size());
 			return 0;
 		} else if (retVals[0].getValueType() != ValueType::NUMBER) {
+			int sexp_retval;
+			if (maybeExtractSexpSpecialRetVal(retVals[0], sexp_retval)) {
+				return sexp_retval;
+			}
 			Warning(LOCATION, "Wrong return type detected for Lua SEXP '%s', expected a number.", _name.c_str());
 			return 0;
 		} else {
@@ -272,6 +403,10 @@ int LuaSEXP::getSexpReturnValue(const LuaValueList& retVals) const {
 					retVals.size());
 			return SEXP_FALSE;
 		} else if (retVals[0].getValueType() != ValueType::BOOLEAN) {
+			int sexp_retval;
+			if (maybeExtractSexpSpecialRetVal(retVals[0], sexp_retval)) {
+				return sexp_retval;
+			}
 			Warning(LOCATION, "Wrong return type detected for Lua SEXP '%s', expected a boolean.", _name.c_str());
 			return SEXP_FALSE;
 		} else {
@@ -290,7 +425,7 @@ int LuaSEXP::getSexpReturnValue(const LuaValueList& retVals) const {
 	}
 }
 
-luacpp::LuaValueList LuaSEXP::getSEXPArgumentList(int node) const {
+luacpp::LuaValueList LuaSEXP::getSEXPArgumentList(int node, int parent_node) const {
 	LuaValueList luaParameters;
 
 	// We need to adapt how we handle parameters based on their type. We use this variable to keep track of which parameter
@@ -299,7 +434,7 @@ luacpp::LuaValueList LuaSEXP::getSEXPArgumentList(int node) const {
 	while (node != -1) {
 		if (argnum < (int)_argument_types.size()) {
 			// This is a parameter in the normal list so we add it to the normal parameter list
-			luaParameters.push_back(sexpToLua(node, argnum));
+			luaParameters.push_back(sexpToLua(node, argnum, parent_node));
 
 			node = CDR(node);
 			++argnum;
@@ -313,7 +448,7 @@ luacpp::LuaValueList LuaSEXP::getSEXPArgumentList(int node) const {
 			// If we reach the end of the parameter list inside this for loop we just exit since all parameters are optional
 			for (auto i = 0; i < (int)_varargs_type_pattern.size() && node != -1; ++i) {
 				// i + 1 since lua arrays are 1-indexed
-				varargs_part.addValue(i + 1, sexpToLua(node, argnum));
+				varargs_part.addValue(i + 1, sexpToLua(node, argnum, parent_node));
 
 				node = CDR(node);
 				++argnum;
@@ -326,14 +461,15 @@ luacpp::LuaValueList LuaSEXP::getSEXPArgumentList(int node) const {
 	return luaParameters;
 }
 
-int LuaSEXP::execute(int node) {
+int LuaSEXP::execute(int node, int parent_node) {
 	if (!_action.isValid()) {
+		
 		Error(LOCATION,
-			  "Lua SEXP called without a valid action function! A script probably failed to set the action for some reason.");
+			  "Lua SEXP %s called without a valid action function! A script probably failed to set the action for some reason.", _name.c_str());
 		return SEXP_CANT_EVAL;
 	}
 
-	LuaValueList luaParameters = getSEXPArgumentList(node);
+	LuaValueList luaParameters = getSEXPArgumentList(node, parent_node);
 
 	// All parameters are now in LuaValues, time to call our function
 	try {
@@ -362,10 +498,6 @@ int LuaSEXP::getSubcategory() {
 	return _subcategory;
 }
 int LuaSEXP::getCategory() {
-	if (_category == OP_CATEGORY_CHANGE) {
-		// "Change" is a special case since we can't add new SEXPs to the primary category
-		return OP_CATEGORY_CHANGE2;
-	}
 	return _category;
 }
 bool LuaSEXP::parseCheckEndOfDescription() {
@@ -402,30 +534,23 @@ void LuaSEXP::parseTable() {
 	stuff_string(category, F_NAME);
 
 	_category = get_category(category);
-	if (_category < 0) {
-		error_display(0, "Invalid category '%s' found. New main categories can't be added!", category.c_str());
-		_category = OP_CATEGORY_CHANGE2; // Default to change2 so we have a valid value later on
+	if (_category == OP_CATEGORY_NONE) {
+		// Unknown category so we need to add this one
+		_category = sexp::add_category(category);
 	}
 
-	required_string("$Subcategory:");
-	SCP_string subcategory;
-	stuff_string(subcategory, F_NAME);
+	if (optional_string("$Subcategory:")) {
+		SCP_string subcategory;
+		stuff_string(subcategory, F_NAME);
 
-	_subcategory = get_subcategory(subcategory, _category);
-	if (_subcategory < 0) {
-		// Unknown subcategory so we need to add this one
-		_subcategory = sexp::add_subcategory(_category, subcategory);
-		if (_subcategory < 0) {
-			// Couldn't add subcategory!
-			error_display(0,
-						  "No more space for subcategory '%s' free in category '%s'!",
-						  subcategory.c_str(),
-						  category.c_str());
-
-			// Default to the first subcategory in our category, hopefully it will exist...
-			_subcategory = 0x0000 | _category;
+		_subcategory = get_subcategory(subcategory, _category);
+		if (_subcategory == OP_SUBCATEGORY_NONE) {
+			// Unknown subcategory so we need to add this one
+			_subcategory = sexp::add_subcategory(_category, subcategory);
 		}
-	} 
+	} else {
+		_subcategory = OP_SUBCATEGORY_NONE;
+	}
 
 	required_string("$Minimum Arguments:");
 
@@ -507,8 +632,9 @@ void LuaSEXP::parseTable() {
 		help_text << "Rest: (The following pattern repeats)\r\n";
 		variable_arg_part = true;
 	}
-
+	int param_index = 0;
 	while (optional_string("$Parameter:")) {
+
 		required_string("+Description:");
 
 		SCP_string param_desc;
@@ -531,6 +657,152 @@ void LuaSEXP::parseTable() {
 			type = get_parameter_type("string");
 		}
 
+		if ((strcmp(type.first.c_str(), "enum")) == 0) {
+			
+			required_string("+Enum Name:");
+
+			SCP_string enum_name;
+			stuff_string(enum_name, F_NAME);
+
+			dynamic_sexp_enum_list thisList;
+			int list_position = get_dynamic_enum_position(enum_name);
+			bool new_enum = false;
+
+			if (list_position >= 0) {
+				type.second = list_position + (int)First_available_opf_id;
+
+				//Do this just in case we're going to use this list as a template
+				thisList.name = Dynamic_enums[list_position].name; 
+				for (const SCP_string& enum_item : Dynamic_enums[list_position].list) {
+					thisList.list.push_back(enum_item);
+				}
+			} else {
+				new_enum = true;
+				thisList.name = enum_name;
+			}
+
+			while (optional_string("+Enum:")) {
+				new_enum = true;
+
+				//If we're making a new Enum based off another one, let's give it a unique name
+				if (list_position >= 0) {
+					SCP_string newName;
+					newName = enum_name;
+					newName.append(std::to_string(list_position));
+					thisList.name = newName;
+				}
+
+				SCP_string item;
+				stuff_string(item, F_NAME);
+
+				// These characters may not appear in an Enum item
+				constexpr const char* ENUM_INVALID_CHARS = "()\"'\\/";
+				if (std::strpbrk(item.c_str(), ENUM_INVALID_CHARS) != nullptr) {
+					error_display(0, "ENUM item '%s' cannot include these characters [(,),\",',\\,/]. Skipping!\n", item.c_str());
+
+					// Skip the invalid entry
+					continue;
+
+				}
+
+				if (item.length() >= NAME_LENGTH) {
+					error_display(0, "Enum item '%s' is longer than %i characters. Truncating!\n", item.c_str(), NAME_LENGTH);
+					item.resize(NAME_LENGTH - 1);
+				}
+
+				bool skip = false;
+				// Case insensitive check if the item already exists in the list
+				for (int i = 0; i < (int)thisList.list.size(); i++) {
+					if (lcase_equal(item, thisList.list[i])) {
+						error_display(0, "Enum item '%s' already exists in list %s. Skipping!\n", item.c_str(), thisList.name.c_str());
+						skip = true;
+						break;
+					}
+				}
+
+				if (skip)
+					continue;
+
+				thisList.list.push_back(item);
+			}
+
+			if (thisList.list.size() == 0) {
+				mprintf(("Parsed empty enum list '%s'. Adding <none>.\n", thisList.name.c_str()));
+				thisList.list.push_back("<none>");
+			}
+
+			if (new_enum) {
+				type.second = increment_enum_list_id();
+				Dynamic_enums.push_back(std::move(thisList));
+			} else {
+				// Not an error but large mods may lose track of their enum names and I thought this would be helpful -Mjn
+				mprintf(("Found previously existing Lua Enum '%s'. Using that for sexp '%s'!\n",
+					enum_name.c_str(),
+					_name.c_str()));
+			}
+
+		}
+
+		bool parent_required = util::isStringOneOf(type.first, parent_parameter_required);
+
+		// parse this even if this parameter doesn't need a parent, and we'll validate that next
+		int parent_param_index = -1;
+		if (optional_string("+Parent Parameter Index:")) {
+			stuff_int(&parent_param_index);
+			parent_param_index--;
+		}
+		if (parent_param_index >= (param_index + 1)) {
+			error_display(1,
+				"Parent Parameter Index '%i' cannot be greater or equal to %i (the current parameter index)!\n",
+				parent_param_index,
+				param_index + 1);
+		}
+
+		if (parent_required)
+		{
+			std::pair<int, int> param_map(param_index, parent_param_index);
+
+			// check if this operator already has an entry for dynamic parameters
+			int dyn_index = -1;
+			for (int i = 0; i < (int)Dynamic_parameters.size(); i++) {
+				if (lcase_equal(Dynamic_parameters[i].operator_name, _name)) {
+					dyn_index = i;
+				}
+			}
+
+			if (dyn_index >= 0) {
+				Dynamic_parameters[dyn_index].parameter_map.push_back(param_map);
+			} else {
+				dynamic_sexp_parameter_list dyn_param;
+				dyn_param.operator_name = _name;
+				dyn_param.parameter_map.push_back(param_map);
+
+				Dynamic_parameters.push_back(dyn_param);
+			}
+		}
+		else if (parent_param_index >= 0)
+		{
+			SCP_string msg = "Parent Parameter Index field was specified in SEXP '";
+			msg += _name;
+			msg += "' for a parameter type '";
+			msg += type.first;
+			msg += "' that does not need a parent!  Parameter types requiring parents are:";
+			for (const auto &param: parent_parameter_required)
+			{
+				msg += "\n\t";
+				msg += param;
+			}
+			error_display(1, "%s", msg.c_str());
+		}
+
+		if (type_str == "child_enum") {
+			if (optional_string("+Suffix:")) {
+				SCP_string suffix;
+				stuff_string(suffix, F_NAME);
+				Dynamic_enum_suffixes.push_back({_name, param_index, suffix});
+			}
+		}
+
 		if (variable_arg_part) {
 			_varargs_type_pattern.push_back(type);
 		} else {
@@ -545,6 +817,7 @@ void LuaSEXP::parseTable() {
 				error_display(0, "A second $Repeat has been encountered! Only one may appear in the parameter list.");
 			}
 		}
+		param_index++;
 	}
 
 	_help_text = help_text.str();

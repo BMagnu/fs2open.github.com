@@ -24,6 +24,7 @@
 #define SM_MODE_REPAIR_REARM			7		//repair/rearm player ship
 #define SM_MODE_REPAIR_REARM_ABORT	8		//abort repair/rearm of player ship
 #define SM_MODE_ALL_FIGHTERS			9		//message all fighters/bombers
+#define SM_MODE_GENERAL             10		//general orders, usually luaAI
 
 // define for trapping messages send to "all fighters"
 #define MESSAGE_ALL_FIGHTERS		-999
@@ -60,6 +61,30 @@ class object;
 // used for Message box gauge
 #define NUM_MBOX_FRAMES		3
 
+#define MAX_MENU_ITEMS 50   // max number of items in the menu
+#define MAX_MENU_DISPLAY 10 // max number that can be displayed
+
+// following are defines and character strings that are used as part of messaging mode
+
+#define NUM_COMM_ORDER_TYPES 6
+
+#define TYPE_SHIP_ITEM 0
+#define TYPE_WING_ITEM 1
+#define TYPE_ALL_FIGHTERS_ITEM 2
+#define TYPE_REINFORCEMENT_ITEM 3
+#define TYPE_REPAIR_REARM_ITEM 4
+#define TYPE_REPAIR_REARM_ABORT_ITEM 5
+
+typedef struct mmode_item {
+	int instance;    // instance in Ships/Wings array of this menu item
+	int active;      // active items are in bold text (1) -- inactive items greyed out (0) -- hidden objects not rendered (-1)
+	SCP_string text; // text to display on the menu
+} mmode_item;
+
+extern char Squad_msg_title[256];
+extern mmode_item MsgItems[MAX_MENU_ITEMS];
+extern int Num_menu_items; // number of items for a message menu
+
 typedef struct player_order {
 private:
 	//Needed, because legacy order-id's were not assigned in order
@@ -78,7 +103,7 @@ public:
 	inline void localize() { localized_name = XSTR(hud_name.c_str(), hud_xstr); }
 } player_order;
 
-extern std::vector<player_order> Player_orders;
+extern SCP_vector<player_order> Player_orders;
 
 // following defines are the set of possible commands that can be given to a ship.  A mission designer
 // might not allow some messages
@@ -140,7 +165,6 @@ extern void hud_init_comm_orders();
 extern void hud_squadmsg_toggle();						// toggles the state of messaging mode
 extern void hud_squadmsg_shortcut( int command );	// use of a shortcut key
 extern int hud_squadmsg_hotkey_select( int k );	// a hotkey was hit -- maybe send a message to those ship(s)
-extern void hud_squadmsg_save_keys( int do_scroll = 0 );					// saves into local area keys which need to be saved/restored when in messaging mode
 extern int hud_squadmsg_do_frame();
 extern int hud_query_order_issued(const char *to, const char *order_name, const char *target = nullptr, int timestamp = 0, const char *from = nullptr, const char *special_index = nullptr);
 extern int hud_squadmsg_read_key( int k );			// called from high level keyboard code
@@ -166,6 +190,16 @@ void hud_enemymsg_toggle();						// debug function to allow messaging of enemies
 // Added for voicer implementation
 void hud_squadmsg_do_mode( int mode );
 
+// functions for menu item selection with simple up/down/select buttons
+void hud_squadmsg_selection_move_down();
+void hud_squadmsg_selection_move_up();
+void hud_squadmsg_selection_select();
+
+// Added for checking message validity - Mjn
+bool hud_squadmsg_ship_order_valid(int shipnum, int order);
+
+void Hud_set_lua_key(int selection);
+
 class HudGaugeSquadMessage: public HudGauge
 {
 protected:
@@ -180,6 +214,7 @@ protected:
 
 	int Pgup_offsets[2];
 	int Pgdn_offsets[2];
+	int Ship_name_max_width;
 
 	int flash_timer[2];
 	bool flash_flag;
@@ -194,9 +229,10 @@ public:
 	void initItemOffsetX(int x);
 	void initPgUpOffsets(int x, int y);
 	void initPgDnOffsets(int x, int y);
+	void initShipNameMaxWidth(int w);
 
-	void render(float frametime) override;
-	bool canRender() override;
+	void render(float frametime, bool config = false) override;
+	bool canRender() const override;
 	void pageIn() override;
 	void initialize() override;
 	void startFlashPageScroll(int duration = 1400);

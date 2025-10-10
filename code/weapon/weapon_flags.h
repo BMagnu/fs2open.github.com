@@ -27,6 +27,7 @@ namespace Weapon {
 		Thruster,							// Has thruster cone and/or glow
 		In_tech_database,
 		Player_allowed,						// allowed to be on starting wing ships/in weaponry pool
+		Default_player_weapon,				// added to the weapons pool by default
 		Bomber_plus,						// Fire this missile only at a bomber or big ship.  But not a fighter.
 		Corkscrew,							// corkscrew style missile
 		Particle_spew,						// spews particles as it travels
@@ -43,7 +44,6 @@ namespace Weapon {
 		Default_in_tech_database,			// this entry's default tech database status, as specified in weapons.tbl; used when the tech db is "reset to default" - Goober5000
 		Local_ssm,							// localized ssm. ship that fires ssm is in mission.  ssms also warp back in during mission
 		Tagged_only,						// can only fire if target is tagged
-		Cycle,								// will only fire from (shots (defalts to 1)) points at a time
 		Small_only,							// can only be used against small ships like fighters or bombers
 		Same_turret_cooldown,				// the weapon has the same cooldown time on turrets
 		Mr_no_lighting,						// don't render with lighting, regardless of user options
@@ -86,11 +86,17 @@ namespace Weapon {
 		Require_exact_los,					// If secondary or in turret, will only fire if ship has line of sight to target
 		Can_damage_shooter,					// this weapon and any of its descendants can damage its shooter - Asteroth
 		Heals,								// 'damage' heals instead of actually damaging - Asteroth
+		Vampiric,						    // damage applied also brings back health to the shooter - Strygon
 		SecondaryNoAmmo,					// Secondaries that only use energy
 		No_collide,
 		Multilock_target_dead_subsys,
 		No_evasion,							// AI will not attempt to dodge this weapon - Asteroth
 		Dont_merge_indicators,				// This secondary lead indicator won't be merged with the primary lead indicator even if this is a homing weapon.
+		No_fred,							// not available in fred
+		Detonate_on_expiration,				// Secondary weapons always detonate when their lifetime runs out, but now primary weapons can too
+		Ignores_countermeasures,			// The weapon will never be affected by countermeasures
+		Freespace_1_missile_behavior,		// Bundles several observed behaviors missiles had in the freespace 1 release
+		Dogfight_weapon,                    // Dogfight weapons are intended as balanced variants for multiplayer. This flag can be used to filter them out when necessary.
 
         NUM_VALUES
 	};
@@ -109,6 +115,19 @@ namespace Weapon {
 		Multi_homing_update_needed, // this is a newly spawned homing weapon which needs to update client machines
 		Multi_Update_Sent,			// Marks this missile as already being updated once by the server
 		Begun_detonation,			// The engine has set this weapon to detonate momentarily
+		No_thruster,                // Disable rendering thrusters for this weapon instance
+		Glowmaps_disabled,			// No glowmaps for this weapon instance
+		Draw_as_wireframe,			// Render wireframe for this weapon instance
+		Render_full_detail,			// Render full detail for this weapon instance
+		Render_without_light,		// Render without light for this weapon instance
+		Render_without_diffuse,		// Render without diffuse for this weapon instance
+		Render_without_glowmap,		// Render without glowmap for this weapon instance
+		Render_without_normalmap,	// Render without normal map for this weapon instance
+		Render_without_heightmap,	// Render without height map for this weapon instance
+		Render_without_ambientmap,	// Render without ambient for this weapon instance
+		Render_without_specmap,		// Render without spec for this weapon instance
+		Render_without_reflectmap,	// Render without reflect for this weapon instance
+
 
 		NUM_VALUES
 	};
@@ -118,6 +137,7 @@ namespace Weapon {
 		Random_length,
 		Resets,
 		Num_firepoints_burst_shots, // Burst shots is set to however many firepoints the firer has
+		Burst_only_loop_sounds, // start/loop/end sounds trigger on the start and end of bursts in addition to the trigger state
 
 		NUM_VALUES
 	};
@@ -125,6 +145,7 @@ namespace Weapon {
 	FLAG_LIST(Beam_Info_Flags) {
 		Burst_share_random,
 		Track_own_texture_tiling,
+		Direct_fire_lead_target,
 
 		NUM_VALUES
 	};

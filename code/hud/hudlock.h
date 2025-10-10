@@ -24,7 +24,7 @@ void hud_do_lock_indicators(float frametime);
 void hud_stop_looped_locking_sounds();
 void hud_lock_reset(float lock_time_scale=1.0f);
 
-class HudGaugeLock: public HudGauge
+class HudGaugeLock: public HudGauge3DAnchor
 {
 protected:
 	hud_anim Lock_gauge;
@@ -58,7 +58,7 @@ public:
 	void initLoopLockedAnim(bool loop);
 	void initBlinkLockedAnim(bool blink);
 
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void renderOld(float frametime);
 	void renderLockTriangles(int center_x, int center_y, float frametime);
 	void renderLockTrianglesNew(int center_x, int center_y, float frametime, lock_info *slot);

@@ -4,9 +4,13 @@
 #include "globalincs/pstypes.h"
 #include "libs/jansson.h"
 #include "options/OptionsManager.h"
+#include "localization/localize.h"
+#include "parse/parselo.h"
 
 #include <functional>
 #include <utility>
+#include <variant>
+#include <optional>
 
 namespace options {
 
@@ -26,6 +30,19 @@ FLAG_LIST(OptionFlags) {
 	 * boolean option even though the option is not designed for that.
 	 */
 	ForceMultiValueSelection = 0,
+	/**
+	 * @brief Whether or not the option is built-in to FSO's retail Options UI
+	 *
+	 * This can be useful if an option should be ignored in cases like the SCP Options UI where
+	 * it's only appropriate to display options that are not otherwise accessible to retail players.
+	 */
+	RetailBuiltinOption = 1,
+	/**
+	 * @brief Forces the range type slider to use an integer instead of a float
+	 *
+	 * This can be useful if an option cannot accept float values.
+	 */
+	RangeTypeInteger = 2,
 
 	NUM_VALUES
 };
@@ -39,24 +56,32 @@ struct ValueDescription {
 };
 
 class OptionBase {
+	template <typename T>
+	friend class OptionBuilder;
+
   protected:
 	OptionsManager* _parent   = nullptr;
 	ExpertLevel _expert_level = ExpertLevel::Expert;
 
 	SCP_string _config_key;
 
-	SCP_string _category = "Other";
+	std::pair<const char*, int> _category = {"Other", 1829};
 
 	SCP_string _title;
 	SCP_string _description;
 
 	int _importance = 0;
 
+	float _min = 0;
+	float _max = 1;
+
+	bool _is_once = false;
+
 	SCP_unordered_map<PresetKind, SCP_string> _preset_values;
 
 	flagset<OptionFlags> _flags;
 
-	std::unique_ptr<json_t> getConfigValue() const;
+	std::optional<std::unique_ptr<json_t>> getConfigValue() const;
 
 	OptionBase(SCP_string config_key, SCP_string title, SCP_string description);
 
@@ -66,14 +91,20 @@ class OptionBase {
 	ExpertLevel getExpertLevel() const;
 	void setExpertLevel(ExpertLevel expert_level);
 
-	const SCP_string& getCategory() const;
-	void setCategory(const SCP_string& category);
+	const SCP_string getCategory() const;
+	void setCategory(const std::pair<const char*, int>& category);
 
 	int getImportance() const;
 	void setImportance(int importance);
 
+	std::pair<float, float> getRangeValues() const;
+	void setRangeValues(float min, float max);
+
 	const flagset<OptionFlags>& getFlags() const;
 	void setFlags(const flagset<OptionFlags>& flags);
+
+	bool getIsOnce() const;
+	void setIsOnce(bool is_once);
 
 	const SCP_string& getConfigKey() const;
 	const SCP_string& getTitle() const;
@@ -90,6 +121,8 @@ class OptionBase {
 	virtual void setValueDescription(const ValueDescription& desc) const = 0;
 
 	virtual OptionType getType() const = 0;
+	
+	virtual void parseDefaultSetting() const = 0;
 
 	virtual SCP_vector<ValueDescription> getValidValues() const = 0;
 
@@ -121,6 +154,7 @@ template <typename T>
 using ValueInterpolator = std::function<T(float)>;
 template <typename T>
 using ValueDeinterpolator = std::function<float(const T&)>;
+using ValueParser = std::function<void()>;
 
 template <typename T>
 class ValueFunctor {
@@ -144,6 +178,9 @@ class Option : public OptionBase {
 	ValueChangeListener<T> _changeListener;
 	ValueInterpolator<T> _interpolator;
 	ValueDeinterpolator<T> _deinterpolator;
+	ValueParser _parser;
+
+	bool _hasCustomDefaultFunc = false;
 
 	OptionType _type = OptionType::Selection; // By default the generic type is always a selection
 
@@ -177,6 +214,17 @@ class Option : public OptionBase {
 
 	OptionType getType() const override { return _type; }
 	void setType(OptionType type) { _type = type; }
+
+	void parseDefaultSetting() const override
+	{
+		if (!_parser) {
+			Warning(LOCATION, "%s cannot set default values", _config_key.c_str());
+			skip_to_start_of_string_either("$Option Key:", "#END");
+		} else {
+			Assertion(_hasCustomDefaultFunc, "Option must have a default value function in order to use parser!");
+			_parser();
+		}
+	}
 
 	SCP_vector<ValueDescription> getValidValues() const override
 	{
@@ -218,7 +266,12 @@ class Option : public OptionBase {
 	T getValue() const
 	{
 		try {
-			return _deserializer(getConfigValue().get());
+			std::optional<std::unique_ptr<json_t>> config_value = getConfigValue();
+			//missing keys are signalled via the optional
+			if (!config_value.has_value()) {
+				return _defaultValueFunc();
+			}
+			return _deserializer(config_value->get());
 		} catch (const std::exception&) {
 			// deserializers are allowed to throw on error
 			return _defaultValueFunc();
@@ -270,6 +323,8 @@ class Option : public OptionBase {
 	const DefaultValueFunctor<T>& getDefaultValueFunc() const { return _defaultValueFunc; }
 	void setDefaultValueFunc(const DefaultValueFunctor<T>& defaultValueFunc) { _defaultValueFunc = defaultValueFunc; }
 
+	void setHasCustomDefaultFunc(bool value) { _hasCustomDefaultFunc = value; }
+
 	const ValueDeserializer<T>& getDeserializer() const { return _deserializer; }
 	void setDeserializer(const ValueDeserializer<T>& converter) { _deserializer = converter; }
 
@@ -288,6 +343,8 @@ class Option : public OptionBase {
 
 	const ValueChangeListener<T>& getChangeListener() const { return _changeListener; }
 	void setChangeListener(const ValueChangeListener<T>& changeListener) { _changeListener = changeListener; }
+
+	void setParser(ValueParser parser) { _parser = std::move(parser); }
 
 	const ValueInterpolator<T>& getInterpolator() const { return _interpolator; }
 	const ValueDeinterpolator<T>& getDeinterpolator() const { return _deinterpolator; }
@@ -311,10 +368,10 @@ class VectorEnumerator {
 
 template <typename T>
 class MapValueDisplay {
-	SCP_unordered_map<T, SCP_string> _mapping;
+	SCP_unordered_map<T, std::pair<const char*, int>> _mapping;
 
   public:
-	explicit MapValueDisplay(SCP_unordered_map<T, SCP_string> mapping)
+	explicit MapValueDisplay(SCP_unordered_map<T, std::pair<const char*, int>> mapping)
 	    : _mapping(std::move(mapping))
 	{
 	}
@@ -325,7 +382,7 @@ class MapValueDisplay {
 		if (iter == _mapping.end()) {
 			throw std::runtime_error("Display called with invalid value!");
 		}
-		return iter->second;
+		return XSTR(iter->second.first, iter->second.second);
 	}
 };
 
@@ -390,10 +447,16 @@ class OptionBuilder {
 	Option<T> _instance;
 
 	SCP_unordered_map<PresetKind, T> _preset_values;
+	const std::variant<SCP_string, std::pair<const char*, int>>&_title, &_description;
 
   public:
-	OptionBuilder(const SCP_string& config_key, const SCP_string& title, const SCP_string& description)
-	    : _instance(config_key, title, description)
+	  OptionBuilder(const SCP_string& config_key, const std::variant<SCP_string, std::pair<const char*, int>>& title, const std::variant<SCP_string, std::pair<const char*, int>>& description)
+		  : _instance(
+			  config_key,
+			  std::holds_alternative<SCP_string>(title) ? std::get<SCP_string>(title) : std::get<std::pair<const char*, int>>(title).first,
+			  std::holds_alternative<SCP_string>(description) ? std::get<SCP_string>(description) : std::get<std::pair<const char*, int>>(description).first),
+		    _title(title),
+		    _description(description)
 	{
 		internal::set_defaults(_instance);
 	}
@@ -403,53 +466,55 @@ class OptionBuilder {
 
 	OptionBuilder(OptionBuilder&&) noexcept = delete;
 	OptionBuilder& operator=(OptionBuilder&&) noexcept = delete;
-
-	OptionBuilder& category(const SCP_string& category)
+	//Set the category of the option
+	OptionBuilder& category(const std::pair<const char*, int>& category)
 	{
 		_instance.setCategory(category);
 		return *this;
 	}
-
+	//Set the level value of the option. Can be "Beginniner", "Advanced", or "Expert"
 	OptionBuilder& level(ExpertLevel level)
 	{
 		_instance.setExpertLevel(level);
 		return *this;
 	}
-
+	//Causes the default value of the option to be permanently set to a specific value
 	OptionBuilder& default_val(const T& val)
 	{
 		_instance.setDefaultValueFunc(ValueFunctor<T>(val));
+		_instance.setHasCustomDefaultFunc(false);
 		return *this;
 	}
-
+	//Causes the default value of the option to be set dynamically using a function
 	OptionBuilder& default_func(const DefaultValueFunctor<T>& func)
 	{
 		_instance.setDefaultValueFunc(func);
+		_instance.setHasCustomDefaultFunc(true);
 		return *this;
 	}
-
+	//Deserialize an option for persisting changes
 	OptionBuilder& deserializer(const ValueDeserializer<T>& converter)
 	{
 		_instance.setDeserializer(converter);
 		return *this;
 	}
-
+	//Serialize an option value for display
 	OptionBuilder& serializer(const ValueSerializer<T>& serializer)
 	{
 		_instance.setSerializer(serializer);
 		return *this;
 	}
-
+	//Builds an enum list of values for the option
 	OptionBuilder& enumerator(const ValueEnumerator<T>& enumerator)
 	{
 		_instance.setValueEnumerator(enumerator);
 		return *this;
 	}
-
-	OptionBuilder& values(const SCP_vector<std::pair<T, SCP_string>>& value_display_pairs)
+	//The valid values for the option
+	OptionBuilder& values(const SCP_vector<std::pair<T, std::pair<const char*, int>>>& value_display_pairs)
 	{
 		SCP_vector<T> values;
-		SCP_unordered_map<T, SCP_string> display_mapping;
+		SCP_unordered_map<T, std::pair<const char*, int>> display_mapping;
 
 		for (auto& p : value_display_pairs) {
 			values.push_back(p.first);
@@ -460,19 +525,25 @@ class OptionBuilder {
 		_instance.setDisplayFunc(MapValueDisplay<T>(display_mapping));
 		return *this;
 	}
-
+	//The string to display for the option values, usually a function that returns a string
 	OptionBuilder& display(const ValueDisplay<T>& display)
 	{
 		_instance.setDisplayFunc(display);
 		return *this;
 	}
-
+	//The code to run if the option value is changed
 	OptionBuilder& change_listener(const ValueChangeListener<T>& listener)
 	{
 		_instance.setChangeListener(listener);
 		return *this;
 	}
-
+	//The code to run in order to parse the default setting. Option must use default_func instead of defaul_val!
+	OptionBuilder& parser(const ValueParser& parser)
+	{
+		_instance.setParser(parser);
+		return *this;
+	}
+	//The global variable to bind the option to immediately.
 	OptionBuilder& bind_to(T* dest)
 	{
 		return change_listener([dest](const T& val, bool) {
@@ -480,9 +551,10 @@ class OptionBuilder {
 			return true;
 		});
 	}
-
+	//The global variable to bind the option to once. Will require game restart to persist changes.
 	OptionBuilder& bind_to_once(T* dest)
 	{
+		_instance.setIsOnce(true);
 		return change_listener([dest](const T& val, bool initial) {
 			if (initial) {
 				*dest = val;
@@ -490,44 +562,55 @@ class OptionBuilder {
 			return initial;
 		});
 	}
-
+	//Set the minimum and maximum range for a "slider" type option
 	OptionBuilder& range(T min, T max)
 	{
 		Assertion(min <= max, "Invalid number range!");
+		_instance.setRangeValues(static_cast<float>(min), static_cast<float>(max));
 		_instance.setInterpolator(
 		    [min, max](float f) { return min + static_cast<T>((max - min) * f); },
 		    [min, max](T f) { return static_cast<float>(f - min) / static_cast<float>(max - min); });
 		return *this;
 	}
-
+	//Set the preset value for the option
 	OptionBuilder& preset(PresetKind kind, const T& value)
 	{
 		_preset_values.emplace(kind, value);
 		return *this;
 	}
-
+	//Set the option importance, used for sorting
 	OptionBuilder& importance(int value)
 	{
 		_instance.setImportance(value);
 		return *this;
 	}
-
+	//Set the option flags
 	OptionBuilder& flags(const flagset<OptionFlags>& flags)
 	{
 		_instance.setFlags(flags);
 		return *this;
 	}
-
-	const Option<T>* finish()
+	//Finishes building the option and returns a pointer to it
+	std::shared_ptr<const Option<T>> finish()
 	{
 		for (auto& val : _preset_values) {
 			_instance.setPreset(val.first, json_dump_string_new(_instance.getSerializer()(val.second),
 			                                                    JSON_COMPACT | JSON_ENSURE_ASCII | JSON_ENCODE_ANY));
 		}
-		std::unique_ptr<Option<T>> opt_ptr(new Option<T>(_instance));
-		auto ptr = opt_ptr.get(); // We need to get the pointer now since we loose the type information otherwise
-		OptionsManager::instance()->addOption(std::unique_ptr<OptionBase>(opt_ptr.release()));
-		return ptr;
+		auto opt_ptr = make_shared<Option<T>>(_instance);
+
+		if (std::holds_alternative<std::pair<const char*, int>>(_title)) {
+			const auto& xstr_info = std::get<std::pair<const char*, int>>(_title);
+			lcl_delayed_xstr(opt_ptr->_title, xstr_info.first, xstr_info.second);
+		}
+
+		if (std::holds_alternative<std::pair<const char*, int>>(_description)) {
+			const auto& xstr_info = std::get<std::pair<const char*, int>>(_description);
+			lcl_delayed_xstr(opt_ptr->_description, xstr_info.first, xstr_info.second);
+		}
+
+		OptionsManager::instance()->addOption(opt_ptr);
+		return opt_ptr;
 	}
 };
 

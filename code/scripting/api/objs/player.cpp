@@ -10,9 +10,12 @@
 #include "mission/missioncampaign.h"
 #include "pilotfile/pilotfile.h"
 #include "playerman/player.h"
+#include "stats/medals.h"
+#include "scripting/api/objs/rank.h"
 #include "scripting/api/objs/shipclass.h"
 #include "scripting/lua/LuaTable.h"
 #include "ship/ship.h"
+#include "freespace.h"
 
 namespace scripting {
 namespace api {
@@ -34,15 +37,28 @@ player* player_h::get() { return _plr; }
 player_h::~player_h()
 {
 	if (_owned)
-	{
 		delete _plr;
-	}
-	_plr = nullptr;
 }
-player_h::player_h(player_h&& other) noexcept { *this = std::move(other); }
+player_h::player_h(player_h&& other) noexcept
+	: _owned(other._owned), _plr(other._plr)
+{
+	other._owned = false;
+	other._plr = nullptr;
+}
 player_h& player_h::operator=(player_h&& other) noexcept
 {
-	std::swap(_plr, other._plr);
+	if (this != &other)
+	{
+		if (_owned)
+			delete _plr;
+
+		_owned = other._owned;
+		_plr = other._plr;
+
+		other._owned = false;
+		other._plr = nullptr;
+	}
+
 	return *this;
 }
 
@@ -58,7 +74,7 @@ ADE_VIRTVAR(Stats, l_Player, "scoring_stats stats", "The scoring stats of this p
 	if (!plr->isValid())
 		return ade_set_error(L, "o", l_ScoringStats.Set(scoring_stats_h()));
 
-	return ade_set_args(L, "o", l_ScoringStats.Set(scoring_stats_h(plr->get()->stats)));
+	return ade_set_args(L, "o", l_ScoringStats.Set(scoring_stats_h(plr->get()->stats, plr->get())));
 }
 
 ADE_VIRTVAR(ImageFilename, l_Player, "string name", "The image filename of this pilot", "string",
@@ -253,7 +269,7 @@ ADE_FUNC(getMainHallName, l_Player, NULL, "Gets player's current main hall name"
 		hallname = Campaign.missions[Campaign.next_mission].main_hall;
 	}
 
-	return ade_set_args(L, "i", hallname.c_str());
+	return ade_set_args(L, "s", hallname.c_str());
 }
 
 // use getMainHallName if at all possible.
@@ -307,8 +323,20 @@ ADE_FUNC(loadCampaignSavefile, l_Player, "string campaign = \"<current>\"", "Loa
 		return ADE_RETURN_FALSE;
 	}
 
+	char temp_buffer[MAX_FILENAME_LEN + 1];	// see current_campaign field in player class
+
 	if (savefile == nullptr) {
 		savefile = plh->get()->current_campaign;
+	} else {
+		memset(temp_buffer, 0, sizeof(temp_buffer));
+		strncpy(temp_buffer, savefile, MAX_FILENAME_LEN);
+
+		// drop the extension if it exists
+		auto p = stristr(temp_buffer, FS_CAMPAIGN_FILE_EXT);
+		if (p) {
+			*p = '\0';
+			savefile = temp_buffer;
+		}
 	}
 
 	pilotfile loader;
@@ -336,7 +364,7 @@ ADE_FUNC(loadCampaign, l_Player, "string campaign", "Loads the specified campaig
 	strcpy_s(pl->current_campaign, filename); // track new campaign for player
 
 	// attempt to load the campaign
-	const int load_status = mission_campaign_load(filename, pl);
+	const int load_status = mission_campaign_load(filename, nullptr, pl);
 
 	// see if we successfully loaded this campaign and it's at the beginning
 	if (load_status == 0 && Campaign.prev_mission < 0) {
@@ -363,13 +391,15 @@ ADE_FUNC(loadCampaign, l_Player, "string campaign", "Loads the specified campaig
 }
 
 scoring_stats_h::scoring_stats_h() = default;
-scoring_stats_h::scoring_stats_h(const scoring_struct& stats)
+scoring_stats_h::scoring_stats_h(const scoring_struct& stats, player *player)
 {
 	_score.assign(stats);
 	_valid = true;
+	_plr = player;
 }
 bool scoring_stats_h::isValid() const { return _valid; }
 scoring_struct* scoring_stats_h::get() { return &_score; }
+player* scoring_stats_h::getPlayer() { return _plr; }
 
 ADE_OBJ(l_ScoringStats, scoring_stats_h, "scoring_stats", "Player related scoring stats.");
 
@@ -541,7 +571,8 @@ ADE_VIRTVAR(MissionPrimaryShotsFired,
 	"The score value")
 {
 	scoring_stats_h* ssh;
-	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+	int setv;
+	if (!ade_get_args(L, "o|i", l_ScoringStats.GetPtr(&ssh), &setv)) {
 		return ade_set_error(L, "i", -1);
 	}
 
@@ -549,7 +580,17 @@ ADE_VIRTVAR(MissionPrimaryShotsFired,
 		return ade_set_error(L, "i", -1);
 	}
 
-	return ade_set_args(L, "i", ssh->get()->mp_shots_fired);
+	int r_val = ssh->get()->mp_shots_fired;
+
+	if (ADE_SETTING_VAR) {
+		if (setv < 0) {
+			setv = 0;
+		}
+		ssh->getPlayer()->stats.mp_shots_fired = setv;
+		r_val = ssh->getPlayer()->stats.mp_shots_fired;
+	}
+
+	return ade_set_args(L, "i", r_val);
 }
 
 ADE_VIRTVAR(MissionPrimaryShotsHit,
@@ -560,7 +601,8 @@ ADE_VIRTVAR(MissionPrimaryShotsHit,
 	"The score value")
 {
 	scoring_stats_h* ssh;
-	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+	int setv;
+	if (!ade_get_args(L, "o|i", l_ScoringStats.GetPtr(&ssh), &setv)) {
 		return ade_set_error(L, "i", -1);
 	}
 
@@ -568,7 +610,17 @@ ADE_VIRTVAR(MissionPrimaryShotsHit,
 		return ade_set_error(L, "i", -1);
 	}
 
-	return ade_set_args(L, "i", ssh->get()->mp_shots_hit);
+	int r_val = ssh->get()->mp_shots_hit;
+
+	if (ADE_SETTING_VAR) {
+		if (setv < 0) {
+			setv = 0;
+		}
+		ssh->getPlayer()->stats.mp_shots_hit = setv;
+		r_val = ssh->getPlayer()->stats.mp_shots_hit;
+	}
+
+	return ade_set_args(L, "i", r_val);
 }
 
 ADE_VIRTVAR(MissionPrimaryFriendlyHit,
@@ -579,7 +631,8 @@ ADE_VIRTVAR(MissionPrimaryFriendlyHit,
 	"The score value")
 {
 	scoring_stats_h* ssh;
-	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+	int setv;
+	if (!ade_get_args(L, "o|i", l_ScoringStats.GetPtr(&ssh), &setv)) {
 		return ade_set_error(L, "i", -1);
 	}
 
@@ -587,7 +640,17 @@ ADE_VIRTVAR(MissionPrimaryFriendlyHit,
 		return ade_set_error(L, "i", -1);
 	}
 
-	return ade_set_args(L, "i", ssh->get()->mp_bonehead_hits);
+	int r_val = ssh->get()->mp_bonehead_hits;
+
+	if (ADE_SETTING_VAR) {
+		if (setv < 0) {
+			setv = 0;
+		}
+		ssh->getPlayer()->stats.mp_bonehead_hits = setv;
+		r_val = ssh->getPlayer()->stats.mp_bonehead_hits;
+	}
+
+	return ade_set_args(L, "i", r_val);
 }
 
 ADE_VIRTVAR(MissionSecondaryShotsFired,
@@ -598,7 +661,8 @@ ADE_VIRTVAR(MissionSecondaryShotsFired,
 	"The score value")
 {
 	scoring_stats_h* ssh;
-	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+	int setv;
+	if (!ade_get_args(L, "o|i", l_ScoringStats.GetPtr(&ssh), &setv)) {
 		return ade_set_error(L, "i", -1);
 	}
 
@@ -606,7 +670,17 @@ ADE_VIRTVAR(MissionSecondaryShotsFired,
 		return ade_set_error(L, "i", -1);
 	}
 
-	return ade_set_args(L, "i", ssh->get()->ms_shots_fired);
+	int r_val = ssh->get()->ms_shots_fired;
+
+	if (ADE_SETTING_VAR) {
+		if (setv < 0) {
+			setv = 0;
+		}
+		ssh->getPlayer()->stats.ms_shots_fired = setv;
+		r_val = ssh->getPlayer()->stats.ms_shots_fired;
+	}
+
+	return ade_set_args(L, "i", r_val);
 }
 
 ADE_VIRTVAR(MissionSecondaryShotsHit,
@@ -617,7 +691,8 @@ ADE_VIRTVAR(MissionSecondaryShotsHit,
 	"The score value")
 {
 	scoring_stats_h* ssh;
-	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+	int setv;
+	if (!ade_get_args(L, "o|i", l_ScoringStats.GetPtr(&ssh), &setv)) {
 		return ade_set_error(L, "i", -1);
 	}
 
@@ -625,7 +700,17 @@ ADE_VIRTVAR(MissionSecondaryShotsHit,
 		return ade_set_error(L, "i", -1);
 	}
 
-	return ade_set_args(L, "i", ssh->get()->ms_shots_hit);
+	int r_val = ssh->get()->ms_shots_hit;
+
+	if (ADE_SETTING_VAR) {
+		if (setv < 0) {
+			setv = 0;
+		}
+		ssh->getPlayer()->stats.ms_shots_hit = setv;
+		r_val = ssh->getPlayer()->stats.ms_shots_hit;
+	}
+
+	return ade_set_args(L, "i", r_val);
 }
 
 ADE_VIRTVAR(MissionSecondaryFriendlyHit,
@@ -636,7 +721,8 @@ ADE_VIRTVAR(MissionSecondaryFriendlyHit,
 	"The score value")
 {
 	scoring_stats_h* ssh;
-	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+	int setv;
+	if (!ade_get_args(L, "o|i", l_ScoringStats.GetPtr(&ssh), &setv)) {
 		return ade_set_error(L, "i", -1);
 	}
 
@@ -644,13 +730,24 @@ ADE_VIRTVAR(MissionSecondaryFriendlyHit,
 		return ade_set_error(L, "i", -1);
 	}
 
-	return ade_set_args(L, "i", ssh->get()->ms_bonehead_hits);
+	int r_val = ssh->get()->ms_bonehead_hits;
+
+	if (ADE_SETTING_VAR) {
+		if (setv < 0) {
+			setv = 0;
+		}
+		ssh->getPlayer()->stats.ms_bonehead_hits = setv;
+		r_val = ssh->getPlayer()->stats.ms_bonehead_hits;
+	}
+
+	return ade_set_args(L, "i", r_val);
 }
 
 ADE_VIRTVAR(MissionTotalKills, l_ScoringStats, "number", "The total number of kills in the current mission.", "number", "The score value")
 {
 	scoring_stats_h* ssh;
-	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+	int setv;
+	if (!ade_get_args(L, "o|i", l_ScoringStats.GetPtr(&ssh), &setv)) {
 		return ade_set_error(L, "i", -1);
 	}
 
@@ -658,13 +755,24 @@ ADE_VIRTVAR(MissionTotalKills, l_ScoringStats, "number", "The total number of ki
 		return ade_set_error(L, "i", -1);
 	}
 
-	return ade_set_args(L, "i", ssh->get()->m_kill_count_ok);
+	int r_val = ssh->get()->m_kill_count_ok;
+
+	if (ADE_SETTING_VAR) {
+		if (setv < 0) {
+			setv = 0;
+		}
+		ssh->getPlayer()->stats.m_kill_count_ok = setv;
+		r_val = ssh->getPlayer()->stats.m_kill_count_ok;
+	}
+
+	return ade_set_args(L, "i", r_val);
 }
 
 ADE_VIRTVAR(MissionAssists, l_ScoringStats, "number", "The total number of assists in the current mission.", "number", "The score value")
 {
 	scoring_stats_h* ssh;
-	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+	int setv;
+	if (!ade_get_args(L, "o|i", l_ScoringStats.GetPtr(&ssh), &setv)) {
 		return ade_set_error(L, "i", -1);
 	}
 
@@ -672,7 +780,17 @@ ADE_VIRTVAR(MissionAssists, l_ScoringStats, "number", "The total number of assis
 		return ade_set_error(L, "i", -1);
 	}
 
-	return ade_set_args(L, "i", ssh->get()->m_assists);
+	int r_val = ssh->get()->m_assists;
+
+	if (ADE_SETTING_VAR) {
+		if (setv < 0) {
+			setv = 0;
+		}
+		ssh->getPlayer()->stats.m_assists = setv;
+		r_val = ssh->getPlayer()->stats.m_assists;
+	}
+
+	return ade_set_args(L, "i", r_val);
 }
 
 ADE_FUNC(getMissionShipclassKills,
@@ -700,6 +818,92 @@ ADE_FUNC(getMissionShipclassKills,
 
 	return ade_set_args(L, "i", ssh->get()->m_kills[ship_idx]);
 }
+
+ADE_FUNC(setMissionShipclassKills,
+	l_ScoringStats,
+	"shipclass class, number kills",
+	"Sets the number of kills of a specific ship class recorded in this statistics structure for the current "
+	"mission. Returns true if successful.",
+	"boolean",
+	"True if successful")
+{
+	using namespace luacpp;
+
+	scoring_stats_h* ssh;
+	int ship_idx;
+	int setv;
+	if (!ade_get_args(L, "ooi", l_ScoringStats.GetPtr(&ssh), l_Shipclass.Get(&ship_idx), &setv)) {
+		return ADE_RETURN_FALSE;
+	}
+
+	if (!ssh->isValid()) {
+		return ADE_RETURN_FALSE;
+	}
+
+	if (ship_idx < 0 || ship_idx >= (int)Ship_info.size()) {
+		return ADE_RETURN_FALSE;
+	}
+
+	if (setv < 0) {
+		setv = 0;
+	}
+	ssh->getPlayer()->stats.m_kills[ship_idx] = setv;
+
+	return ADE_RETURN_TRUE;
+}
+
+ADE_VIRTVAR(Medals,
+	l_ScoringStats,
+	nullptr,
+	"Gets a table of medals that the player has earned. The number returned is the number of times the player has won that medal. "
+	"The index position in the table is an index into Medals.",
+	"{ number => number ... }",
+	"The medals table")
+{
+	scoring_stats_h* ssh;
+	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+		return ADE_RETURN_NIL;
+	}
+
+	auto table = luacpp::LuaTable::create(L);
+	if (!ssh->isValid()) {
+		return ade_set_error(L, "t", &table);
+	}
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "This property is read only.");
+	}
+
+	for (int i = 0; i < (int)Medals.size(); i++) {
+		table.addValue(i + 1, ssh->get()->medal_counts[i]); // translate to Lua index
+	}
+
+	return ade_set_args(L, "t", &table);
+}
+
+ADE_VIRTVAR(Rank,
+	l_ScoringStats,
+	nullptr, 
+	"Returns the player's current rank",
+	"rank",
+	"The current rank")
+{
+	scoring_stats_h* ssh;
+	if (!ade_get_args(L, "o", l_ScoringStats.GetPtr(&ssh))) {
+		return ADE_RETURN_NIL;
+	}
+	if (!ssh->isValid()) {
+		return ade_set_error(L, "o", l_Rank.Set(rank_h()));
+	}
+
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "This property is read only.");
+	}
+
+	int rank_index = verify_rank(ssh->get()->rank);
+	return ade_set_args(L, "o", l_Rank.Set(rank_h(rank_index)));
+}
+
 }
 }
 

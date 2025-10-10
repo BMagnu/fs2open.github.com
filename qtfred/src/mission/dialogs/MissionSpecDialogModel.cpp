@@ -11,13 +11,13 @@
 #include "ui/dialogs/MissionSpecDialog.h"
 
 #include "cfile/cfile.h"
+#include "localization/localize.h"
 #include "mission/missionmessage.h"
+#include "mission/mission_flags.h"
 
 #include <QtWidgets>
 
-namespace fso {
-namespace fred {
-namespace dialogs {
+namespace fso::fred::dialogs {
 
 MissionSpecDialogModel::MissionSpecDialogModel(QObject* parent, EditorViewport* viewport) :
 	AbstractDialogModel(parent, viewport) {
@@ -25,6 +25,8 @@ MissionSpecDialogModel::MissionSpecDialogModel(QObject* parent, EditorViewport* 
 }
 
 void MissionSpecDialogModel::initializeData() {
+	prepareSquadLogoList();
+
 	_m_mission_title = The_mission.name;
 	_m_designer_name = The_mission.author;
 	_m_created = The_mission.created;
@@ -61,13 +63,42 @@ void MissionSpecDialogModel::initializeData() {
 
 	_m_num_respawns = The_mission.num_respawns;
 	_m_max_respawn_delay = The_mission.max_respawn_delay;
+	_m_player_entry_delay = f2fl(Entry_delay_time);
 	_m_max_hull_repair_val = The_mission.support_ships.max_hull_repair_val;
 	_m_max_subsys_repair_val = The_mission.support_ships.max_subsys_repair_val;
 
 	_m_contrail_threshold = The_mission.contrail_threshold;
 	_m_contrail_threshold_flag = (_m_contrail_threshold != CONTRAIL_THRESHOLD_DEFAULT);
 
+	_m_custom_data = The_mission.custom_data;
+	_m_custom_strings = The_mission.custom_strings;
+	_m_sound_env = The_mission.sound_environment;
+
+	// init starting wings
+	for (int i = 0; i < MAX_STARTING_WINGS; i++) {
+		_m_custom_starting_wings[i] = Starting_wing_names[i];
+	}
+
+	// init squadron wings
+	for (int i = 0; i < MAX_SQUADRON_WINGS; i++) {
+		_m_custom_squadron_wings[i] = Squadron_wing_names[i];
+	}
+
+	// init tvt wings
+	for (int i = 0; i < MAX_TVT_WINGS; i++) {
+		_m_custom_tvt_wings[i] = TVT_wing_names[i];
+	}
+
 	modelChanged();
+}
+
+void MissionSpecDialogModel::prepareSquadLogoList()
+{
+	pilot_load_squad_pic_list();
+
+	for (int i = 0; i < Num_pilot_squad_images; i++) {
+		_m_squadLogoList.emplace_back(Pilot_squad_image_names[i]);
+	}
 }
 
 bool MissionSpecDialogModel::apply() {
@@ -88,6 +119,7 @@ bool MissionSpecDialogModel::apply() {
 	The_mission.game_type = new_m_type;
 	The_mission.num_respawns = _m_num_respawns;
 	The_mission.max_respawn_delay = _m_max_respawn_delay;
+	Entry_delay_time = fl2f(_m_player_entry_delay);
 	The_mission.support_ships.max_support_ships = (_m_disallow_support) ? 0 : -1;
 	The_mission.support_ships.max_hull_repair_val = _m_max_hull_repair_val;
 	The_mission.support_ships.max_subsys_repair_val = _m_max_subsys_repair_val;
@@ -102,20 +134,19 @@ bool MissionSpecDialogModel::apply() {
 		The_mission.contrail_threshold = CONTRAIL_THRESHOLD_DEFAULT;
 	}
 	
-	//if there's a odd number of quotation marks, the mission won't parse
-	//If there are an even number, nothing after the first one appears
-	//So just get rid of them
-	Editor::strip_quotation_marks(_m_mission_title);
-	Editor::strip_quotation_marks(_m_designer_name);
-	Editor::strip_quotation_marks(_m_mission_notes);
-	Editor::strip_quotation_marks(_m_mission_desc);
-	Editor::strip_quotation_marks(_m_squad_name);
+	// originally the dialog stripped out quotation marks here;
+	// now it handles all special characters
+	lcl_fred_replace_stuff(_m_mission_title);
+	lcl_fred_replace_stuff(_m_designer_name);
+	lcl_fred_replace_stuff(_m_mission_notes);
+	lcl_fred_replace_stuff(_m_mission_desc);
+	lcl_fred_replace_stuff(_m_squad_name);
 
 	// puts "$End Notes:" on a different line to ensure it's not interpreted as part of a comment
 	Editor::pad_with_newline(_m_mission_notes, NOTES_LENGTH - 1);
 
 	strncpy(The_mission.name, _m_mission_title.c_str(), NAME_LENGTH-1);
-	strncpy(The_mission.author, _m_designer_name.c_str(), NAME_LENGTH-1);
+	The_mission.author = _m_designer_name;
 	strncpy(The_mission.loading_screen[GR_640], _m_loading_640.c_str(), NAME_LENGTH-1);
 	strncpy(The_mission.loading_screen[GR_1024], _m_loading_1024.c_str(), NAME_LENGTH-1);
 	strncpy(The_mission.notes, _m_mission_notes.c_str(), NOTES_LENGTH);
@@ -148,6 +179,28 @@ bool MissionSpecDialogModel::apply() {
 	if ((The_mission.game_type & MISSION_TYPE_MULTI) && (The_mission.game_type & MISSION_TYPE_MULTI_TEAMS)) {
 		Num_teams = 2;
 	}
+
+	The_mission.custom_data = _m_custom_data;
+	The_mission.custom_strings = _m_custom_strings;
+
+	The_mission.sound_environment = _m_sound_env;
+
+	// copy starting wings
+	for (int i = 0; i < MAX_STARTING_WINGS; i++) {
+		strcpy_s(Starting_wing_names[i], _m_custom_starting_wings[i].c_str());
+	}
+
+	// copy squadron wings
+	for (int i = 0; i < MAX_SQUADRON_WINGS; i++) {
+		strcpy_s(Squadron_wing_names[i], _m_custom_squadron_wings[i].c_str());
+	}
+
+	// copy tvt wings
+	for (int i = 0; i < MAX_TVT_WINGS; i++) {
+		strcpy_s(TVT_wing_names[i], _m_custom_tvt_wings[i].c_str());
+	}
+
+	Editor::update_custom_wing_indexes();
 
 	return true;
 }
@@ -216,6 +269,18 @@ void MissionSpecDialogModel::setMaxRespawnDelay(int m_max_respawn_delay) {
 
 int MissionSpecDialogModel::getMaxRespawnDelay() {
 	return _m_max_respawn_delay;
+}
+
+void MissionSpecDialogModel::setPlayerEntryDelay(float m_player_entry_delay) {
+	if (m_player_entry_delay < 0.0f) {
+		m_player_entry_delay = 0.0f;
+	}
+
+	modify(_m_player_entry_delay, m_player_entry_delay);
+}
+
+float MissionSpecDialogModel::getPlayerEntryDelay() const {
+	return _m_player_entry_delay;
 }
 
 void MissionSpecDialogModel::setSquadronName(const SCP_string& m_squad_name) {
@@ -322,7 +387,23 @@ SCP_string MissionSpecDialogModel::getSubEventMusic() {
 	return _m_substitute_event_music;
 }
 
-void MissionSpecDialogModel::setMissionFlag(Mission::Mission_Flags flag, bool enabled) {
+void MissionSpecDialogModel::setMissionFlag(const SCP_string& flag_name, bool enabled)
+{
+	// Find the matching flagDef by name
+	for (size_t i = 0; i < Num_parse_mission_flags; ++i) {
+		if (!stricmp(flag_name.c_str(), Parse_mission_flags[i].name)) {
+			if (enabled)
+				_m_flags.set(Parse_mission_flags[i].def);
+			else
+				_m_flags.remove(Parse_mission_flags[i].def);
+			break;
+		}
+	}
+
+	set_modified();
+}
+
+void MissionSpecDialogModel::setMissionFlagDirect(Mission::Mission_Flags flag, bool enabled) {
 	if (_m_flags[flag] != enabled) {
 		_m_flags.set(flag, enabled);
 		set_modified();
@@ -330,8 +411,25 @@ void MissionSpecDialogModel::setMissionFlag(Mission::Mission_Flags flag, bool en
 	}
 }
 
-const flagset<Mission::Mission_Flags>& MissionSpecDialogModel::getMissionFlags() const {
-	return _m_flags;
+bool MissionSpecDialogModel::getMissionFlag(Mission::Mission_Flags flag) const {
+	return _m_flags[flag];
+}
+
+const SCP_vector<std::pair<SCP_string, bool>>& MissionSpecDialogModel::getMissionFlagsList() {
+	if (_m_flag_data.empty()) {
+		for (size_t i = 0; i < Num_parse_mission_flags; ++i) {
+			auto flagDef = Parse_mission_flags[i];
+
+			// Skip flags that have checkboxes elsewhere than the flag list or are inactive
+			if (flagDef.is_special || !flagDef.in_use) {
+				continue;
+			}
+
+			bool checked = _m_flags[flagDef.def];
+			_m_flag_data.emplace_back(flagDef.name, checked);
+		}
+	}
+	return _m_flag_data;
 }
 
 void MissionSpecDialogModel::setMissionFullWar(bool enabled) {
@@ -352,7 +450,7 @@ int MissionSpecDialogModel::getAIProfileIndex() const {
 }
 
 void MissionSpecDialogModel::setMissionDescText(const SCP_string& m_mission_desc) {
-	modify(_m_mission_desc, m_mission_desc.substr(0, MIN(MISSION_DESC_LENGTH, m_mission_desc.length())));
+	modify(_m_mission_desc, m_mission_desc.substr(0, MIN(static_cast<size_t>(MISSION_DESC_LENGTH), m_mission_desc.length())));
 }
 
 SCP_string MissionSpecDialogModel::getMissionDescText() {
@@ -360,23 +458,78 @@ SCP_string MissionSpecDialogModel::getMissionDescText() {
 }
 
 void MissionSpecDialogModel::setDesignerNoteText(const SCP_string& m_mission_notes) {
-	modify(_m_mission_notes, m_mission_notes.substr(0, MIN(NOTES_LENGTH, m_mission_notes.length())));
+	modify(_m_mission_notes, m_mission_notes.substr(0, MIN(static_cast<size_t>(NOTES_LENGTH), m_mission_notes.length())));
 }
 
 SCP_string MissionSpecDialogModel::getDesignerNoteText() {
 	return _m_mission_notes;
 }
 
-void MissionSpecDialogModel::set_modified() {
-	if (!_modified) {
-		_modified = true;
+void MissionSpecDialogModel::setCustomData(const SCP_map<SCP_string, SCP_string>& custom_data)
+{
+	modify(_m_custom_data, custom_data);
+	set_modified();
+}
+
+SCP_map<SCP_string, SCP_string> MissionSpecDialogModel::getCustomData() const
+{
+	return _m_custom_data;
+}
+
+void MissionSpecDialogModel::setCustomStrings(const SCP_vector<custom_string>& custom_strings)
+{
+	modify(_m_custom_strings, custom_strings);
+}
+
+SCP_vector<custom_string> MissionSpecDialogModel::getCustomStrings() const
+{
+	return _m_custom_strings;
+}
+
+void MissionSpecDialogModel::setSoundEnvironmentParams(const sound_env& snd_env)
+{
+	modify(_m_sound_env, snd_env);
+}
+
+sound_env MissionSpecDialogModel::getSoundEnvironmentParams() const
+{
+	return _m_sound_env;
+}
+
+void MissionSpecDialogModel::setCustomStartingWings(const std::array<SCP_string, MAX_STARTING_WINGS>& starting_wings)
+{
+	for (int i = 0; i < MAX_STARTING_WINGS; i++) {
+		modify(_m_custom_starting_wings[i], starting_wings[i]);
 	}
 }
 
-bool MissionSpecDialogModel::query_modified() {
-	return _modified;
+std::array<SCP_string, MAX_STARTING_WINGS> MissionSpecDialogModel::getCustomStartingWings() const
+{
+	return _m_custom_starting_wings;
 }
 
+void MissionSpecDialogModel::setCustomSquadronWings(const std::array<SCP_string, MAX_SQUADRON_WINGS>& squadron_wings)
+{
+	for (int i = 0; i < MAX_SQUADRON_WINGS; i++) {
+		modify(_m_custom_squadron_wings[i], squadron_wings[i]);
+	}
 }
+
+std::array<SCP_string, MAX_SQUADRON_WINGS> MissionSpecDialogModel::getCustomSquadronWings() const
+{
+	return _m_custom_squadron_wings;
 }
+
+void MissionSpecDialogModel::setCustomTvTWings(const std::array<SCP_string, MAX_TVT_WINGS>& tvt_wings)
+{
+	for (int i = 0; i < MAX_TVT_WINGS; i++) {
+		modify(_m_custom_tvt_wings[i], tvt_wings[i]);
+	}
 }
+
+std::array<SCP_string, MAX_TVT_WINGS> MissionSpecDialogModel::getCustomTvTWings() const
+{
+	return _m_custom_tvt_wings;
+}
+
+} // namespace fso::fred::dialogs

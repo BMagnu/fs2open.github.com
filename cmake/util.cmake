@@ -67,30 +67,43 @@ ENDIF(EXISTS \"${CMAKE_CURRENT_BINARY_DIR}/${TARGET}/${FILE}\")
 ENDFUNCTION(EP_CHECK_FILE_EXISTS)
 
 MACRO(COPY_FILE_TO_TARGET _target _file)
-	if(UNIX)
-		ADD_CUSTOM_COMMAND(
-			TARGET ${_target} POST_BUILD
-			COMMAND cp -a "${_file}"  "$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}/"
-			COMMENT "copying '${_file}'..."
-		)
+	if (IS_DIRECTORY "${_file}")
+		get_filename_component(_dirName "${_file}" NAME)
+		if (PLATFORM_MAC AND ("${_file}" MATCHES ".framework$"))
+			# This is stupid, but it preserves symlinks, unlike copy_directory_if_different.
+			# Otherwise we end up creating duplicate files in the copied framework.
+			ADD_CUSTOM_COMMAND(
+					TARGET ${_target} POST_BUILD
+					COMMAND rsync -rlq "${_file}" "$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}"
+					COMMENT "copying '${_file}'..."
+					VERBATIM
+			)
+		else()
+			ADD_CUSTOM_COMMAND(
+					TARGET ${_target} POST_BUILD
+					COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${_file}" "$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}/${_dirName}"
+					COMMENT "copying '${_file}'..."
+					VERBATIM
+			)
+		endif()
 	else()
 		ADD_CUSTOM_COMMAND(
-			TARGET ${_target} POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_file}"  "$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}/"
-			COMMENT "copying '${_file}'..."
+				TARGET ${_target} POST_BUILD
+				COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_file}" "$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}/"
+				COMMENT "copying '${_file}'..."
+				VERBATIM
 		)
 	endif()
 endmacro(COPY_FILE_TO_TARGET)
 
 MACRO(COPY_FILES_TO_TARGET _target)
-	if(UNIX)
-		ADD_CUSTOM_COMMAND(
-			TARGET ${_target} POST_BUILD
-			COMMAND mkdir -p "$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}/"
-			COMMENT "Creating '$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}/'..."
-		)
-	endif()
-	
+	ADD_CUSTOM_COMMAND(
+		TARGET ${_target} POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}/"
+		COMMENT "Creating '$<TARGET_FILE_DIR:${_target}>/${LIBRAY_DESTINATION}/'..."
+		VERBATIM
+	)
+
 	FOREACH(file IN LISTS TARGET_COPY_FILES)
 		COPY_FILE_TO_TARGET("${_target}" "${file}")
 	ENDFOREACH(file)
@@ -145,27 +158,17 @@ function(set_precompiled_header _target _headerPath)
 		target_compile_definitions(${_target} PRIVATE CMAKE_PCH)
 		target_precompile_headers(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${_headerPath}>")
 	else()
-		if (ENABLE_COTIRE)
-			message("${_headerPath}")
-			set_target_properties(${_target} PROPERTIES COTIRE_CXX_PREFIX_HEADER_INIT "${_headerPath}")
-
-			# Disable unity build as it doesn't work well for us
-			set_target_properties(${_target} PROPERTIES COTIRE_ADD_UNITY_BUILD FALSE)
-
-			cotire(${_target})
-		else()
-			if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-				target_compile_options(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-include${_headerPath}>")
-			elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-				target_compile_options(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/FI ${_headerPath}>")
-			elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-				target_compile_options(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-include${_headerPath}>")
-			elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
-				target_compile_options(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-include${_headerPath}>")
-			ELSE()
-				MESSAGE("Unknown compiler for global includes. This will probably break the build.")
-			ENDIF()
-		endif()
+		if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+			target_compile_options(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-include${_headerPath}>")
+		elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+			target_compile_options(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/FI ${_headerPath}>")
+		elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+			target_compile_options(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-include${_headerPath}>")
+		elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
+			target_compile_options(${_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-include${_headerPath}>")
+		ELSE()
+			MESSAGE("Unknown compiler for global includes. This will probably break the build.")
+		ENDIF()
 	endif()
 endfunction()
 

@@ -24,6 +24,9 @@
 #define GAME_SND_USE_DS3D			(1<<0)
 #define GAME_SND_VOICE				(1<<1)
 #define GAME_SND_NOT_VALID			(1<<2)
+#define GAME_SND_PRELOAD			(1<<3)	//!< preload sound (ie read from disk before mission starts)
+#define GAME_SND_RETAIL_STYLE		(1<<4)
+#define GAME_SND_EXPLICITLY_EMPTY	(1<<5)	// a sound that has been parsed as empty
 
 // Priorities that can be passed to snd_play() functions to limit how many concurrent sounds of a 
 // given type are played.
@@ -93,10 +96,9 @@ struct game_snd
 	GameSoundCycleType cycle_type = GameSoundCycleType::SequentialCycle;
 	size_t last_entry_index; //!< The last sound entry used by this sound.
 
-	util::UniformFloatRange pitch_range; //!< The range of possible pitch values used randomly for this sound
-	util::UniformFloatRange volume_range; //!< The possible range of the default volume (range is (0, 1]).
+	util::ParsedRandomFloatRange pitch_range; //!< The range of possible pitch values used randomly for this sound
+	util::ParsedRandomFloatRange volume_range; //!< The possible range of the default volume (range is (0, 1]).
 
-	bool preload = false;			//!< preload sound (ie read from disk before mission starts)
 	EnhancedSoundData enhanced_sound_data;
 
 	game_snd( );
@@ -109,6 +111,11 @@ typedef struct sound_env
 	float damping;
 	float decay;
 } sound_env;
+
+inline bool operator==(const sound_env& a, const sound_env& b) {
+     return a.id == b.id && a.volume == b.volume && a.damping == b.damping && a.decay == b.decay;
+}
+inline bool operator!=(const sound_env& a, const sound_env& b) { return !(a == b); }
 
 extern int		Sound_enabled;
 extern float	Default_sound_volume;		// 0 -> 1.0
@@ -139,14 +146,14 @@ sound_handle snd_play(game_snd* gs, float pan = 0.0f, float vol_scale = 1.0f,
 // Play a sound directly from index returned from snd_load().  Bypasses
 // the sound management process of using game_snd.
 sound_handle snd_play_raw(sound_load_id soundnum, float pan, float vol_scale = 1.0f,
-                          int priority = SND_PRIORITY_MUST_PLAY);
+                          int priority = SND_PRIORITY_MUST_PLAY, bool is_voice = true);
 
 // Plays a sound with volume between 0 and 1.0, where 0 is the
 // inaudible and 1.0 is the loudest sound in the game.  It scales
 // the pan and volume relative to the current viewer's location.
-sound_handle snd_play_3d(game_snd* gs, vec3d* source_pos, vec3d* listen_pos, float radius = 0.0f, vec3d* vel = nullptr,
-                         int looping = 0, float vol_scale = 1.0f, int priority = SND_PRIORITY_SINGLE_INSTANCE,
-                         vec3d* sound_fvec = nullptr, float range_factor = 1.0f, int force = 0,
+sound_handle snd_play_3d(game_snd* gs, const vec3d* source_pos, const vec3d* listen_pos, float radius = 0.0f, const vec3d* vel = nullptr,
+                         bool looping = false, float vol_scale = 1.0f, int priority = SND_PRIORITY_SINGLE_INSTANCE,
+                         const vec3d* sound_fvec = nullptr, float range_factor = 1.0f, bool force = false,
                          bool is_ambient = false);
 
 // update the given 3d sound with a new position
@@ -161,10 +168,14 @@ sound_handle snd_play_looping(game_snd* gs, float pan = 0.0f, int start_loop = -
 
 void snd_stop(sound_handle snd_handle);
 
+void snd_pause(sound_handle snd_handle);
+
+void snd_resume(sound_handle snd_handle);
+
 // Sets the volume of a sound that is already playing.
 // The volume is between 0 and 1.0, where 0 is the
 // inaudible and 1.0 is the loudest sound in the game.
-void snd_set_volume(sound_handle snd_handle, float volume);
+void snd_set_volume(sound_handle snd_handle, float volume, bool is_voice = false);
 
 // Sets the panning location of a sound that is already playing.
 // Pan goes from -1.0 all the way left to 0.0 in center to 1.0 all the way right.
@@ -180,6 +191,8 @@ void	snd_stop_all();
 
 // determines if the sound handle is still palying
 int snd_is_playing(sound_handle snd_handle);
+
+bool snd_is_paused(sound_handle sig);
 
 // change the looping status of a sound that is playing
 void snd_chg_loop_status(sound_handle snd_handle, int loop);

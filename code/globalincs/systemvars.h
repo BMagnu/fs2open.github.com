@@ -59,19 +59,6 @@
 extern float Cutscene_bars_progress, Cutscene_delta_time;
 extern int Cutscene_bar_flags;
 
-//-----Fadein stuff
-struct shader;
-extern shader Viewer_shader;
-
-enum FadeType {
-	FI_NONE,
-	FI_FADEIN,
-	FI_FADEOUT
-};
-extern FadeType Fade_type;
-extern int Fade_start_timestamp;
-extern int Fade_end_timestamp;
-
 
 typedef struct vei {
 	angles_t	angles;			//	Angles defining viewer location.
@@ -85,7 +72,6 @@ typedef struct vci {
 } vci;
 
 extern fix Missiontime;
-extern fix Skybox_timestamp;
 extern fix Frametime;
 extern int Framecount;
 
@@ -138,31 +124,14 @@ extern float Noise[NOISE_NUM_FRAMES];
 
 
 // override states to skip rendering of certain elements, but without disabling them completely
-extern bool Basemap_override;
 extern bool Envmap_override;
-extern bool Specmap_override;
-extern bool Normalmap_override;
-extern bool Heightmap_override;
 extern bool Glowpoint_override;
 extern bool Glowpoint_use_depth_buffer;
-extern bool GLSL_override;
 extern bool PostProcessing_override;
 extern bool Shadow_override;
 extern bool Trail_render_override;
 
-extern bool Basemap_color_override_set;
-extern float Basemap_color_override[4];
-
-extern bool Glowmap_color_override_set;
-extern float Glowmap_color_override[3];
-
-extern bool Specmap_color_override_set;
-extern float Specmap_color_override[3];
-
-extern bool Gloss_override_set;
-extern float Gloss_override;
-
-// game skill levels 
+// game skill levels
 #define	NUM_SKILL_LEVELS	5
 
 //====================================================================================
@@ -172,99 +141,75 @@ extern float Gloss_override;
 // or bad things will happen, I promise.
 //====================================================================================
 
-#define MAX_DETAIL_LEVEL 4			// The highest valid value for the "analog" detail level settings
+// This refers to the total number of default levels as defined in Detail_defaults[]. Should only be 4.
+enum class DefaultDetailPreset {
+	Custom = -1, // Special level used only in certain cases
+	Low,
+	Medium,
+	High,
+	VeryHigh,
+
+	Num_detail_presets
+};
+
+#define MAX_DETAIL_VALUE 4			// The highest valid value for the "analog" detail level settings. Lowest is 0.
 
 // If you change this, update player file in ManagePilot.cpp
 typedef struct detail_levels {
 
-	int		setting;						// Which default setting this was created from.   0=lowest... NUM_DEFAULT_DETAIL_LEVELS-1, -1=Custom
+	DefaultDetailPreset		setting;						// Which default setting this was created from.   0=lowest... DefaultDetailPreset::Num_detail_presets-1, -1=Custom
 
 	// "Analogs"
-	int		nebula_detail;				// 0=lowest detail, MAX_DETAIL_LEVEL=highest detail
-	int		detail_distance;			// 0=lowest MAX_DETAIL_LEVEL=highest
-	int		hardware_textures;		// 0=max culling, MAX_DETAIL_LEVEL=no culling
-	int		num_small_debris;			// 0=min number, MAX_DETAIL_LEVEL=max number
-	int		num_particles;				// 0=min number, MAX_DETAIL_LEVEL=max number
-	int		num_stars;					// 0=min number, MAX_DETAIL_LEVEL=max number
-	int		shield_effects;			// 0=min, MAX_DETAIL_LEVEL=max
-	int		lighting;					// 0=min, MAX_DETAIL_LEVEL=max
+	int		nebula_detail;				// 0=lowest detail, MAX_DETAIL_VALUE=highest detail
+	int		detail_distance;			// 0=lowest MAX_DETAIL_VALUE=highest
+	int		hardware_textures;		// 0=max culling, MAX_DETAIL_VALUE=no culling
+	int		num_small_debris;			// 0=min number, MAX_DETAIL_VALUE=max number
+	int		num_particles;				// 0=min number, MAX_DETAIL_VALUE=max number
+	int		num_stars;					// 0=min number, MAX_DETAIL_VALUE=max number
+	int		shield_effects;			// 0=min, MAX_DETAIL_VALUE=max
+	int		lighting;					// 0=min, MAX_DETAIL_VALUE=max
 
 	// Booleans
-	int		targetview_model;			// 0=off, 1=on
-	int		planets_suns;				// 0=off, 1=on
-	int		weapon_extras;				// extra weapon details. trails, glows
+	bool		targetview_model;			// 0=off, 1=on
+	bool		planets_suns;				// 0=off, 1=on
+	bool		weapon_extras;				// extra weapon details. trails, glows
 } detail_levels;
+
+// Used for the newer options system to set the above values in more readable and safe way.
+// This enum class should always match the above struct
+enum class DetailSetting {
+	NebulaDetail,
+	DetailDistance,
+	HardwareTextures,
+	NumSmallDebris,
+	NumParticles,
+	NumStars,
+	ShieldEffects,
+	Lighting,
+	TargetViewModel,
+	PlanetsSuns,
+	WeaponExtras,
+
+	Num_detail_settings
+};
 
 // Global values used to access detail levels in game and libs
 extern detail_levels Detail;
 
-#define NUM_DEFAULT_DETAIL_LEVELS	4	// How many "predefined" detail levels there are
-
 // Call this with:
 // 0 - lowest
-// NUM_DEFAULT_DETAIL_LEVELS - highest
+// Num_detail_presets - highest
 // To set the parameters in Detail to some set of defaults
-void detail_level_set(int level);
+void detail_level_set(DefaultDetailPreset preset);
 
-// Returns the current detail level or -1 if custom.
-int current_detail_level();
+// level is 0 - lowest, Num_detail_presets - hights
+void change_default_detail_level(DefaultDetailPreset preset, DetailSetting selection, int value);
+void change_default_detail_level(DefaultDetailPreset preset, DetailSetting selection, bool value);
+
+// Returns the current detail preset or -1 if custom.
+DefaultDetailPreset current_detail_preset();
 
 #define safe_kill(a) if(a)vm_free(a)
 
-
-// Goober5000
-// A sort for use with small or almost-sorted lists.  Iteration time is O(n) for a fully-sorted list.
-// This uses a type-safe version of the function prototype for stdlib's qsort, although the size is an int rather than a size_t (for the reasons that j is an int).
-// The fncompare function should return <0, 0, or >0 as the left item is less than, equal to, or greater than the right item.
-template <typename T>
-void insertion_sort(T* array_base, int array_size, int (*fncompare)(const T*, const T*))
-{
-	// NOTE: j *must* be a signed type because j reaches -1 and j+1 must be 0.
-	int i, j;
-	T *current, *current_buf;
-
-	// allocate space for the element being moved
-	// (Taylor says that for optimization purposes malloc/free should be used rather than vm_malloc/vm_free here)
-	current_buf = new T();
-	if (current_buf == nullptr)
-	{
-		UNREACHABLE("Malloc failed!");
-		return;
-	}
-
-	// loop
-	for (i = 1; i < array_size; i++)
-	{
-		// grab the current element
-		// this does a lazy move/copy because if the array is mostly sorted,
-		// there's no sense copying sorted items to their own places
-		bool lazily_copied = false;
-		current = &array_base[i];
-
-		// bump other elements toward the end of the array
-		for (j = i - 1; (j >= 0) && (fncompare(&array_base[j], current) > 0); j--)
-		{
-			if (!lazily_copied)
-			{
-				// this may look strange but it is just copying the data
-				// into the buffer, then pointing to the buffer
-				*current_buf = std::move(*current);
-				current = current_buf;
-				lazily_copied = true;
-			}
-
-			array_base[j + 1] = std::move(array_base[j]);
-		}
-
-		if (lazily_copied)
-		{
-			// insert the current element at the correct place
-			array_base[j + 1] = std::move(*current);
-		}
-	}
-
-	// free the allocated space
-	delete current_buf;
-}
 
 #endif

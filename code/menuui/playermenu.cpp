@@ -21,9 +21,11 @@
 #include "globalincs/version.h"
 #include "io/key.h"
 #include "localization/localize.h"
+#include "menuui/barracks.h"
 #include "menuui/mainhallmenu.h"
 #include "menuui/playermenu.h"
 #include "mission/missioncampaign.h"
+#include "mission/missiontraining.h"
 #include "mod_table/mod_table.h"
 #include "network/multi.h"
 #include "osapi/osregistry.h"
@@ -76,16 +78,6 @@ const char *Player_select_background_mask_bitmap[GR_NUM_RESOLUTIONS] = {
 // #define PLAYER_SELECT_PALETTE			NOX("ChoosePilotPalette")	// palette for the screen
 
 #define PLAYER_SELECT_MAIN_HALL_OVERLAY		NOX("MainHall1")			// main hall help overlay
-
-// convenient struct for handling all button controls
-struct barracks_buttons {
-	const char *filename;
-	int x, y, xt, yt;
-	int hotspot;
-	UI_BUTTON button;  // because we have a class inside this struct, we need the constructor below..
-
-	barracks_buttons(const char *name, int x1, int y1, int xt1, int yt1, int h) : filename(name), x(x1), y(y1), xt(xt1), yt(yt1), hotspot(h) {}
-};
 
 static barracks_buttons Player_select_buttons[GR_NUM_RESOLUTIONS][NUM_PLAYER_SELECT_BUTTONS] = {
 	{ // GR_640
@@ -149,7 +141,7 @@ char Player_select_very_first_pilot_callsign[CALLSIGN_LEN + 2];
 
 extern int Main_hall_bitmap;						// bitmap handle to the main hall bitmap
 
-int Player_select_mode;								// single or multiplayer - never set directly. use player_select_init_player_stuff()
+int Player_select_mode = PLAYER_SELECT_UNINITED;								// single or multiplayer - never set directly. use player_select_init_player_stuff()
 int Player_select_num_pilots;						// # of pilots on the list
 int Player_select_list_start;						// index of first list item to start displaying in the box
 int Player_select_pilot;							// index into the Pilot array of which is selected as the active pilot
@@ -326,13 +318,13 @@ void player_select_init()
 
 	// add some text
 	w = &Player_select_window;
-	w->add_XSTR("Create", 1034, Player_select_buttons[gr_screen.res][CREATE_PILOT_BUTTON].xt, Player_select_buttons[gr_screen.res][CREATE_PILOT_BUTTON].yt, &Player_select_buttons[gr_screen.res][CREATE_PILOT_BUTTON].button, UI_XSTR_COLOR_GREEN);	
-	w->add_XSTR("Clone", 1040, Player_select_buttons[gr_screen.res][CLONE_BUTTON].xt, Player_select_buttons[gr_screen.res][CLONE_BUTTON].yt, &Player_select_buttons[gr_screen.res][CLONE_BUTTON].button, UI_XSTR_COLOR_GREEN);	
-	w->add_XSTR("Remove", 1038, Player_select_buttons[gr_screen.res][DELETE_BUTTON].xt, Player_select_buttons[gr_screen.res][DELETE_BUTTON].yt, &Player_select_buttons[gr_screen.res][DELETE_BUTTON].button, UI_XSTR_COLOR_GREEN);	
+	w->add_XSTR("Create", 1034, Player_select_buttons[gr_screen.res][CREATE_PILOT_BUTTON].text_x, Player_select_buttons[gr_screen.res][CREATE_PILOT_BUTTON].text_y, &Player_select_buttons[gr_screen.res][CREATE_PILOT_BUTTON].button, UI_XSTR_COLOR_GREEN);
+	w->add_XSTR("Clone", 1040, Player_select_buttons[gr_screen.res][CLONE_BUTTON].text_x, Player_select_buttons[gr_screen.res][CLONE_BUTTON].text_y, &Player_select_buttons[gr_screen.res][CLONE_BUTTON].button, UI_XSTR_COLOR_GREEN);
+	w->add_XSTR("Remove", 1038, Player_select_buttons[gr_screen.res][DELETE_BUTTON].text_x, Player_select_buttons[gr_screen.res][DELETE_BUTTON].text_y, &Player_select_buttons[gr_screen.res][DELETE_BUTTON].button, UI_XSTR_COLOR_GREEN);
 
-	w->add_XSTR("Select", 1039, Player_select_buttons[gr_screen.res][ACCEPT_BUTTON].xt, Player_select_buttons[gr_screen.res][ACCEPT_BUTTON].yt, &Player_select_buttons[gr_screen.res][ACCEPT_BUTTON].button, UI_XSTR_COLOR_PINK);	
-	w->add_XSTR("Single", 1041, Player_select_buttons[gr_screen.res][SINGLE_BUTTON].xt, Player_select_buttons[gr_screen.res][SINGLE_BUTTON].yt, &Player_select_buttons[gr_screen.res][SINGLE_BUTTON].button, UI_XSTR_COLOR_GREEN);	
-	w->add_XSTR("Multi", 1042, Player_select_buttons[gr_screen.res][MULTI_BUTTON].xt, Player_select_buttons[gr_screen.res][MULTI_BUTTON].yt, &Player_select_buttons[gr_screen.res][MULTI_BUTTON].button, UI_XSTR_COLOR_GREEN);	
+	w->add_XSTR("Select", 1039, Player_select_buttons[gr_screen.res][ACCEPT_BUTTON].text_x, Player_select_buttons[gr_screen.res][ACCEPT_BUTTON].text_y, &Player_select_buttons[gr_screen.res][ACCEPT_BUTTON].button, UI_XSTR_COLOR_PINK);
+	w->add_XSTR("Single", 1041, Player_select_buttons[gr_screen.res][SINGLE_BUTTON].text_x, Player_select_buttons[gr_screen.res][SINGLE_BUTTON].text_y, &Player_select_buttons[gr_screen.res][SINGLE_BUTTON].button, UI_XSTR_COLOR_GREEN);
+	w->add_XSTR("Multi", 1042, Player_select_buttons[gr_screen.res][MULTI_BUTTON].text_x, Player_select_buttons[gr_screen.res][MULTI_BUTTON].text_y, &Player_select_buttons[gr_screen.res][MULTI_BUTTON].button, UI_XSTR_COLOR_GREEN);
 	for(i=0; i<PLAYER_SELECT_NUM_TEXT; i++) {
 		w->add_XSTR(&Player_select_text[gr_screen.res][i]);
 	}
@@ -393,6 +385,7 @@ void player_select_init()
 
 // no need to reset this to false because we only ever see player_select once per game run
 static bool Startup_warning_dialog_displayed = false;
+static bool Save_file_warning_displayed = false;
 
 void player_select_do()
 {
@@ -401,9 +394,14 @@ void player_select_do()
 	// Goober5000 - display a popup warning about problems in the mod
 	if ((Global_warning_count > 10 || Global_error_count > 0) && !Startup_warning_dialog_displayed) {
 		char text[512];
-		sprintf(text, XSTR ("Warning!\n\nThe currently active mod has generated %d warnings and/or errors during program startup.  These could have been caused by anything from incorrectly formated table files to corrupt models.\n\nWhile FreeSpace Open will attempt to compensate for these issues, it cannot guarantee a trouble-free gameplay experience.\n\nPlease contact the authors of the mod for assistance.", 1640), Global_warning_count + Global_error_count);
+		sprintf(text, XSTR ("Warning!\n\nThe currently active mod has generated %d warnings and/or errors during program startup.  These could have been caused by anything from incorrectly formatted table files to corrupt models.\n\nWhile FreeSpace Open will attempt to compensate for these issues, it cannot guarantee a trouble-free gameplay experience.\n\nPlease contact the authors of the mod for assistance.", 1640), Global_warning_count + Global_error_count);
 		popup(PF_TITLE_BIG | PF_TITLE_RED | PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, text);
 		Startup_warning_dialog_displayed = true;
+	}
+
+	if (!Ingame_options_save_found && Using_in_game_options && !Save_file_warning_displayed) {
+		popup(PF_BODY_BIG | PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, XSTR("A new settings file has been created for the current game or mod. You may want to check the options menu to ensure everything is set to your liking.", 1854));
+		Save_file_warning_displayed = true;
 	}
 		
 	// set the input box at the "virtual" line 0 to be active so the player can enter a callsign
@@ -556,6 +554,9 @@ void player_select_close()
 		Player = NULL;
 		return;
 	}
+
+	// set the local multi options from the player flags
+	multi_options_init_globals();
 	
 	// read in the current campaign
 	// NOTE: this may fail if there is no current campaign, it's not fatal
@@ -948,52 +949,57 @@ int player_select_get_last_pilot()
 
 void player_select_init_player_stuff(int mode)
 {
-	Player_select_list_start = 0;
+	// If we did not change mode, then we need to initialize the data.
+	bool initializing = Player_select_mode == PLAYER_SELECT_UNINITED;
 
 	// set the select mode to single player for default
 	Player_select_mode = mode;
 
-	auto pilots = player_select_enumerate_pilots();
-	// Copy the enumerated pilots into the appropriate local variables
-	Player_select_num_pilots = static_cast<int>(pilots.size());
-	for (auto i = 0; i < MAX_PILOTS; ++i) {
-		if (i < static_cast<int>(pilots.size())) {
-			strcpy_s(Pilots_arr[i], pilots[i].c_str());
-		}
-		Pilots[i] = Pilots_arr[i];
-	}
+	if (initializing){
+		Player_select_list_start = 0;
 
-	// if we have a "last_player", and they're in the list, bash them to the top of the list
-	if (Player_select_last_pilot[0] != '\0') {
-		int i,j;
-		for (i = 0; i < Player_select_num_pilots; ++i) {
-			if (!stricmp(Player_select_last_pilot,Pilots[i])) {
-				break;
+		auto pilots = player_select_enumerate_pilots();
+		// Copy the enumerated pilots into the appropriate local variables
+		Player_select_num_pilots = static_cast<int>(pilots.size());
+		for (auto i = 0; i < MAX_PILOTS; ++i) {
+			if (i < static_cast<int>(pilots.size())) {
+				strcpy_s(Pilots_arr[i], pilots[i].c_str());
+			}
+			Pilots[i] = Pilots_arr[i];
+		}
+
+		// if we have a "last_player", and they're in the list, bash them to the top of the list
+		if (Player_select_last_pilot[0] != '\0') {
+			int i,j;
+			for (i = 0; i < Player_select_num_pilots; ++i) {
+				if (!stricmp(Player_select_last_pilot,Pilots[i])) {
+					break;
+				}
+			}
+			if (i != Player_select_num_pilots) {
+				for (j = i; j > 0; --j) {
+					strncpy(Pilots[j], Pilots[j-1], strlen(Pilots[j-1])+1);
+				}
+				strncpy(Pilots[0], Player_select_last_pilot, strlen(Player_select_last_pilot)+1);
 			}
 		}
-		if (i != Player_select_num_pilots) {
-			for (j = i; j > 0; --j) {
-				strncpy(Pilots[j], Pilots[j-1], strlen(Pilots[j-1])+1);
-			}
-			strncpy(Pilots[0], Player_select_last_pilot, strlen(Player_select_last_pilot)+1);
+
+		Player = NULL;
+
+		// if this value is -1, it means we should set it to the num pilots count
+		if (Player_select_initial_count == -1) {
+			Player_select_initial_count = Player_select_num_pilots;
 		}
-	}
 
-	Player = NULL;
-
-	// if this value is -1, it means we should set it to the num pilots count
-	if (Player_select_initial_count == -1) {
-		Player_select_initial_count = Player_select_num_pilots;
-	}
-
-	// select the first pilot if any exist, otherwise set to -1
-	if (Player_select_num_pilots == 0) {
-		Player_select_pilot = -1;
-		player_select_set_middle_text(XSTR( "Type Callsign and Press Enter", 381));
-		player_select_set_controls(1);		// gray out the controls
-		player_select_create_new_pilot();
-	} else {
-		Player_select_pilot = 0;
+		// select the first pilot if any exist, otherwise set to -1
+		if (Player_select_num_pilots == 0) {
+			Player_select_pilot = -1;
+			player_select_set_middle_text(XSTR( "Type Callsign and Press Enter", 381));
+			player_select_set_controls(1);		// gray out the controls
+			player_select_create_new_pilot();
+		} else {
+			Player_select_pilot = 0;
+		}
 	}
 }
 
@@ -1369,29 +1375,28 @@ DCF(bastion, "Temporarily sets the player to be on the Bastion (or any other mai
 	}
 }
 
-#define MAX_PLAYER_TIPS			40
-
-char *Player_tips[MAX_PLAYER_TIPS];
-int Num_player_tips;
-int Player_tips_shown = 0;
+SCP_vector<SCP_string> Player_tips;
+bool Player_tips_shown = false;
 
 // tooltips
-void player_tips_init()
+void parse_tips_table(const char* filename)
 {
-	Num_player_tips = 0;
-	
 	try
 	{
-		read_file_text("tips.tbl", CF_TYPE_TABLES);
+		read_file_text(filename, CF_TYPE_TABLES);
 		reset_parse();
+
+		if (optional_string("$Start Tips at Index:"))
+			stuff_int(&Player_tips_start_index);
 
 		while (!optional_string("#end")) {
 			required_string("+Tip:");
 
-			if (Num_player_tips >= MAX_PLAYER_TIPS) {
-				break;
-			}
-			Player_tips[Num_player_tips++] = stuff_and_malloc_string(F_NAME, NULL);
+			SCP_string buf;
+			stuff_string(buf, F_MESSAGE);
+			
+			Player_tips.push_back(message_translate_tokens(buf.c_str()));
+
 		}
 	}
 	catch (const parse::ParseException& e)
@@ -1401,16 +1406,20 @@ void player_tips_init()
 	}
 }
 
-// close out player tips - *only call from game_shutdown()*
-void player_tips_close()
-{
-	int i;
+int Player_tips_start_index = -1; // index of -1 results in default behavior to pick a random starting index
 
-	for (i=0; i<MAX_PLAYER_TIPS; i++) {
-		if (Player_tips[i] != NULL) {
-			vm_free(Player_tips[i]);
-			Player_tips[i] = NULL;
-		}
+void player_tips_init()
+{
+	// first parse the default table
+	parse_tips_table("tips.tbl");
+
+	// parse any modular tables
+	parse_modular_table("*-tip.tbm", parse_tips_table);
+
+	// check optional starting index --wookieejedi
+	if (Player_tips_start_index >= static_cast<int>(Player_tips.size())) {
+		Warning(LOCATION, "Player Tips Start Index of %i is larger than the maximum index of " SIZE_T_ARG ". Using default behavior instead.\n", Player_tips_start_index, Player_tips.size());
+		Player_tips_start_index = -1;
 	}
 }
 
@@ -1418,30 +1427,42 @@ void player_tips_popup()
 {
 	int tip, ret;
 
-	// player has disabled tips
-	if ( (Player != NULL) && !Player->tips ) {
+	// no player, or player has disabled tips
+	if ( (Player == nullptr) || !Player->tips ) {
 		return;
 	}
+
+	// no tips to show
+	if (Player_tips.empty()) {
+		return;
+	}
+
 	// only show tips once per instance of FreeSpace
-	if(Player_tips_shown == 1) {
+	if(Player_tips_shown) {
 		return;
 	}
-	Player_tips_shown = 1;
+	Player_tips_shown = true;
 
-	// randomly pick one
-	tip = (int)frand_range(0.0f, (float)Num_player_tips - 1.0f);
+	// pick which tip to start at
+	if (Player_tips_start_index >= 0 && Player_tips_start_index < static_cast<int>(Player_tips.size())) {
+		// mod specified which entry to start with --wookieejedi
+		tip = Player_tips_start_index;
+	} else {
+		// default is to randomly pick one
+		tip = Random::next(static_cast<int>(Player_tips.size()));
+	}
 
-	char all_txt[2048];
+	SCP_string all_txt;
 
 	do {
-		sprintf(all_txt, XSTR("NEW USER TIP\n\n%s", 1565), Player_tips[tip]);
-		ret = popup(PF_NO_SPECIAL_BUTTONS | PF_TITLE | PF_TITLE_WHITE, 3, XSTR("&Ok", 669), XSTR("&Next", 1444), XSTR("Don't show me this again", 1443), all_txt);
+		sprintf(all_txt, XSTR("NEW USER TIP\n\n%s", 1565), Player_tips[tip].c_str());
+		ret = popup(PF_NO_SPECIAL_BUTTONS | PF_TITLE | PF_TITLE_WHITE, 3, XSTR("&Ok", 669), XSTR("&Next", 1444), XSTR("Don't show me this again", 1443), all_txt.c_str());
 	
 		// now what?
 		switch(ret){
 		// next
 		case 1:
-			if(tip >= Num_player_tips - 1) {
+			if (tip >= (int)Player_tips.size() - 1) {
 				tip = 0;
 			} else {
 				tip++;
@@ -1538,6 +1559,9 @@ void player_finish_select(const char* callsign, bool is_multi) {
 	} else {
 		Player->player_was_multi = 0;
 	}
+
+	// set the local multi options from the player flags
+	multi_options_init_globals();
 
 	os_config_write_string(nullptr, "LastPlayer", Player->callsign);
 

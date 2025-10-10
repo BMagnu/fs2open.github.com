@@ -57,7 +57,7 @@ typedef struct hud_subsys_damage
 {
 	int	str;
 	int	type;
-	char* name;
+	const char* name;
 } hud_subsys_damage;
 
 // used for hudtarget
@@ -69,7 +69,7 @@ enum class HudAlignment
 };
 
 extern int HUD_draw;
-extern int HUD_contrast;
+extern bool HUD_high_contrast;
 extern bool HUD_shadows;
 
 #define HUD_NUM_COLOR_LEVELS	16
@@ -103,11 +103,6 @@ extern int HUD_color_alpha;
 
 extern color HUD_color_debug;
 
-// Values used "wiggle" the HUD.  In the 2D HUD case, the clip region accounts
-// for these, but for the 3d-type hud stuff, you need to add these in manually.
-extern float HUD_offset_x;
-extern float HUD_offset_y;
-
 // the offset of the player's view vector and the ship forward vector in pixels (Swifty)
 extern int HUD_nose_x;
 extern int HUD_nose_y;
@@ -117,6 +112,11 @@ extern float Player_rearm_eta;
 
 extern int Hud_max_targeting_range;
 
+// maps of hud gauges configs to apply to ships as parsed in ships.tbl
+// this is cleared once parsing is completed
+// First string in the pair is the gauge name, second is the ship name
+extern SCP_vector<std::pair<SCP_string, SCP_string>> Hud_parsed_ships;
+
 void HUD_init_colors();
 void HUD_init();
 void hud_scripting_close(lua_State*);
@@ -124,12 +124,12 @@ void hud_close();
 void hud_level_close();
 void hud_update_frame(float frametime);		// updates hud systems not dependant on rendering
 void hud_render_preprocess(float frametime);			// renders 3d dependant gauges
-void hud_render_all();
-void hud_render_gauges(int cockpit_display_num = -1);
+void hud_render_all(float frametime);
+void hud_render_gauges(int cockpit_display_num, float frametime);
 void hud_stop_looped_engine_sounds();
 
 // set the offset values for this render frame
-void HUD_set_offsets(object *viewer_obj, int wiggedy_wack, matrix *eye_orient);
+void HUD_set_offsets();
 // returns the offset between the player's view vector and the forward vector of the ship in pixels (Swifty)
 void HUD_get_nose_coordinates(int *x, int *y);
 
@@ -149,7 +149,7 @@ void hud_num_make_mono(char *num_str, int font_num = font::FONT1);
 // functions for handling hud animations
 void hud_anim_init(hud_anim *ha, int sx, int sy, const char *filename);
 void hud_frames_init(hud_frames *hf);
-int	hud_anim_render(hud_anim *ha, float frametime, int draw_alpha=0, int loop=1, int hold_last=0, int reverse=0,int resize_mode=GR_RESIZE_FULL, bool mirror = false);
+int	hud_anim_render(hud_anim *ha, float frametime, int draw_alpha=0, int loop=1, int hold_last=0, int reverse=0,int resize_mode=GR_RESIZE_FULL, bool mirror = false, float scale_factor = 1.0f);
 int	hud_anim_load(hud_anim *ha);
 
 // functions for displaying the support view popup
@@ -199,7 +199,7 @@ void hud_maybe_render_multi_text();
 int hud_get_draw();
 void hud_toggle_draw();
 int	hud_disabled();
-int hud_support_find_closest( int objnum );
+int hud_support_find_closest( object *objp );
 
 // Goober5000
 void hud_set_draw(int draw);
@@ -208,7 +208,7 @@ int hud_disabled_except_messages();
 
 // contrast stuff
 void hud_toggle_contrast();
-void hud_set_contrast(int high);
+void hud_set_contrast(bool high);
 void hud_toggle_shadows();
 
 class HudGauge 
@@ -217,8 +217,9 @@ protected:
 	int position[2];
 	int base_w, base_h;
 	color gauge_color;
-	int gauge_config;
+	int gauge_type; // Used to be the gauge_config numeric ID but now more accurately is used as the type. Will be one of the HUD_ defines from hudgauges.h
 	int gauge_object;
+	SCP_string gauge_config_id;
 
 	int font_num;
 
@@ -228,6 +229,7 @@ protected:
 	bool tabled_use_coords;
 	int tabled_coords[2];
 	float aspect_quotient;
+	bool hi_res;
 
 	bool lock_color;
 	bool sexp_lock_color;
@@ -239,6 +241,14 @@ protected:
 	int popup_timer;
 	bool message_gauge;
 	int disabled_views;
+	bool scripting_render_override;
+
+	// Config stuff
+	SCP_string config_name;
+	bool can_popup;
+	bool use_iff_color;
+	bool use_tag_color;
+	bool visible_in_config;
 
 	int flash_duration;
 	int flash_next;
@@ -276,55 +286,68 @@ public:
 	void initFont(int input_font_num);
 	void initOriginAndOffset(float originX, float originY, int offsetX, int offsetY);
 	void initCoords(bool use_coords, int coordsX, int coordsY);
+	void initHiRes(const char* fname);
 
-	void initSlew(bool slew);
+	virtual void initSlew(bool slew);
 	void initCockpitTarget(const char* display_name, int _target_x, int _target_y, int _target_w, int _target_h, int _canvas_w, int _canvas_h);
 	void initRenderStatus(bool render);
 
-	bool isCustom();
-	int getBaseWidth();
-	int getBaseHeight();
-	float getAspectQuotient();
+	bool isCustom() const;
+	bool isHiRes() const;
+	int getBaseWidth() const;
+	int getBaseHeight() const;
+	float getAspectQuotient() const;
 
-	int getConfigType();
-	int getObjectType();
-	void getPosition(int *x, int *y);
-	bool isOffbyDefault();
-	bool isActive();
+	int getConfigType() const;
+	int getObjectType() const;
+	void getPosition(int *x, int *y) const;
+	bool isOffbyDefault() const;
+	bool isActive() const;
 
-	int getFont();
-	void getOriginAndOffset(float *originX, float *originY, int *offsetX, int *offsetY);
-	void getCoords(bool* use_coords, int* coordsX, int* coordsY);
+	// Config getters
+	SCP_string getConfigName() const;
+	SCP_string getConfigId() const;
+	bool getConfigUseIffColor() const;
+	bool getConfigCanPopup() const;
+	bool getConfigUseTagColor() const;
+	bool getVisibleInConfig() const;
+
+	int getFont() const;
+	void getOriginAndOffset(float *originX, float *originY, int *offsetX, int *offsetY) const;
+	void getCoords(bool* use_coords, int* coordsX, int* coordsY) const;
 	
 	void updateColor(int r, int g, int b, int a = 255);
-	const color& getColor();
+	const color& getColor() const;
 	void lockConfigColor(bool lock);
 	void sexpLockConfigColor(bool lock);
 	void updateActive(bool show);
 	void updatePopUp(bool pop_up_flag);
 	void updateSexpOverride(bool sexp);
+	bool getScriptingOverride() const;
+	void updateScriptingOverride(bool toggle);
 	void initChase_view_only(bool chase_view_only);
 	void initCockpit_view_choice(int cockpit_view_choice);
+	void initVisible_in_config(bool visible);
 
 	// SEXP interfacing functions
 	// For flashing gauges in training missions
 	void startFlashSexp();
 	int maybeFlashSexp();
-	bool flashExpiredSexp();
+	bool flashExpiredSexp() const;
 	void resetTimers();
 
 	// For updating custom gauges
-	const char* getCustomGaugeName();
+	const char* getCustomGaugeName() const;
 	void updateCustomGaugeText(const char* txt);
 	void updateCustomGaugeText(const SCP_string& txt);
-	const char* getCustomGaugeText();
+	const char* getCustomGaugeText() const;
 
 	void startPopUp(int time=4000);
-	int popUpActive();
+	int popUpActive() const;
 
 	virtual void preprocess();
-	virtual void render(float frametime);
-	virtual bool canRender();
+	virtual void render(float frametime, bool config = false);
+	virtual bool canRender() const;
 	virtual void pageIn();
 	virtual void initialize();
 	virtual void onFrame(float frametime);
@@ -334,25 +357,24 @@ public:
 	void resetCockpitTarget();
 	
 	void setFont();
-	void setGaugeColor(int bright_index = HUD_C_NONE);
+	void setGaugeColor(int bright_index = HUD_C_NONE, bool config = false);
 	void setGaugeCoords(int _x, int _y);
 	void setGaugeFrame(int frame_offset);
 
 	// rendering functions
-	void renderBitmap(int x, int y);
-	void renderBitmap(int frame, int x, int y);
-	void renderBitmapColor(int frame, int x, int y);
-	void renderBitmapUv(int frame, int x, int y, int w, int h, float u0, float v0, float u1, float v1);
-	void renderBitmapEx(int frame, int x, int y, int w, int h, int sx, int sy);
-	void renderString(int x, int y, const char *str);
-	void renderString(int x, int y, int gauge_id, const char *str);
-	void renderStringAlignCenter(int x, int y, int area_width, const char *s);
-	void renderPrintf(int x, int y, SCP_FORMAT_STRING const char* format, ...) SCP_FORMAT_STRING_ARGS(4, 5);
-	void renderPrintf(int x, int y, int gauge_id, SCP_FORMAT_STRING const char* format, ...)  SCP_FORMAT_STRING_ARGS(5, 6);
-	void renderLine(int x1, int y1, int x2, int y2);
-	void renderGradientLine(int x1, int y1, int x2, int y2);
-	void renderRect(int x, int y, int w, int h);
-	void renderCircle(int x, int y, int diameter, bool filled = true);
+	void renderBitmap(int x, int y, float scale = 1.0f, bool config = false) const;
+	void renderBitmap(int frame, int x, int y, float scale = 1.0f, bool config = false) const;
+	void renderBitmapColor(int frame, int x, int y, float scale = 1.0f, bool config = false) const;
+	void renderBitmapEx(int frame, int x, int y, int w, int h, int sx, int sy, float scale = 1.0f, bool config = false) const;
+	void renderString(int x, int y, const char *str, float scale = 1.0f, bool config = false);
+	void renderString(int x, int y, int gauge_id, const char *str, float scale = 1.0f, bool config = false);
+	void renderStringAlignCenter(int x, int y, int area_width, const char *s, float scale = 1.0f, bool config = false);
+	void renderPrintf(int x, int y, float scale, bool config, SCP_FORMAT_STRING const char* format, ...) SCP_FORMAT_STRING_ARGS(6, 7);
+	void renderPrintfWithGauge(int x, int y, int gauge_id, float scale, bool config, SCP_FORMAT_STRING const char* format, ...)  SCP_FORMAT_STRING_ARGS(7, 8);
+	void renderLine(int x1, int y1, int x2, int y2, bool config = false) const;
+	void renderGradientLine(int x1, int y1, int x2, int y2, bool config = false) const;
+	void renderRect(int x, int y, int w, int h, bool config = false) const;
+	void renderCircle(int x, int y, int diameter, bool filled = true, bool config = false) const;
 
 	void unsize(int *x, int *y);
 	void unsize(float *x, float *y);
@@ -360,6 +382,21 @@ public:
 	void resize(float *x, float *y);
 	void setClip(int x, int y, int w, int h);
 	void resetClip();
+};
+
+//Use this instead of HudGauge whenever you have a HudGauge that is anchored in 3D-space (i.e. takes its rendering coordinates from g3_rotate/project_vertex, as these MUST NEVER slew.
+class HudGauge3DAnchor : public HudGauge {
+
+public:
+	HudGauge3DAnchor() 
+		: HudGauge() { }
+	HudGauge3DAnchor(int _gauge_object, int _gauge_config, bool /*_slew*/, bool _message, int _disabled_views, int r, int g, int b)
+		: HudGauge(_gauge_object, _gauge_config, false, _message, _disabled_views, r, g, b) { }
+	// constructor for custom gauges
+	HudGauge3DAnchor(int _gauge_config, bool /*_slew*/, int r, int g, int b, char* _custom_name, char* _custom_text, char* frame_fname, int txtoffset_x, int txtoffset_y)
+		: HudGauge(_gauge_config, false, r, g, b, _custom_name, _custom_text, frame_fname, txtoffset_x, txtoffset_y) { }
+
+	void initSlew(bool /*slew*/) override {};
 };
 
 class HudGaugeMissionTime: public HudGauge // HUD_MISSION_TIME
@@ -373,7 +410,7 @@ public:
 	void initBitmaps(const char *fname);
 	void initTextOffsets(int x, int y);
 	void initValueOffsets(int x, int y);
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void pageIn() override;
 };
 
@@ -383,7 +420,7 @@ class HudGaugeTextWarnings: public HudGauge // HUD_TEXT_FLASH
 	bool flash_flags;
 public:
 	HudGaugeTextWarnings();
-	void render(float frametime) override;
+  void render(float frametime, bool config = false) override;
 	void initialize() override;
 	int maybeTextFlash();
 };
@@ -399,7 +436,7 @@ public:
 	void initBitmaps(const char *fname);
 	void initTextOffsets(int x, int y);
 	void initTextValueOffsets(int x, int y);
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void pageIn() override;
 };
 
@@ -412,7 +449,7 @@ class HudGaugeLag: public HudGauge
 public:
 	HudGaugeLag();
 	void initBitmaps(const char *fname);
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void pageIn() override;
 
 	void startFlashLag(int duration = 1400);
@@ -443,12 +480,12 @@ public:
 	void initRedAlertTextOffsetY(int y);
 	void initRedAlertValueOffsetY(int y);
 
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void startFlashNotify(int duration = 1400);
 	bool maybeFlashNotify(bool flash_fast = false);
-	void renderObjective();
-	void renderRedAlert();
-	void renderSubspace();
+	void renderObjective(bool config);
+	void renderRedAlert(bool config);
+	void renderSubspace(bool config);
 	void pageIn() override;
 	void initialize() override;
 };
@@ -492,7 +529,10 @@ protected:
 
 	int next_flash;
 	bool flash_status;
-public:
+
+	bool always_display;
+
+  public:
 	HudGaugeDamage();
 	void initBitmaps(const char *fname_top, const char *fname_middle, const char *fname_bottom);
 	void initHeaderOffsets(int x, int y);
@@ -503,7 +543,8 @@ public:
 	void initSubsysIntegValueOffsetX(int x);
 	void initBottomBgOffset(int offset);
 	void initLineHeight(int h);
-	void render(float frametime) override;
+	void initDisplayValue(bool value);
+	void render(float frametime, bool config = false) override;
 	void pageIn() override;
 	void initialize() override;
 };
@@ -517,6 +558,7 @@ protected:
 	int text_val_offset_y;
 	int text_dock_offset_x;
 	int text_dock_val_offset_x;
+	bool enable_rearm_timer;
 public:
 	HudGaugeSupport();
 	void initBitmaps(const char *fname);
@@ -524,7 +566,8 @@ public:
 	void initTextValueOffsetY(int y);
 	void initTextDockOffsetX(int x);
 	void initTextDockValueOffsetX(int x);
-	void render(float frametime) override;
+	void initRearmTimer(bool choice);
+	void render(float frametime, bool config = false) override;
 	void pageIn() override;
 };
 
@@ -533,8 +576,8 @@ class HudGaugeMultiMsg: public HudGauge
 protected:
 public:
 	HudGaugeMultiMsg();
-	bool canRender() override;
-	void render(float frametime) override;
+	bool canRender() const override;
+	void render(float frametime, bool config = false) override;
 };
 
 class HudGaugeVoiceStatus: public HudGauge
@@ -542,7 +585,7 @@ class HudGaugeVoiceStatus: public HudGauge
 protected:
 public:
 	HudGaugeVoiceStatus();
-	void render(float frametime) override;
+  void render(float frametime, bool config = false) override;
 };
 
 class HudGaugePing: public HudGauge
@@ -550,17 +593,17 @@ class HudGaugePing: public HudGauge
 protected:
 public:
 	HudGaugePing();
-	void render(float frametime) override;
+  void render(float frametime, bool config = false) override;
 };
 
 class HudGaugeSupernova: public HudGauge
 {
 public:
 	HudGaugeSupernova();
-	void render(float frametime) override;
+  void render(float frametime, bool config = false) override;
 };
 
-class HudGaugeFlightPath: public HudGauge
+class HudGaugeFlightPath: public HudGauge3DAnchor
 {
 	hud_frames Marker;
 
@@ -569,12 +612,12 @@ public:
 	HudGaugeFlightPath();
 	void initBitmap(const char *fname);
 	void initHalfSize(int w, int h);
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 };
 
 HudGauge *hud_get_custom_gauge(const char *name, bool check_all_gauges = false);
 int hud_get_default_gauge_index(const char *name);
-HudGauge *hud_get_gauge(const char *name);
+HudGauge *hud_get_gauge(const char *name, bool check_all_custom_gauges = false);
 
 extern SCP_vector<std::unique_ptr<HudGauge>> default_hud_gauges;
 

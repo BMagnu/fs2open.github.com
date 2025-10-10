@@ -14,28 +14,73 @@
 #include "graphics/2d.h"
 #include "hud/hudtarget.h"
 
+// Typedef for Overhead View styles
+typedef enum {
+	OH_TOP_VIEW,
+	OH_ROTATING
+} overhead_style;
+
+// Typedef for Escape key behavior --wookieejedi
+typedef enum {
+	DEFAULT,
+	SAVE
+} EscapeKeyBehaviorInOptions;
+
+// And one for splash screens
+struct splash_screen {
+	SCP_string filename;
+	float aspect_ratio_exact = 0.0f;
+	float aspect_ratio_min = 0.0f;
+	float aspect_ratio_max = 0.0f;
+
+	// for filtering
+	bool is_default = false;
+	bool match_exact = false;
+	bool match_range = false;
+};
+
 extern int Directive_wait_time;
 extern bool True_loop_argument_sexps;
+extern bool Skybox_internal_depth_consistency;
 extern bool Fixed_turret_collisions;
 extern bool Fixed_missile_detonation;
 extern bool Damage_impacted_subsystem_first;
 extern bool Cutscene_camera_displays_hud;
 extern bool Alternate_chaining_behavior;
+extern bool Fixed_chaining_to_repeat;
 extern bool Use_host_orientation_for_set_camera_facing;
+extern bool Use_model_eyepoint_for_set_camera_host;
+extern bool Use_model_eyepoint_normals;
+extern bool Always_show_directive_value_count;
+extern bool Use_3d_ship_select;
 extern int Default_ship_select_effect;
+extern bool Use_3d_ship_icons;
+extern bool Use_3d_weapon_select;
 extern int Default_weapon_select_effect;
+extern bool Use_3d_weapon_icons;
+extern bool Use_3d_overhead_ship;
+extern color Default_fs2_effect_grid_color;
+extern color Default_fs2_effect_scanline_color;
+extern color Default_fs2_effect_wireframe_color;
+extern int Default_fs2_effect_grid_density;
+extern overhead_style Default_overhead_ship_style;
 extern int Default_fiction_viewer_ui;
 extern bool Enable_external_shaders;
 extern bool Enable_external_default_scripts;
-extern int Default_detail_level;
+extern DefaultDetailPreset Default_detail_preset;
 extern bool Full_color_head_anis;
 extern bool Dont_automatically_select_turret_when_targeting_ship;
+extern bool Automatically_select_subsystem_under_reticle_when_targeting_same_ship;
+extern bool Always_reset_selected_wep_on_loadout_open;
 extern bool Weapons_inherit_parent_collision_group;
 extern bool Flight_controls_follow_eyepoint_orientation;
 extern int FS2NetD_port;
 extern int Default_multi_object_update_level;
 extern float Briefing_window_FOV;
+extern int Briefing_window_resolution[2];
 extern bool Disable_hc_message_ani;
+extern SCP_vector<SCP_string> Custom_head_anis;
+extern SCP_vector<SCP_string> Ignored_music_player_files;
 extern bool Red_alert_applies_to_delayed_ships;
 extern bool Beams_use_damage_factors;
 extern float Generic_pain_flash_factor;
@@ -46,9 +91,15 @@ extern SCP_string Window_title;
 extern SCP_string Mod_title;
 extern SCP_string Mod_version;
 extern bool Unicode_text_mode;
+extern SCP_vector<splash_screen> Splash_screens;
+extern int Splash_fade_in_time;
+extern int Splash_fade_out_time;
+extern bool Splash_logo_center;
 extern bool Use_tabled_strings_for_default_language;
+extern bool No_built_in_languages;
 extern bool Dont_preempt_training_voice;
 extern SCP_string Movie_subtitle_font;
+extern std::array<int, 4> Movie_subtitle_rgba;
 extern bool Enable_scripts_in_fred;
 extern SCP_string Window_icon_path;
 extern bool Disable_built_in_translations;
@@ -62,19 +113,28 @@ extern SCP_string Inherited_shockwave_damage_type_suffix;
 extern SCP_string Inherited_dinky_shockwave_damage_type_suffix;
 extern SCP_string Default_shockwave_damage_type;
 extern SCP_string Default_dinky_shockwave_damage_type;
-extern std::tuple<ubyte, ubyte, ubyte> Arc_color_damage_p1;
-extern std::tuple<ubyte, ubyte, ubyte> Arc_color_damage_p2;
-extern std::tuple<ubyte, ubyte, ubyte> Arc_color_damage_s1;
-extern std::tuple<ubyte, ubyte, ubyte> Arc_color_emp_p1;
-extern std::tuple<ubyte, ubyte, ubyte> Arc_color_emp_p2;
-extern std::tuple<ubyte, ubyte, ubyte> Arc_color_emp_s1;
+extern color Arc_color_damage_p1;
+extern color Arc_color_damage_p2;
+extern color Arc_color_damage_s1;
+extern float Arc_width_default_damage;
+extern float Arc_width_radius_multiplier_damage;
+extern float Arc_width_no_multiply_over_radius_damage;
+extern float Arc_width_minimum_damage;
+extern color Arc_color_emp_p1;
+extern color Arc_color_emp_p2;
+extern color Arc_color_emp_s1;
+extern float Arc_width_default_emp;
+extern float Arc_width_radius_multiplier_emp;
+extern float Arc_width_no_multiply_over_radius_emp;
+extern float Arc_width_minimum_emp;
 extern bool Use_engine_wash_intensity;
+extern bool Apply_shudder_to_chase_view;
 extern bool Swarmers_lead_targets;
 extern SCP_vector<gr_capability> Required_render_ext;
 extern float Weapon_SS_Threshold_Turret_Inaccuracy;
 extern bool Framerate_independent_turning;
 extern bool Ai_respect_tabled_turntime_rotdamp;
-extern bool Chase_view_default;
+extern bool Default_start_chase_view;
 extern bool Render_player_mflash;
 extern bool Neb_affects_beams;
 extern bool Neb_affects_weapons;
@@ -84,16 +144,20 @@ extern std::tuple<float, float, float, float> Shadow_distances;
 extern std::tuple<float, float, float, float> Shadow_distances_cockpit;
 extern bool Show_ship_casts_shadow;
 extern bool Cockpit_shares_coordinate_space;
+extern bool Show_ship_only_if_cockpits_enabled;
 extern bool Custom_briefing_icons_always_override_standard_icons;
 extern float Min_pixel_size_thruster;
 extern float Min_pixel_size_beam;
 extern float Min_pizel_size_muzzleflash;
 extern float Min_pixel_size_trail;
 extern float Min_pixel_size_laser;
+extern float Do_not_render_lasers_below_length;
+extern float Do_not_render_lasers_below_radius;
 extern bool Supernova_hits_at_zero;
 extern bool Show_subtitle_uses_pixels;
 extern int Show_subtitle_screen_base_res[];
 extern int Show_subtitle_screen_adjusted_res[];
+extern int HUD_set_coords_screen_base_res[];
 extern bool Always_warn_player_about_unbound_keys;
 extern leadIndicatorBehavior Lead_indicator_behavior;
 extern struct shadow_disable_overrides {
@@ -101,6 +165,36 @@ extern struct shadow_disable_overrides {
 } Shadow_disable_overrides;
 extern float Thruster_easing;
 extern bool Always_use_distant_firepoints;
+extern bool Discord_presence;
+extern bool Hotkey_always_hide_hidden_ships;
+extern bool Use_weapon_class_sounds_for_hits_to_player;
+extern bool SCPUI_loads_hi_res_animations;
+extern bool Auto_assign_personas;
+extern bool Countermeasures_use_capacity;
+extern bool Play_thruster_sounds_for_player;
+extern bool Unify_minimum_engine_sound;
+extern bool Disabled_or_disrupted_engines_silent;
+extern std::array<std::tuple<float, float>, 6> Fred_spacemouse_nonlinearity;
+extern bool Randomize_particle_rotation;
+extern bool Disable_shield_effects;
+extern bool Disable_all_noncustom_generic_debris;
+extern bool Calculate_subsystem_hitpoints_after_parsing;
+extern bool Disable_internal_loadout_restoration_system;
+extern bool Contrails_use_absolute_speed;
+extern bool Use_new_scanning_behavior;
+extern bool Lua_API_returns_nil_instead_of_invalid_object;
+extern bool Dont_show_callsigns_in_escort_list;
+extern bool Hide_main_rearm_items_in_comms_gauge;
+extern bool Fix_scripted_velocity;
+extern color Overhead_line_colors[MAX_SHIP_SECONDARY_BANKS];
+extern bool Preload_briefing_icon_models;
+extern EscapeKeyBehaviorInOptions escape_key_behavior_in_options;
+extern bool Fix_asteroid_bounding_box_check;
+extern bool Disable_intro_movie;
+extern bool Show_locked_status_scramble_missions;
+extern bool Disable_expensive_turret_target_check;
+extern float Shield_percent_skips_damage;
+extern float Min_radius_for_persistent_debris;
 
 void mod_table_init();
 void mod_table_post_process();
@@ -125,3 +219,5 @@ void mod_table_reset();
  * @return @c true if the mod specified support for this or a later version, @c false otherwise
  */
 bool mod_supports_version(int major, int minor, int build);
+
+bool mod_supports_version(const gameversion::version& version);

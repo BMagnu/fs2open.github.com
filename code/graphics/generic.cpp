@@ -162,7 +162,7 @@ int generic_anim_stream(generic_anim *ga, const bool cache)
 
 	ga->type = BM_TYPE_NONE;
 
-	auto res = cf_find_file_location_ext(ga->filename, BM_ANI_NUM_TYPES, bm_ani_ext_list, CF_TYPE_ANY, false);
+	auto res = cf_find_file_location_ext(ga->filename, BM_ANI_NUM_TYPES, bm_ani_ext_list, CF_TYPE_ANY);
 
 	// could not be found, or is invalid for some reason
 	if ( !res.found )
@@ -187,7 +187,7 @@ int generic_anim_stream(generic_anim *ga, const bool cache)
 		if(ga->use_hud_color)
 			bpp = 8;
 		if (ga->ani.animation == nullptr) {
-			ga->ani.animation = anim_load(ga->filename, CF_TYPE_ANY, 0);
+			ga->ani.animation = anim_load(ga->filename, CF_TYPE_ANY);
 		}
 		if (ga->ani.instance == nullptr) {
 			ga->ani.instance = init_anim_instance(ga->ani.animation, bpp);
@@ -413,7 +413,6 @@ void generic_render_ani_stream(generic_anim *ga)
 		mprintf(("frame: %d\n", ga->current_frame));
 	#endif
 
-	anim_check_for_palette_change(ga->ani.instance);
 	// if we're using bitmap polys
 	BM_SELECT_TEX_FORMAT();
 	if(ga->direction & GENERIC_ANIM_DIRECTION_BACKWARDS) {
@@ -520,7 +519,7 @@ void generic_render_png_stream(generic_anim* ga)
  * @param [in] *ga  animation data
  * @param [in] frametime  how long this frame took
  */
-void generic_anim_render_fixed_frame_delay(generic_anim* ga, float frametime)
+void generic_anim_render_fixed_frame_delay(generic_anim* ga, float frametime, float alpha = 1.0f)
 {
 	float keytime = 0.0;
 
@@ -581,10 +580,19 @@ void generic_anim_render_fixed_frame_delay(generic_anim* ga, float frametime)
 			} else {
 				generic_render_eff_stream(ga);
 			}
-			gr_set_bitmap(ga->bitmap_id);
+
+			if (alpha == 1.0f) {
+				gr_set_bitmap(ga->bitmap_id);
+			} else {
+				gr_set_bitmap(ga->bitmap_id, GR_ALPHABLEND_FILTER, GR_BITBLT_MODE_NORMAL, alpha);
+			}
 		}
 		else {
-			gr_set_bitmap(ga->first_frame + ga->current_frame);
+			if (alpha == 1.0f) {
+				gr_set_bitmap(ga->first_frame + ga->current_frame);
+			} else {
+				gr_set_bitmap(ga->first_frame + ga->current_frame, GR_ALPHABLEND_FILTER, GR_BITBLT_MODE_NORMAL, alpha);
+			}
 		}
 	}
 }
@@ -689,7 +697,7 @@ void generic_anim_render_variable_frame_delay(generic_anim* ga, float frametime,
  * @param [in] y  2D screen y co-ordinate to render at
  * @param [in] menu select if this is rendered in menu screen, or fullscreen
  */
-void generic_anim_render(generic_anim *ga, float frametime, int x, int y, bool menu, const generic_extras *ge)
+void generic_anim_render(generic_anim *ga, float frametime, int x, int y, bool menu, const generic_extras *ge, float scale_factor)
 {
 	if ((ge != nullptr) && (ga->use_hud_color == true)) {
 		Warning(LOCATION, "Monochrome generic anims can't use extra info (yet)");
@@ -704,26 +712,48 @@ void generic_anim_render(generic_anim *ga, float frametime, int x, int y, bool m
 		generic_anim_render_variable_frame_delay(ga, frametime, a);
 	}
 	else {
-		generic_anim_render_fixed_frame_delay(ga, frametime);
+		generic_anim_render_fixed_frame_delay(ga, frametime, a);
 	}
 
 	if(ga->num_frames > 0) {
 		ga->previous_frame = ga->current_frame;
 
 		if(ga->use_hud_color) {
-			gr_aabitmap(x, y, (menu ? GR_RESIZE_MENU : GR_RESIZE_FULL));
+			gr_aabitmap(x, y, (menu ? GR_RESIZE_MENU : GR_RESIZE_FULL), false, scale_factor);
 		}
 		else {
 			if (ge == nullptr) {
-				gr_bitmap(x, y, (menu ? GR_RESIZE_MENU : GR_RESIZE_FULL));
+				gr_bitmap(x, y, (menu ? GR_RESIZE_MENU : GR_RESIZE_FULL), false, scale_factor);
 			}
 			else if (ge->draw == true) {
 				// currently only for lua streaminganim objects
 				// and don't draw them unless requested...
-				gr_bitmap_uv(x, y, ge->width, ge->height, ge->u0, ge->v0, ge->u1, ge->v1, GR_RESIZE_NONE);
+				gr_bitmap_uv(x, y, ge->width, ge->height, ge->u0, ge->v0, ge->u1, ge->v1, ge->resize_mode);
 			}
 		}
 	}
+}
+
+void generic_anim_bitmap_set(generic_anim* ga, float frametime, const generic_extras* ge)
+{
+	if ((ge != nullptr) && (ga->use_hud_color == true)) {
+		Warning(LOCATION, "Monochrome generic anims can't use extra info (yet)");
+		return;
+	}
+
+	float a = 1.0f;
+	if (ge != nullptr) {
+		a = ge->alpha;
+	}
+	if (ga->type == BM_TYPE_PNG) {
+		generic_anim_render_variable_frame_delay(ga, frametime, a);
+	}
+	else {
+		generic_anim_render_fixed_frame_delay(ga, frametime, a);
+	}
+
+	if (ga->num_frames > 0)
+		ga->previous_frame = ga->current_frame;
 }
 
 /*

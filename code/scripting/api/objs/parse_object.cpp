@@ -1,10 +1,20 @@
 
 #include "parse_object.h"
 
+#include "ship.h"
 #include "shipclass.h"
+#include "team.h"
 #include "vecmath.h"
 #include "weaponclass.h"
 #include "wing.h"
+#include "team_colors.h"
+#include "globalincs/alphacolors.h" //Needed for team colors
+
+#include "mission/missionparse.h"
+
+#include "network/multi.h"
+#include "network/multimsgs.h"
+#include "network/multiutil.h"
 
 extern bool sexp_check_flag_arrays(const char *flag_name, Object::Object_Flags &object_flag, Ship::Ship_Flags &ship_flags, Mission::Parse_Object_Flags &parse_obj_flag, AI::AI_Flags &ai_flag);
 extern void sexp_alter_ship_flag_helper(object_ship_wing_point_team &oswpt, bool future_ships, Object::Object_Flags object_flag, Ship::Ship_Flags ship_flag, Mission::Parse_Object_Flags parse_obj_flag, AI::AI_Flags ai_flag, bool set_flag);
@@ -15,6 +25,20 @@ namespace api {
 parse_object_h::parse_object_h(p_object* obj) : _obj(obj) {}
 p_object* parse_object_h::getObject() const { return _obj; }
 bool parse_object_h::isValid() const { return _obj != nullptr; }
+
+void parse_object_h::serialize(lua_State* /*L*/, const scripting::ade_table_entry& /*tableEntry*/, const luacpp::LuaValue& value, ubyte* data, int& packet_size) {
+	parse_object_h pobj(nullptr);
+	value.getValue(l_ParseObject.Get(&pobj));
+	const ushort& netsig = pobj.isValid() ? pobj._obj->net_signature : 0;
+	ADD_USHORT(netsig);
+}
+
+void parse_object_h::deserialize(lua_State* /*L*/, const scripting::ade_table_entry& /*tableEntry*/, char* data_ptr, ubyte* data, int& offset) {
+	ushort net_signature;
+	GET_USHORT(net_signature);
+	new(data_ptr) parse_object_h(mission_parse_get_arrival_ship(net_signature));
+}
+
 
 //**********HANDLE: parse_object
 ADE_OBJ(l_ParseObject, parse_object_h, "parse_object", "Handle to a parsed ship");
@@ -65,6 +89,56 @@ ADE_VIRTVAR(
 	}
 
 	return ade_set_args(L, "s", poh->getObject()->get_display_name());
+}
+
+ADE_FUNC(isValid, l_ParseObject, nullptr, "Detect whether the parsed ship handle is valid", "boolean", "true if valid false otherwise")
+{
+	parse_object_h* poh = nullptr;
+	if (!ade_get_args(L, "o", l_ParseObject.GetPtr(&poh)))
+		return ADE_RETURN_FALSE;
+
+	return ade_set_args(L, "b", poh->isValid());
+}
+
+ADE_FUNC(getBreedName, l_ParseObject, nullptr, "Gets the FreeSpace type name", "string", "'Parse Object', or empty string if handle is invalid")
+{
+	parse_object_h* poh = nullptr;
+	if (!ade_get_args(L, "o", l_ParseObject.GetPtr(&poh)))
+		return ade_set_error(L, "s", "");
+
+	if (!poh->isValid())
+		return ade_set_error(L, "s", "");
+
+	return ade_set_args(L, "s", "Parse Object");
+}
+
+ADE_FUNC(isPlayer, l_ParseObject, nullptr, "Checks whether the parsed ship is a player ship", "boolean", "Whether the parsed ship is a player ship")
+{
+	parse_object_h *poh = nullptr;
+	if (!ade_get_args(L, "o", l_ParseObject.GetPtr(&poh)))
+		return ade_set_error(L, "b", false);
+
+	if (!poh->isValid())
+		return ade_set_error(L, "b", false);
+
+	// singleplayer
+	if (!(Game_mode & GM_MULTIPLAYER))
+	{
+		if (poh->getObject()->flags[Mission::Parse_Object_Flags::OF_Player_start])
+			return ADE_RETURN_TRUE;
+		else
+			return ADE_RETURN_FALSE;
+	}
+	// multiplayer
+	else
+	{
+		// try and find the player
+		int np_index = multi_find_player_by_parse_object(poh->getObject());
+		if ((np_index >= 0) && (np_index < MAX_PLAYERS))
+			return ADE_RETURN_TRUE;
+		else
+			return ADE_RETURN_FALSE;
+	}
 }
 
 ADE_FUNC(setFlag, l_ParseObject, "boolean set_it, string flag_name", "Sets or clears one or more flags - this function can accept an arbitrary number of flag arguments.  The flag names can be any string that the alter-ship-flag SEXP operator supports.", nullptr, "Returns nothing")
@@ -134,7 +208,12 @@ ADE_FUNC(getFlag, l_ParseObject, "string flag_name", "Checks whether one or more
 			return ADE_RETURN_FALSE;
 		}
 
-		// we only check parse flags
+		// we only check parse flags, unless this is the one object flag that is the same thing in reverse
+		if (object_flag == Object::Object_Flags::Collides)
+		{
+			if (pobjp->flags[Mission::Parse_Object_Flags::OF_No_collide])
+				return ADE_RETURN_FALSE;
+		}
 
 		if (parse_obj_flag != Mission::Parse_Object_Flags::NUM_VALUES)
 		{
@@ -233,6 +312,57 @@ ADE_VIRTVAR(ShipClass, l_ParseObject, "shipclass", "The ship class of the parsed
 	}
 
 	return ade_set_args(L, "o", l_Shipclass.Set(poh->getObject()->ship_class));
+}
+
+ADE_VIRTVAR(Team, l_ParseObject, "team", "The team of the parsed ship.", "team", "The team")
+{
+	parse_object_h* poh = nullptr;
+	int newTeam        = -1;
+	if (!ade_get_args(L, "o|o", l_ParseObject.GetPtr(&poh), l_Team.Get(&newTeam)))
+		return ade_set_error(L, "o", l_Team.Set(-1));
+
+	if (poh == nullptr)
+		return ade_set_error(L, "o", l_Team.Set(-1));
+
+	if (!poh->isValid())
+		return ade_set_error(L, "o", l_Team.Set(-1));
+
+	if (ADE_SETTING_VAR && newTeam >= 0) {
+		poh->getObject()->team = newTeam;
+	}
+
+	return ade_set_args(L, "o", l_Team.Set(poh->getObject()->team));
+}
+
+ADE_VIRTVAR(TeamColor, l_ParseObject, "teamcolor", "The team color. Setting the team color here will not be reflected in the mission if the ship is already created. You must do that on the Ship object instead.", "teamcolor", "The team color handle or nil if not set or invalid.")
+{
+	parse_object_h* poh = nullptr;
+	int idx = -1;
+	if (!ade_get_args(L, "o|o", l_ParseObject.GetPtr(&poh), l_TeamColor.Get(&idx)))
+		return ADE_RETURN_NIL;
+
+	if (!poh->isValid())
+		return ADE_RETURN_NIL;
+
+	// Set team color
+	if (ADE_SETTING_VAR && SCP_vector_inbounds(Team_Names, idx)) {
+		// Verify
+		const auto& it = Team_Colors.find(Team_Names[idx]);
+		if (it == Team_Colors.end()) {
+			mprintf(("Invalid team color specified in mission file for ship %s. Not setting!\n", poh->getObject()->name));
+		} else {
+			poh->getObject()->team_color_setting = Team_Names[idx];
+		}
+	}
+
+	// look up by name
+	for (int i = 0; i < static_cast<int>(Team_Names.size()); ++i) {
+		if (lcase_equal(Team_Names[i], poh->getObject()->team_color_setting)) {
+			return ade_set_args(L, "o", l_TeamColor.Set(i));
+		}
+	}
+
+	return ADE_RETURN_NIL;
 }
 
 ADE_VIRTVAR(InitialHull, l_ParseObject, "number", "The initial hull percentage of this parsed ship.", "number",
@@ -337,7 +467,8 @@ ADE_VIRTVAR(Subsystems, l_ParseObject, nullptr, "Get the list of subsystems of t
 	return ade_set_args(L, "t", tbl);
 }
 
-static int parse_object_getset_location_helper(lua_State* L, int p_object::* field, const char* location_type, const char** location_names, size_t location_names_size)
+template <typename LOC>
+static int parse_object_getset_location_helper(lua_State* L, LOC p_object::* field, const char* location_type, const char** location_names, size_t location_names_size)
 {
 	parse_object_h* poh;
 	const char* s = nullptr;
@@ -355,10 +486,10 @@ static int parse_object_getset_location_helper(lua_State* L, int p_object::* fie
 			Warning(LOCATION, "%s location '%s' not found.", location_type, s);
 			return ADE_RETURN_NIL;
 		}
-		poh->getObject()->*field = location;
+		poh->getObject()->*field = static_cast<LOC>(location);
 	}
 
-	return ade_set_args(L, "s", location_names[poh->getObject()->*field]);
+	return ade_set_args(L, "s", location_names[static_cast<int>(poh->getObject()->*field)]);
 }
 
 ADE_VIRTVAR(ArrivalLocation, l_ParseObject, "string", "The ship's arrival location", "string", "Arrival location, or nil if handle is invalid")
@@ -386,7 +517,7 @@ static int parse_object_getset_anchor_helper(lua_State* L, int p_object::* field
 		poh->getObject()->*field = (stricmp(s, "<no anchor>") == 0) ? -1 : get_parse_name_index(s);
 	}
 
-	return ade_set_args(L, "s", (poh->getObject()->*field >= 0) ? Parse_names[poh->getObject()->*field] : "<no anchor>");
+	return ade_set_args(L, "s", (poh->getObject()->*field >= 0) ? Parse_names[poh->getObject()->*field].c_str() : "<no anchor>");
 }
 
 ADE_VIRTVAR(ArrivalAnchor, l_ParseObject, "string", "The ship's arrival anchor", "string", "Arrival anchor, or nil if handle is invalid")
@@ -440,6 +571,22 @@ ADE_FUNC(isPlayerStart, l_ParseObject, nullptr, "Determines if this parsed ship 
 	return ade_set_args(L, "b", poh->getObject()->flags[Mission::Parse_Object_Flags::OF_Player_start]);
 }
 
+ADE_FUNC(getShip, l_ParseObject, nullptr, "Returns the ship that was created from this parsed ship, if it is present in the mission.  Note that parse objects are reused when a wing has multiple waves, so this will always return a ship from the most recently created wave.", "ship", "The created ship, an invalid handle if no ship exists, or nil if the current handle is invalid")
+{
+	parse_object_h* poh = nullptr;
+	if (!ade_get_args(L, "o", l_ParseObject.GetPtr(&poh)))
+		return ADE_RETURN_NIL;
+
+	if (!poh || !poh->isValid())
+		return ADE_RETURN_NIL;
+
+	auto objp = poh->getObject()->created_object;
+	if (!objp)
+		return ade_set_args(L, "o", l_Ship.Set(-1));
+
+	return ade_set_object_with_breed(L, OBJ_INDEX(objp));
+}
+
 ADE_FUNC(getWing, l_ParseObject, nullptr, "Returns the wing that this parsed ship belongs to, if any", "wing", "The parsed ship's wing, an invalid wing handle if no wing exists, or nil if the handle is invalid")
 {
 	parse_object_h* poh = nullptr;
@@ -471,10 +618,81 @@ ADE_FUNC(makeShipArrive, l_ParseObject, nullptr, "Causes this parsed ship to arr
 	return mission_maybe_make_ship_arrive(poh->getObject(), true) ? ADE_RETURN_TRUE : ADE_RETURN_FALSE;
 }
 
+ADE_VIRTVAR(CollisionGroups, l_ParseObject, "number", "Collision group data", "number", "Current set of collision groups. NOTE: This is a bitfield, NOT a normal number.")
+{
+	parse_object_h* poh = nullptr;
+	int id = 0;
+	if (!ade_get_args(L, "o|i", l_ParseObject.GetPtr(&poh), &id))
+		return ade_set_error(L, "i", 0);
+
+	if (!poh->isValid())
+		return ade_set_error(L, "i", 0);
+
+	//Set collision group data
+	if (ADE_SETTING_VAR)
+		poh->getObject()->collision_group_id = id;
+
+	return ade_set_args(L, "i", poh->getObject()->collision_group_id);
+}
+
+ADE_FUNC(addToCollisionGroup, l_ParseObject, "number group", "Adds this parsed ship to the specified collision group.  The group must be between 0 and 31, inclusive.", nullptr, "Returns nothing")
+{
+	parse_object_h* poh = nullptr;
+	int group;
+
+	if (!ade_get_args(L, "oi", l_ParseObject.GetPtr(&poh), &group))
+		return ADE_RETURN_NIL;
+
+	if (!poh->isValid())
+		return ADE_RETURN_NIL;
+
+	if (group >= 0 && group <= 31)
+		poh->getObject()->collision_group_id |= (1 << group);
+	else
+		Warning(LOCATION, "In addToCollisionGroup, group %d must be between 0 and 31, inclusive", group);
+
+	return ADE_RETURN_NIL;
+}
+
+ADE_FUNC(removeFromCollisionGroup, l_ParseObject, "number group", "Removes this parsed ship from the specified collision group.  The group must be between 0 and 31, inclusive.", nullptr, "Returns nothing")
+{
+	parse_object_h* poh = nullptr;
+	int group;
+
+	if (!ade_get_args(L, "oi", l_ParseObject.GetPtr(&poh), &group))
+		return ADE_RETURN_NIL;
+
+	if (!poh->isValid())
+		return ADE_RETURN_NIL;
+
+	if (group >= 0 && group <= 31)
+		poh->getObject()->collision_group_id &= ~(1 << group);
+	else
+		Warning(LOCATION, "In removeFromCollisionGroup, group %d must be between 0 and 31, inclusive", group);
+
+	return ADE_RETURN_NIL;
+}
+
 parse_subsys_h::parse_subsys_h() = default;
 parse_subsys_h::parse_subsys_h(p_object* obj, int subsys_offset) : _obj(obj), _subsys_offset(subsys_offset) {}
 subsys_status* parse_subsys_h::getSubsys() const { return &Subsys_status[_obj->subsys_index + _subsys_offset]; }
 bool parse_subsys_h::isValid() const { return _obj != nullptr && _subsys_offset < _obj->subsys_count; }
+
+void parse_subsys_h::serialize(lua_State* /*L*/, const scripting::ade_table_entry& /*tableEntry*/, const luacpp::LuaValue& value, ubyte* data, int& packet_size) {
+	parse_subsys_h pobj;
+	value.getValue(l_ParseSubsystem.Get(&pobj));
+	const ushort& netsig = pobj.isValid() ? pobj._obj->net_signature : 0;
+	ADD_USHORT(netsig);
+	ADD_INT(pobj._subsys_offset);
+}
+
+void parse_subsys_h::deserialize(lua_State* /*L*/, const scripting::ade_table_entry& /*tableEntry*/, char* data_ptr, ubyte* data, int& offset) {
+	ushort net_signature;
+	int ss;
+	GET_USHORT(net_signature);
+	GET_INT(ss);
+	new(data_ptr) parse_subsys_h(mission_parse_get_arrival_ship(net_signature), ss);
+}
 
 //**********HANDLE: parse_object
 ADE_OBJ(l_ParseSubsystem, parse_subsys_h, "parse_subsystem", "Handle to a parse subsystem");

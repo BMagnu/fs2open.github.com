@@ -13,6 +13,7 @@
 #include "cmdline/cmdline.h"
 #include "def_files/def_files.h"
 #include "graphics/grinternal.h"
+#include "graphics/openxr.h"
 #include "graphics/util/uniform_structs.h"
 #include "io/timer.h"
 #include "lighting/lighting.h"
@@ -58,20 +59,23 @@ static GLuint Smaa_output_tex               = 0;
 static GLuint Smaa_search_tex = 0;
 static GLuint Smaa_area_tex   = 0;
 
+namespace ltp = lighting_profiles;
+using namespace ltp;
+
 void opengl_post_pass_tonemap()
 {
 	GR_DEBUG_SCOPE("Tonemapping");
 	TRACE_SCOPE(tracing::Tonemapping);
 
-	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_POST_PROCESS_TONEMAPPING, 0));
+	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_POST_PROCESS_TONEMAPPING, openxr_enabled() ? SDR_FLAG_TONEMAPPING_LINEAR_OUT : 0));
 
 	Current_shader->program->Uniforms.setTextureUniform("tex", 0);
 	
 	opengl_set_generic_uniform_data<graphics::generic_data::tonemapping_data>(
 		[](graphics::generic_data::tonemapping_data* data) {
-		auto ppc = lighting_profile::current_piecewise_intermediates();
-		auto tn = lighting_profile::current_tonemapper();
-		data->tonemapper = tn;
+		auto ppc = ltp::current_piecewise_intermediates();
+		auto tn = ltp::current_tonemapper();
+		data->tonemapper = (int)tn;
 		data->sh_B = ppc.sh_B;
 		data->sh_lnA = ppc.sh_lnA;
 		data->sh_offsetX =ppc.sh_offsetX;
@@ -81,7 +85,7 @@ void opengl_post_pass_tonemap()
 		data->x0 = ppc.x0;
 		data->x1 = ppc.x1;
 		data->y0 = ppc.y0; 
-		data->exposure = lighting_profile::current_exposure(); });
+		data->exposure = ltp::current_exposure(); });
 
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, Scene_ldr_texture, 0);
 
@@ -427,7 +431,6 @@ extern GLuint Cockpit_depth_texture;
 extern GLuint Scene_position_texture;
 extern GLuint Scene_normal_texture;
 extern GLuint Scene_specular_texture;
-extern bool stars_sun_has_glare(int index);
 extern float Sun_spot;
 void opengl_post_lightshafts()
 {
@@ -439,7 +442,7 @@ void opengl_post_lightshafts()
 	float x, y;
 
 	// should we even be here?
-	if ( !Game_subspace_effect && gr_lightshafts_enabled() ) {
+	if ( !Game_subspace_effect && gr_sunglare_enabled() && gr_lightshafts_enabled() ) {
 		int n_lights = light_get_global_count();
 
 		for ( int idx = 0; idx<n_lights; idx++ ) {
@@ -448,7 +451,7 @@ void opengl_post_lightshafts()
 			light_get_global_dir(&light_dir, idx);
 			vm_vec_rotate(&local_light_dir, &light_dir, &Eye_matrix);
 
-			if ( !stars_sun_has_glare(idx) ) {
+			if ( !light_has_glare(idx) ) {
 				continue;
 			}
 
@@ -593,6 +596,18 @@ void gr_opengl_post_process_end()
 					break;
 				case graphics::PostEffectUniformType::Tint:
 					data->tint = postEffects[idx].rgb;
+					break;
+				case graphics::PostEffectUniformType::CustomEffectVEC3A:
+					data->custom_effect_vec3_a = postEffects[idx].rgb;
+					break;
+				case graphics::PostEffectUniformType::CustomEffectFloatA:
+					data->custom_effect_float_a = value;
+					break;
+				case graphics::PostEffectUniformType::CustomEffectVEC3B:
+					data->custom_effect_vec3_b = postEffects[idx].rgb;
+					break;
+				case graphics::PostEffectUniformType::CustomEffectFloatB:
+					data->custom_effect_float_b = value;
 					break;
 				}
 			}
@@ -847,8 +862,8 @@ void opengl_post_shader_header(SCP_stringstream& sflags, shader_type shader_t, i
 		}
 	} else if (shader_t == SDR_TYPE_POST_PROCESS_LIGHTSHAFTS) {
 		char temp[64];
-		const auto ls_params = graphics::Post_processing_manager->getLightshaftParams();
-		sprintf(temp, "#define SAMPLE_NUM %d\n", ls_params.samplenum);
+		const auto& ls_params = graphics::Post_processing_manager->getLightshaftParams();
+		snprintf(temp, 64, "#define SAMPLE_NUM %d\n", ls_params.samplenum);
 		sflags << temp;
 	} else if (shader_t == SDR_TYPE_POST_PROCESS_FXAA) {
 		set_fxaa_defines(sflags);

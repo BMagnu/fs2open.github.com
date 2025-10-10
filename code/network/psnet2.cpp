@@ -52,7 +52,6 @@ static bool Psnet_active = false;
 
 static int Network_status;
 int Psnet_failure_code = 0;
-int Psnet_connection;
 
 uint16_t Psnet_default_port;
 
@@ -423,8 +422,6 @@ void psnet_init(uint16_t port_num)
 		return;
 	}
 
-	Psnet_connection = NETWORK_CONNECTION_LAN;
-
 	Network_status = NETWORK_STATUS_NO_PROTOCOL;
 
 #ifdef _WIN32
@@ -660,11 +657,6 @@ bool psnet_init_my_addr()
  */
 int psnet_get_network_status()
 {
-	// first case is when "none" is selected
-	if (Psnet_connection == NETWORK_CONNECTION_NONE) {
-		return NETWORK_ERROR_NO_TYPE;
-	}
-
 	// first, check the connection status of the network
 	if (Network_status == NETWORK_STATUS_NO_WINSOCK) {
 		return NETWORK_ERROR_NO_WINSOCK;
@@ -1109,7 +1101,7 @@ static bool psnet_explode_ip_string(const char *ip_string, SCP_string &host, SCP
 		host = ip.substr(0, colon);
 		port = ip.substr(colon + 1);
 	} else {
-		host = ip;
+		host = std::move(ip);
 	}
 
 	return true;
@@ -1297,7 +1289,7 @@ static void psnet_debug_bad_packet(const int packet_type, const uint8_t *packet_
 
 	// in case of flooding, log number of packets we've skipped during the previous window
 	if (Psnet_bad_packet_count > MAX_BAD_PACKETS_PER_WINDOW) {
-		ml_printf("WARNING: Invalid packet log window reset ... %lu non-logged packets received during previous window!", Psnet_bad_packet_count - MAX_BAD_PACKETS_PER_WINDOW);
+		ml_printf("WARNING: Invalid packet log window reset ... " SIZE_T_ARG " non-logged packets received during previous window!", Psnet_bad_packet_count - MAX_BAD_PACKETS_PER_WINDOW);
 
 		// reset count
 		Psnet_bad_packet_count = 1;
@@ -1486,7 +1478,7 @@ int psnet_rel_send(PSNET_SOCKET_RELIABLE socketid, ubyte *data, int length, int 
 // Return codes:
 // -1 socket not connected
 // 0 No packet ready to receive
-// >0 Buffer filled with the number of bytes recieved
+// >0 Buffer filled with the number of bytes received
 int psnet_rel_get(PSNET_SOCKET socketid, ubyte *buffer, int max_length)
 {
 	reliable_socket *rsocket = nullptr;

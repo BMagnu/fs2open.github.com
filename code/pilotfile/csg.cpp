@@ -12,12 +12,15 @@
 #include "mission/missionload.h"
 #include "missionui/missionscreencommon.h"
 #include "missionui/missionshipchoice.h"
+#include "options/OptionsManager.h"
 #include "parse/sexp_container.h"
 #include "pilotfile/pilotfile.h"
+#include "pilotfile/plr_hudprefs.h"
 #include "playerman/player.h"
 #include "ship/ship.h"
 #include "sound/audiostr.h"
 #include "stats/medals.h"
+#include "utils/string_utils.h"
 #include "weapon/weapon.h"
 
 #define REDALERT_INTERNAL
@@ -139,6 +142,13 @@ void pilotfile::csg_read_info()
 	Campaign.prev_mission = cfread_int(cfp);
 	Campaign.next_mission = cfread_int(cfp);
 
+	// check that the next mission won't be greater than the total number of missions
+	// though ensure we only flag if campaign exists and has been loaded
+	if (Campaign.num_missions > 0 && Campaign.next_mission >= Campaign.num_missions) {
+		Campaign.next_mission = 0; // Prevent trying to load from invalid mission data downstream
+		m_data_invalid = true; // Causes a warning popup to be displayed
+	}
+
 	// loop state
 	Campaign.loop_reentry = cfread_int(cfp);
 	Campaign.loop_enabled = cfread_int(cfp);
@@ -215,9 +225,9 @@ void pilotfile::csg_write_info()
 	}
 
 	// medals list
-	cfwrite_int(Num_medals, cfp);
+	cfwrite_int((int)Medals.size(), cfp);
 
-	for (idx = 0; idx < Num_medals; idx++) {
+	for (idx = 0; idx < (int)Medals.size(); idx++) {
 		cfwrite_string_len(Medals[idx].name, cfp);
 	}
 
@@ -271,49 +281,40 @@ void pilotfile::csg_read_missions()
 		missionp->flags = cfread_int(cfp);
 
 		// goals
-		missionp->num_goals = cfread_int(cfp);
+		missionp->goals.clear();
+		int num_goals = cfread_int(cfp);
 
-		if (missionp->num_goals > 0) {
-			missionp->goals = (mgoal *) vm_malloc( missionp->num_goals * sizeof(mgoal) );
-			Verify( missionp->goals != NULL );
+		for (j = 0; j < num_goals; j++) {
+			missionp->goals.emplace_back();
+			auto& stored_goal = missionp->goals.back();
 
-			memset( missionp->goals, 0, missionp->num_goals * sizeof(mgoal) );
-
-			for (j = 0; j < missionp->num_goals; j++) {
-				cfread_string_len(missionp->goals[j].name, NAME_LENGTH, cfp);
-				missionp->goals[j].status = cfread_char(cfp);
-			}
+			cfread_string_len(stored_goal.name, NAME_LENGTH, cfp);
+			stored_goal.status = cfread_char(cfp);
 		}
 
 		// events
-		missionp->num_events = cfread_int(cfp);
+		missionp->events.clear();
+		int num_events = cfread_int(cfp);
 
-		if (missionp->num_events > 0) {
-			missionp->events = (mevent *) vm_malloc( missionp->num_events * sizeof(mevent) );
-			Verify( missionp->events != NULL );
+		for (j = 0; j < num_events; j++) {
+			missionp->events.emplace_back();
+			auto& stored_event = missionp->events.back();
 
-			memset( missionp->events, 0, missionp->num_events * sizeof(mevent) );
-
-			for (j = 0; j < missionp->num_events; j++) {
-				cfread_string_len(missionp->events[j].name, NAME_LENGTH, cfp);
-				missionp->events[j].status = cfread_char(cfp);
-			}
+			cfread_string_len(stored_event.name, NAME_LENGTH, cfp);
+			stored_event.status = cfread_char(cfp);
 		}
 
 		// variables
-		missionp->num_variables = cfread_int(cfp);
+		missionp->variables.clear();
+		int num_variables = cfread_int(cfp);
 
-		if (missionp->num_variables > 0) {
-			missionp->variables = (sexp_variable *) vm_malloc( missionp->num_variables * sizeof(sexp_variable) );
-			Verify( missionp->variables != NULL );
+		for (j = 0; j < num_variables; j++) {
+			missionp->variables.emplace_back();
+			auto& stored_variable = missionp->variables.back();
 
-			memset( missionp->variables, 0, missionp->num_variables * sizeof(sexp_variable) );
-
-			for (j = 0; j < missionp->num_variables; j++) {
-				missionp->variables[j].type = cfread_int(cfp);
-				cfread_string_len(missionp->variables[j].text, TOKEN_LENGTH, cfp);
-				cfread_string_len(missionp->variables[j].variable_name, TOKEN_LENGTH, cfp);
-			}
+			stored_variable.type = cfread_int(cfp);
+			cfread_string_len(missionp->variables[j].text, TOKEN_LENGTH, cfp);
+			cfread_string_len(missionp->variables[j].variable_name, TOKEN_LENGTH, cfp);
 		}
 
 		// scoring stats
@@ -371,25 +372,25 @@ void pilotfile::csg_write_missions()
 			cfwrite_int(missionp->flags, cfp);
 
 			// goals
-			cfwrite_int(missionp->num_goals, cfp);
+			cfwrite_int((int)missionp->goals.size(), cfp);
 
-			for (j = 0; j < missionp->num_goals; j++) {
+			for (j = 0; j < (int)missionp->goals.size(); j++) {
 				cfwrite_string_len(missionp->goals[j].name, cfp);
 				cfwrite_char(missionp->goals[j].status, cfp);
 			}
 
 			// events
-			cfwrite_int(missionp->num_events, cfp);
+			cfwrite_int((int)missionp->events.size(), cfp);
 
-			for (j = 0; j < missionp->num_events; j++) {
+			for (j = 0; j < (int)missionp->events.size(); j++) {
 				cfwrite_string_len(missionp->events[j].name, cfp);
 				cfwrite_char(missionp->events[j].status, cfp);
 			}
 
 			// variables
-			cfwrite_int(missionp->num_variables, cfp);
+			cfwrite_int((int)missionp->variables.size(), cfp);
 
-			for (j = 0; j < missionp->num_variables; j++) {
+			for (j = 0; j < (int)missionp->variables.size(); j++) {
 				cfwrite_int(missionp->variables[j].type, cfp);
 				cfwrite_string_len(missionp->variables[j].text, cfp);
 				cfwrite_string_len(missionp->variables[j].variable_name, cfp);
@@ -417,7 +418,7 @@ void pilotfile::csg_write_missions()
 			}
 
 			// medals earned (scoring)
-			for (j = 0; j < Num_medals; j++) {
+			for (j = 0; j < (int)Medals.size(); j++) {
 				cfwrite_int(missionp->stats.medal_counts[j], cfp);
 			}
 		}
@@ -799,7 +800,7 @@ void pilotfile::csg_write_stats()
 	}
 
 	// medals earned (scoring)
-	for (idx = 0; idx < Num_medals; idx++) {
+	for (idx = 0; idx < (int)Medals.size(); idx++) {
 		cfwrite_int(p->stats.medal_counts[idx], cfp);
 	}
 
@@ -808,7 +809,7 @@ void pilotfile::csg_write_stats()
 
 void pilotfile::csg_read_redalert()
 {
-	int idx, i, j, list_size = 0;
+	int idx, i, j, ship_list_size = 0, wing_list_size = 0;
 	int count;
 	char t_string[MAX_FILENAME_LEN+NAME_LENGTH+1] = { '\0' };
 	float hit;
@@ -818,107 +819,133 @@ void pilotfile::csg_read_redalert()
 		throw "RedAlert before Info!";
 	}
 
-	list_size = cfread_int(cfp);
+	ship_list_size = cfread_int(cfp);
 
-	if (list_size <= 0) {
+	if (ship_list_size > 0) {
+		cfread_string_len(t_string, MAX_FILENAME_LEN, cfp);
+
+		Red_alert_precursor_mission = t_string;
+
+		for (idx = 0; idx < ship_list_size; idx++) {
+			red_alert_ship_status ras;
+
+			cfread_string_len(t_string, NAME_LENGTH, cfp);
+			ras.name = t_string;
+
+			ras.hull = cfread_float(cfp);
+
+			// ship class, index into ship_list[]
+			i = cfread_int(cfp);
+			if ( (i >= (int)ship_list.size()) || (i < RED_ALERT_LOWEST_VALID_SHIP_CLASS) ) {
+				mprintf(("CSG => Parse Warning: Invalid value for red alert ship index (%d), emptying slot.\n", i));
+				ras.ship_class = RED_ALERT_DESTROYED_SHIP_CLASS;
+			} else if ( (i < 0 ) && (i >= RED_ALERT_LOWEST_VALID_SHIP_CLASS) ) {  // ship destroyed/exited
+				ras.ship_class = i;
+			} else {
+				ras.ship_class = ship_list[i].index;
+			}
+
+			// subsystem hits
+			count = cfread_int(cfp);
+
+			for (j = 0; j < count; j++) {
+				hit = cfread_float(cfp);
+				ras.subsys_current_hits.push_back( hit );
+			}
+
+			// subsystem aggregate hits
+			count = cfread_int(cfp);
+
+			for (j = 0; j < count; j++) {
+				hit = cfread_float(cfp);
+				ras.subsys_aggregate_current_hits.push_back( hit );
+			}
+
+			// primary weapon loadout and status
+			count = cfread_int(cfp);
+
+			for (j = 0; j < count; j++) {
+				i = cfread_int(cfp);
+				weapons.index = weapon_list[i].index;
+				weapons.count = cfread_int(cfp);
+
+				// triggering this means something is really fubar
+				if (weapons.index < 0) {
+					continue;
+				}
+
+				ras.primary_weapons.push_back( weapons );
+			}
+
+			// secondary weapon loadout and status
+			count = cfread_int(cfp);
+
+			for (j = 0; j < count; j++) {
+				i = cfread_int(cfp);
+				weapons.index = weapon_list[i].index;
+				weapons.count = cfread_int(cfp);
+
+				// triggering this means something is really fubar
+				if (weapons.index < 0) {
+					continue;
+				}
+
+				ras.secondary_weapons.push_back( weapons );
+			}
+
+			// this is quite likely a *bad* thing if it doesn't happen
+			if (ras.ship_class >= RED_ALERT_LOWEST_VALID_SHIP_CLASS) {
+				Red_alert_ship_status.push_back( ras );
+			}
+		}
+	}
+
+
+	// old versions of CSG files do not store wing status
+	if (csg_ver < 8) {
 		return;
 	}
 
-	cfread_string_len(t_string, MAX_FILENAME_LEN, cfp);
 
-	Red_alert_precursor_mission = t_string;
+	wing_list_size = cfread_int(cfp);
 
-	for (idx = 0; idx < list_size; idx++) {
-		red_alert_ship_status ras;
+	if (wing_list_size > 0) {
+		for (idx = 0; idx < wing_list_size; idx++) {
+			red_alert_wing_status rws;
 
-		cfread_string_len(t_string, NAME_LENGTH, cfp);
-		ras.name = t_string;
+			cfread_string_len(t_string, NAME_LENGTH, cfp);
+			rws.name = t_string;
 
-		ras.hull = cfread_float(cfp);
+			rws.latest_wave = cfread_int(cfp);
 
-		// ship class, index into ship_list[]
-		i = cfread_int(cfp);
-		if ( (i >= (int)ship_list.size()) || (i < RED_ALERT_LOWEST_VALID_SHIP_CLASS) ) {
-			mprintf(("CSG => Parse Warning: Invalid value for red alert ship index (%d), emptying slot.\n", i));
-			ras.ship_class = RED_ALERT_DESTROYED_SHIP_CLASS;
-		} else if ( (i < 0 ) && (i >= RED_ALERT_LOWEST_VALID_SHIP_CLASS) ) {  // ship destroyed/exited
-			ras.ship_class = i;
-		} else {
-			ras.ship_class = ship_list[i].index;
-		}
+			rws.wave_count = cfread_int(cfp);
+			rws.total_arrived_count = cfread_int(cfp);
+			rws.total_departed = cfread_int(cfp);
+			rws.total_destroyed = cfread_int(cfp);
+			rws.total_vanished = cfread_int(cfp);
 
-		// subsystem hits
-		count = cfread_int(cfp);
-
-		for (j = 0; j < count; j++) {
-			hit = cfread_float(cfp);
-			ras.subsys_current_hits.push_back( hit );
-		}
-
-		// subsystem aggregate hits
-		count = cfread_int(cfp);
-
-		for (j = 0; j < count; j++) {
-			hit = cfread_float(cfp);
-			ras.subsys_aggregate_current_hits.push_back( hit );
-		}
-
-		// primary weapon loadout and status
-		count = cfread_int(cfp);
-
-		for (j = 0; j < count; j++) {
-			i = cfread_int(cfp);
-			weapons.index = weapon_list[i].index;
-			weapons.count = cfread_int(cfp);
-
-			// triggering this means something is really fubar
-			if (weapons.index < 0) {
-				continue;
-			}
-
-			ras.primary_weapons.push_back( weapons );
-		}
-
-		// secondary weapon loadout and status
-		count = cfread_int(cfp);
-
-		for (j = 0; j < count; j++) {
-			i = cfread_int(cfp);
-			weapons.index = weapon_list[i].index;
-			weapons.count = cfread_int(cfp);
-
-			// triggering this means something is really fubar
-			if (weapons.index < 0) {
-				continue;
-			}
-
-			ras.secondary_weapons.push_back( weapons );
-		}
-
-		// this is quite likely a *bad* thing if it doesn't happen
-		if (ras.ship_class >= RED_ALERT_LOWEST_VALID_SHIP_CLASS) {
-			Red_alert_wingman_status.push_back( ras );
+			Red_alert_wing_status.push_back(rws);
 		}
 	}
+
 }
 
 void pilotfile::csg_write_redalert()
 {
-	int idx, j, list_size = 0;
+	int idx, j, ship_list_size = 0, wing_list_size = 0;
 	int count;
-	red_alert_ship_status *ras;
 
 	startSection(Section::RedAlert);
 
-	list_size = (int)Red_alert_wingman_status.size();
+	ship_list_size = (int)Red_alert_ship_status.size();
 
-	cfwrite_int(list_size, cfp);
+	cfwrite_int(ship_list_size, cfp);
 
-	if (list_size) {
+	if (ship_list_size) {
 		cfwrite_string_len(Red_alert_precursor_mission.c_str(), cfp);
 
-		for (idx = 0; idx < list_size; idx++) {
-			ras = &Red_alert_wingman_status[idx];
+		for (idx = 0; idx < ship_list_size; idx++) {
+			auto ras = &Red_alert_ship_status[idx];
 
 			cfwrite_string_len(ras->name.c_str(), cfp);
 
@@ -963,25 +990,66 @@ void pilotfile::csg_write_redalert()
 		}
 	}
 
+	wing_list_size = (int)Red_alert_wing_status.size();
+
+	cfwrite_int(wing_list_size, cfp);
+
+	if (wing_list_size) {
+		for (idx = 0; idx < wing_list_size; idx++) {
+			auto rws = &Red_alert_wing_status[idx];
+
+			cfwrite_string_len(rws->name.c_str(), cfp);
+
+			cfwrite_int(rws->latest_wave, cfp);
+
+			cfwrite_int(rws->wave_count, cfp);
+			cfwrite_int(rws->total_arrived_count, cfp);
+			cfwrite_int(rws->total_departed, cfp);
+			cfwrite_int(rws->total_destroyed, cfp);
+			cfwrite_int(rws->total_vanished, cfp);
+		}
+	}
+
 	endSection();
 }
 
 void pilotfile::csg_read_hud()
 {
-	int idx;
+	const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
+	
 	int strikes = 0;
 
 	// flags
-	HUD_config.show_flags = cfread_int(cfp);
-	HUD_config.show_flags2 = cfread_int(cfp);
+	int show_flags = cfread_int(cfp);
+	int show_flags2 = cfread_int(cfp);
 
-	HUD_config.popup_flags = cfread_int(cfp);
-	HUD_config.popup_flags2 = cfread_int(cfp);
+	int popup_flags = cfread_int(cfp);
+	int popup_flags2 = cfread_int(cfp);
+
+	// Convert show_flags (0-31) and show_flags2 (32-63)
+	for (int i = 0; i < 64; i++) {
+		bool is_set = (i < 32) ? (show_flags & (1 << i)) : (show_flags2 & (1 << (i - 32)));
+		SCP_string gauge_id = gauge_map.get_string_id_from_numeric_id(i);
+
+		if (!gauge_id.empty()) {
+			HUD_config.set_gauge_visibility(gauge_id, is_set);
+		}
+	}
+
+	// Convert popup_flags (0-31) and popup_flags2 (32-63)
+	for (int i = 0; i < 64; i++) {
+		bool is_set = (i < 32) ? (popup_flags & (1 << i)) : (popup_flags2 & (1 << (i - 32)));
+		SCP_string gauge_id = gauge_map.get_string_id_from_numeric_id(i);
+
+		if (!gauge_id.empty()) {
+			HUD_config.set_gauge_popup(gauge_id, is_set);
+		}
+	}
 
 	// settings
-	HUD_config.num_msg_window_lines = cfread_ubyte(cfp);
+	SCP_UNUSED(cfread_ubyte(cfp));// Deprecated but still read for file compatibility 3/7/2025
+	SCP_UNUSED(cfread_int(cfp));// Deprecated but still read for file compatibility 3/7/2025
 
-	HUD_config.rp_flags = cfread_int(cfp);
 	HUD_config.rp_dist = cfread_int(cfp);
 	if (HUD_config.rp_dist < 0 || HUD_config.rp_dist >= RR_MAX_RANGES) {
 		ReleaseWarning(LOCATION, "Campaign file has invalid radar range %d, setting to default.\n", HUD_config.rp_dist);
@@ -991,9 +1059,9 @@ void pilotfile::csg_read_hud()
 
 	// basic colors
 	HUD_config.main_color = cfread_int(cfp);
-	if (HUD_config.main_color < 0 || HUD_config.main_color >= HUD_COLOR_SIZE) {
+	if (HUD_config.main_color < 0 || HUD_config.main_color >= NUM_HUD_COLOR_PRESETS) {
 		ReleaseWarning(LOCATION, "Campaign file has invalid main color selection %i, setting to default.\n", HUD_config.main_color);
-		HUD_config.main_color = HUD_COLOR_GREEN;
+		HUD_config.main_color = HUD_COLOR_PRESET_1;
 		strikes++;
 	}
 
@@ -1013,7 +1081,7 @@ void pilotfile::csg_read_hud()
 	// gauge-specific colors
 	int num_gauges = cfread_int(cfp);
 
-	for (idx = 0; idx < num_gauges; idx++) {
+	for (int idx = 0; idx < num_gauges; idx++) {
 		ubyte red = cfread_ubyte(cfp);
 		ubyte green = cfread_ubyte(cfp);
 		ubyte blue = cfread_ubyte(cfp);
@@ -1023,30 +1091,61 @@ void pilotfile::csg_read_hud()
 			continue;
 		}
 
-		HUD_config.clr[idx].red = red;
-		HUD_config.clr[idx].green = green;
-		HUD_config.clr[idx].blue = blue;
-		HUD_config.clr[idx].alpha = alpha;
+		SCP_string gauge_id = gauge_map.get_string_id_from_numeric_id(idx);
+		if (!gauge_id.empty()) {
+			color clr;
+			gr_init_alphacolor(&clr, red, green, blue, alpha);
+			HUD_config.set_gauge_color(gauge_id, clr);
+		}
 	}
 }
 
 void pilotfile::csg_write_hud()
 {
-	int idx;
-
 	startSection(Section::HUD);
 
-	// flags
-	cfwrite_int(HUD_config.show_flags, cfp);
-	cfwrite_int(HUD_config.show_flags2, cfp);
+	// Get gauge mappings instance
+	const HC_gauge_mappings& gauge_map = HC_gauge_mappings::get_instance();
 
-	cfwrite_int(HUD_config.popup_flags, cfp);
-	cfwrite_int(HUD_config.popup_flags2, cfp);
+	// Initialize bitfields
+	int show_flags = 0, show_flags2 = 0;
+	int popup_flags = 0, popup_flags2 = 0;
+
+	// Convert show_flags_map to bitfield
+	for (int i = 0; i < 64; i++) {
+		SCP_string gauge_id = gauge_map.get_string_id_from_numeric_id(i);
+		if (!gauge_id.empty() && HUD_config.is_gauge_visible(gauge_id)) {
+			if (i < 32) {
+				show_flags |= (1 << i);
+			} else {
+				show_flags2 |= (1 << (i - 32));
+			}
+		}
+	}
+
+	// Convert popup_flags_map to bitfield
+	for (int i = 0; i < 64; i++) {
+		SCP_string gauge_id = gauge_map.get_string_id_from_numeric_id(i);
+		if (!gauge_id.empty() && HUD_config.is_gauge_popup(gauge_id)) {
+			if (i < 32) {
+				popup_flags |= (1 << i);
+			} else {
+				popup_flags2 |= (1 << (i - 32));
+			}
+		}
+	}
+
+	// flags
+	cfwrite_int(show_flags, cfp);
+	cfwrite_int(show_flags2, cfp);
+
+	cfwrite_int(popup_flags, cfp);
+	cfwrite_int(popup_flags2, cfp);
 
 	// settings
-	cfwrite_ubyte(HUD_config.num_msg_window_lines, cfp);
+	cfwrite_ubyte(0, cfp);// Deprecated but still written for file compatibility 3/7/2025
+	cfwrite_int(0, cfp);// Deprecated but still written for file compatibility 3/7/2025
 
-	cfwrite_int(HUD_config.rp_flags, cfp);
 	cfwrite_int(HUD_config.rp_dist, cfp);
 
 	// basic colors
@@ -1056,11 +1155,15 @@ void pilotfile::csg_write_hud()
 	// gauge-specific colors
 	cfwrite_int(NUM_HUD_GAUGES, cfp);
 
-	for (idx = 0; idx < NUM_HUD_GAUGES; idx++) {
-		cfwrite_ubyte(HUD_config.clr[idx].red, cfp);
-		cfwrite_ubyte(HUD_config.clr[idx].green, cfp);
-		cfwrite_ubyte(HUD_config.clr[idx].blue, cfp);
-		cfwrite_ubyte(HUD_config.clr[idx].alpha, cfp);
+	for (int idx = 0; idx < NUM_HUD_GAUGES; idx++) {
+		// Get the gauge string ID from numeric ID
+		SCP_string gauge_id = gauge_map.get_string_id_from_numeric_id(idx);
+		color clr = HUD_config.get_gauge_color(gauge_id);
+
+		cfwrite_ubyte(clr.red, cfp);
+		cfwrite_ubyte(clr.green, cfp);
+		cfwrite_ubyte(clr.blue, cfp);
+		cfwrite_ubyte(clr.alpha, cfp);
 	}
 
 	endSection();
@@ -1135,55 +1238,47 @@ void pilotfile::csg_write_variables()
 void pilotfile::csg_read_settings()
 {
 	clamped_range_warnings.clear();
+
 	// sound/voice/music
-	if (!Using_in_game_options) {
-		float temp_volume = cfread_float(cfp);
-		clamp_value_with_warn(&temp_volume, 0.f, 1.f, "Effects Volume");
-		snd_set_effects_volume(temp_volume);
+	float temp_volume = cfread_float(cfp);
+	clamp_value_with_warn(&temp_volume, 0.f, 1.f, "Effects Volume");
+	snd_set_effects_volume(temp_volume);
+	options::OptionsManager::instance()->set_ingame_range_option("Audio.Effects", Master_sound_volume);
 
-		temp_volume = cfread_float(cfp);
-		clamp_value_with_warn(&temp_volume, 0.f, 1.f, "Music Volume");
-		event_music_set_volume(temp_volume);
+	temp_volume = cfread_float(cfp);
+	clamp_value_with_warn(&temp_volume, 0.f, 1.f, "Music Volume");
+	event_music_set_volume(temp_volume);
+	options::OptionsManager::instance()->set_ingame_range_option("Audio.Music", Master_event_music_volume);
 
-		temp_volume = cfread_float(cfp);
-		clamp_value_with_warn(&temp_volume, 0.f, 1.f, "Voice Volume");
-		snd_set_voice_volume(temp_volume);
+	temp_volume = cfread_float(cfp);
+	clamp_value_with_warn(&temp_volume, 0.f, 1.f, "Voice Volume");
+	snd_set_voice_volume(temp_volume);
+	options::OptionsManager::instance()->set_ingame_range_option("Audio.Voice", Master_voice_volume);
 
-		Briefing_voice_enabled = cfread_int(cfp) != 0;
-	} else {
-		// The values are set by the in-game menu but we still need to read the int from the file to maintain the
-		// correct offset
-		cfread_float(cfp);
-		cfread_float(cfp);
-		cfread_float(cfp);
-
-		cfread_int(cfp);
-	}
+	Briefing_voice_enabled = cfread_int(cfp) != 0;
+	options::OptionsManager::instance()->set_ingame_binary_option("Audio.BriefingVoice", Briefing_voice_enabled);
 
 
 	// skill level
 	Game_skill_level = cfread_int(cfp);
 	clamp_value_with_warn(&Game_skill_level, 0, 4, "Game Skill Level");
+	options::OptionsManager::instance()->set_ingame_range_option("Game.SkillLevel", Game_skill_level);
 
 	// input options
-	if (!Using_in_game_options) {
-		Use_mouse_to_fly   = cfread_int(cfp) != 0;
-		Mouse_sensitivity  = cfread_int(cfp);
-		clamp_value_with_warn(&Mouse_sensitivity, 0, 9, "Mouse Sensitivity");
+	Use_mouse_to_fly   = cfread_int(cfp) != 0;
+	options::OptionsManager::instance()->set_ingame_binary_option("Input.UseMouse", Use_mouse_to_fly);
 
-		Joy_sensitivity    = cfread_int(cfp);
-		clamp_value_with_warn(&Joy_sensitivity, 0, 9, "Joystick Sensitivity");
+	Mouse_sensitivity  = cfread_int(cfp);
+	clamp_value_with_warn(&Mouse_sensitivity, 0, 9, "Mouse Sensitivity");
+	options::OptionsManager::instance()->set_ingame_range_option("Input.MouseSensitivity", Mouse_sensitivity);
 
-		Joy_dead_zone_size = cfread_int(cfp);
-		clamp_value_with_warn(&Joy_dead_zone_size, 0, 45, "Joystick Deadzone");
+	Joy_sensitivity    = cfread_int(cfp);
+	clamp_value_with_warn(&Joy_sensitivity, 0, 9, "Joystick Sensitivity");
+	options::OptionsManager::instance()->set_ingame_range_option("Input.JoystickSensitivity", Joy_sensitivity);
 
-	} else {
-		// The values are set by the in-game menu but we still need to read the int from the file to maintain the correct offset
-		cfread_int(cfp);
-		cfread_int(cfp);
-		cfread_int(cfp);
-		cfread_int(cfp);
-	}
+	Joy_dead_zone_size = cfread_int(cfp);
+	clamp_value_with_warn(&Joy_dead_zone_size, 0, 45, "Joystick Deadzone");
+	options::OptionsManager::instance()->set_ingame_range_option("Input.JoystickDeadZone", Joy_dead_zone_size);
 
 	if (csg_ver < 3) {
 		// detail
@@ -1286,7 +1381,7 @@ void pilotfile::csg_read_controls()
 		cfread_string(buf, sizeof(buf), cfp);
 
 		auto it = std::find_if(Control_config_presets.begin(), Control_config_presets.end(),
-		                       [buf](const CC_preset& preset) { return preset.name == buf; });
+		                       [&buf](const CC_preset& preset) { return preset.name == buf; });
 
 		if (it == Control_config_presets.end()) {
 			Assertion(!Control_config_presets.empty(), "[CSG] Error reading CSG! Control_config_presets empty; Get a coder!");
@@ -1490,7 +1585,7 @@ void pilotfile::csg_write_container(const sexp_container &container)
 	}
 }
 
-void pilotfile::csg_reset_data()
+void pilotfile::csg_reset_data(bool reset_ships_and_weapons)
 {
 	int idx;
 	cmission *missionp;
@@ -1505,12 +1600,14 @@ void pilotfile::csg_reset_data()
 	p->stats.init();
 
 	// zero out allowed ships/weapons
-	memset(Campaign.ships_allowed, 0, sizeof(Campaign.ships_allowed));
-	memset(Campaign.weapons_allowed, 0, sizeof(Campaign.weapons_allowed));
+	if (reset_ships_and_weapons) {
+		memset(Campaign.ships_allowed, 0, sizeof(Campaign.ships_allowed));
+		memset(Campaign.weapons_allowed, 0, sizeof(Campaign.weapons_allowed));
+	}
 
 	// reset campaign status
 	Campaign.prev_mission = -1;
-	Campaign.next_mission = -1;
+	Campaign.next_mission = 0;
 	Campaign.num_missions_completed = 0;
 
 	// techroom reset
@@ -1520,30 +1617,21 @@ void pilotfile::csg_reset_data()
 	Campaign.persistent_variables.clear();
 	Campaign.red_alert_variables.clear();
 
+	// clear out containers
+	Campaign.persistent_containers.clear();
+	Campaign.red_alert_containers.clear();
+
 	// clear red alert data
-	Red_alert_wingman_status.clear();
+	Red_alert_ship_status.clear();
+	Red_alert_wing_status.clear();
 
 	// clear out mission stuff
 	for (idx = 0; idx < MAX_CAMPAIGN_MISSIONS; idx++) {
 		missionp = &Campaign.missions[idx];
 
-		if (missionp->goals) {
-			missionp->num_goals = 0;
-			vm_free(missionp->goals);
-			missionp->goals = NULL;
-		}
-
-		if (missionp->events) {
-			missionp->num_events = 0;
-			vm_free(missionp->events);
-			missionp->events = NULL;
-		}
-
-		if (missionp->variables) {
-			missionp->num_variables = 0;
-			vm_free(missionp->variables);
-			missionp->variables = NULL;
-		}
+		missionp->goals.clear();
+		missionp->events.clear();
+		missionp->variables.clear();
 
 		missionp->stats.init();
 	}
@@ -1572,8 +1660,7 @@ void pilotfile::csg_close()
 
 bool pilotfile::load_savefile(player *_p, const char *campaign)
 {
-	char base[_MAX_FNAME] = { '\0' };
-	std::ostringstream buf;
+	SCP_string campaign_filename;
 
 	if (Game_mode & GM_MULTIPLAYER) {
 		return false;
@@ -1587,18 +1674,18 @@ bool pilotfile::load_savefile(player *_p, const char *campaign)
 	Assert( (Player_num >= 0) && (Player_num < MAX_PLAYERS) );
 	p = _p;
 
+	auto base = util::get_file_part(campaign);
+	// do a sanity check, but don't arbitrarily drop any extension in case the filename contains a period
+	Assertion(!stristr(base, FS_CAMPAIGN_FILE_EXT), "The campaign should not have an extension at this point!");
+
 	// build up filename for the savefile...
-	_splitpath((char*)campaign, NULL, NULL, base, NULL);
-
-	buf << p->callsign << "." << base << ".csg";
-
-	filename = buf.str().c_str();
+	sprintf(filename, NOX("%s.%s.csg"), p->callsign, base);
 
 	// if campaign file doesn't exist, abort so we don't load irrelevant data
-	buf.str(std::string());
-	buf << base << FS_CAMPAIGN_FILE_EXT;
-	if ( !cf_exists_full((char*)buf.str().c_str(), CF_TYPE_MISSIONS) ) {
-		mprintf(("CSG => Unable to find campaign file '%s'!\n", buf.str().c_str()));
+	campaign_filename = base;
+	campaign_filename += FS_CAMPAIGN_FILE_EXT;
+	if ( !cf_exists_full(campaign_filename.c_str(), CF_TYPE_MISSIONS) ) {
+		mprintf(("CSG => Unable to find campaign file '%s'!\n", campaign_filename.c_str()));
 		return false;
 	}
 
@@ -1606,7 +1693,7 @@ bool pilotfile::load_savefile(player *_p, const char *campaign)
 	m_data_invalid = false;
 
 	// open it, hopefully...
-	cfp = cfopen(filename.c_str(), "rb", CFILE_NORMAL, CF_TYPE_PLAYERS, false,
+	cfp = cfopen(filename.c_str(), "rb", CF_TYPE_PLAYERS, false,
 	             CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
 
 	if ( !cfp ) {
@@ -1627,7 +1714,7 @@ bool pilotfile::load_savefile(player *_p, const char *campaign)
 
 	mprintf(("CSG => Loading '%s' with version %d...\n", filename.c_str(), (int)csg_ver));
 
-	csg_reset_data();
+	csg_reset_data(true);
 
 	// the point of all this: read in the CSG contents
 	while ( !cfeof(cfp) ) {
@@ -1739,6 +1826,13 @@ bool pilotfile::load_savefile(player *_p, const char *campaign)
 		}
 	}
 
+	mprintf(("HUDPREFS => Loading extended player HUD preferences...\n"));
+	hud_config_load_player_prefs(p->callsign); 
+
+	// Probably don't need to persist these to disk but it'll make sure on next boot we start with these campaign options set
+	// The github tests don't know what to do with the ini file so I guess we'll skip this for now
+	//options::OptionsManager::instance()->persistChanges();
+
 	// if the campaign (for whatever reason) doesn't have a squad image, use the multi one
 	if (p->s_squad_filename[0] == '\0') {
 		strcpy_s(p->s_squad_filename, p->m_squad_filename);
@@ -1755,9 +1849,6 @@ bool pilotfile::load_savefile(player *_p, const char *campaign)
 
 bool pilotfile::save_savefile()
 {
-	char base[_MAX_FNAME] = { '\0' };
-	std::ostringstream buf;
-
 	if (Game_mode & GM_MULTIPLAYER) {
 		return false;
 	}
@@ -1770,12 +1861,12 @@ bool pilotfile::save_savefile()
 		return false;
 	}
 
+	auto base = util::get_file_part(Campaign.filename);
+	// do a sanity check, but don't arbitrarily drop any extension in case the filename contains a period
+	Assertion(!stristr(base, FS_CAMPAIGN_FILE_EXT), "The campaign should not have an extension at this point!");
+
 	// build up filename for the savefile...
-	_splitpath(Campaign.filename, NULL, NULL, base, NULL);
-
-	buf << p->callsign << "." << base << ".csg";
-
-	filename = buf.str().c_str();
+	sprintf(filename, NOX("%s.%s.csg"), p->callsign, base);
 
 	// make sure that we can actually save this safely
 	if (m_data_invalid) {
@@ -1787,10 +1878,11 @@ bool pilotfile::save_savefile()
 	// assertion before writing so that we don't corrupt the .csg by asserting halfway through writing
 	// assertion should also prevent loss of major campaign progress
 	// i.e. lose one mission, not several missions worth (in theory)
-	Assertion(Red_alert_wingman_status.size() <= MAX_SHIPS, "Invalid number of Red_alert_wingman_status entries: " SIZE_T_ARG "\n", Red_alert_wingman_status.size());
+	Assertion(Red_alert_ship_status.size() <= MAX_SHIPS, "Invalid number of Red_alert_ship_status entries: " SIZE_T_ARG "\n", Red_alert_ship_status.size());
+	Assertion(Red_alert_wing_status.size() <= MAX_WINGS, "Invalid number of Red_alert_wing_status entries: " SIZE_T_ARG "\n", Red_alert_wing_status.size());
 
 	// open it, hopefully...
-	cfp = cfopen(filename.c_str(), "wb", CFILE_NORMAL, CF_TYPE_PLAYERS, false,
+	cfp = cfopen(filename.c_str(), "wb", CF_TYPE_PLAYERS, false,
 	             CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
 
 	if ( !cfp ) {
@@ -1836,12 +1928,28 @@ bool pilotfile::save_savefile()
 	mprintf(("CSG => Saving:  Containers...\n"));
 	csg_write_containers();
 
+	mprintf(("HUDPREFS => Saving player HUD preferences (testing)...\n"));
+	hud_config_save_player_prefs(p->callsign);
+
 	// Done!
 	mprintf(("CSG => Saving complete!\n"));
 
 	csg_close();
 
 	return true;
+}
+
+void pilotfile::clear_savefile(bool reset_ships_and_weapons)
+{
+	if (Game_mode & GM_MULTIPLAYER) {
+		return;
+	}
+
+	// set player ptr first thing
+	Assert((Player_num >= 0) && (Player_num < MAX_PLAYERS));
+	p = &Players[Player_num];
+
+	csg_reset_data(reset_ships_and_weapons);
 }
 
 /*
@@ -1856,7 +1964,7 @@ bool pilotfile::get_csg_rank(int *rank)
 	p = &t_csg;
 
 	// filename has already been set
-	cfp = cfopen(filename.c_str(), "rb", CFILE_NORMAL, CF_TYPE_PLAYERS, false,
+	cfp = cfopen(filename.c_str(), "rb", CF_TYPE_PLAYERS, false,
 	             CF_LOCATION_ROOT_USER | CF_LOCATION_ROOT_GAME | CF_LOCATION_TYPE_ROOT);
 
 	if ( !cfp ) {

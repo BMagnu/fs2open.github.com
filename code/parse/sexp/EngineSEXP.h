@@ -19,9 +19,10 @@ class EngineSEXPFactory {
 
 	SCP_string _helpText;
 
-	int _category = -1;
+	int _category = OP_CATEGORY_NONE;
+	SCP_string _categoryName;
 
-	int _subcategory = -1;
+	int _subcategory = OP_SUBCATEGORY_NONE;
 	SCP_string _subcategoryName;
 
 	int _returnType = -1;
@@ -35,6 +36,8 @@ class EngineSEXPFactory {
 		bool optional_marker = false;
 		bool varargs_marker = false;
 	};
+	static bool isArgumentOptional(const argument& arg);
+	static bool isArgumentVarargsMarker(const argument& arg);
 
 	SCP_vector<argument> _arguments;
 
@@ -104,6 +107,17 @@ class EngineSEXPFactory {
 	 * @return The factory
 	 */
 	EngineSEXPFactory& category(int cat);
+	/**
+	 * @brief Sets the category of the SEXP.
+	 *
+	 * This can be a new category which will be created automatically.
+	 *
+	 * This or the number variant is a required value!
+	 *
+	 * @param cat The name of the category
+	 * @return The factory
+	 */
+	EngineSEXPFactory& category(const SCP_string& cat);
 
 	/**
 	 * @brief The subcategory of this SEXP
@@ -154,7 +168,7 @@ class EngineSEXP : public DynamicSEXP {
 	int getMinimumArguments() const override;
 	int getMaximumArguments() const override;
 	int getArgumentType(int argnum) const override;
-	int execute(int node) override;
+	int execute(int node, int parent_node = -1) override;
 	int getReturnType() override;
 	int getSubcategory() override;
 	int getCategory() override;
@@ -171,6 +185,7 @@ class EngineSEXP : public DynamicSEXP {
 
   private:
 	void setCategory(int category);
+	void setCategoryName(SCP_string category);
 	void setSubcategory(int subcategory);
 	void setSubcategoryName(SCP_string subcategory);
 	void setHelpText(SCP_string helpText);
@@ -178,9 +193,10 @@ class EngineSEXP : public DynamicSEXP {
 	void initArguments(int minArgs, int maxArgs, SCP_vector<int> argTypes, SCP_vector<int> varargsTypes);
 	void setAction(EngineSexpAction action);
 
-	int _category = -1;
+	int _category = OP_CATEGORY_NONE;
+	SCP_string _categoryName;
 
-	int _subcategory = -1;
+	int _subcategory = OP_SUBCATEGORY_NONE;
 	SCP_string _subcategoryName;
 
 	int _returnType = -1;

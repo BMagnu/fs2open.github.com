@@ -11,6 +11,7 @@
 
 #include "globalincs/pstypes.h"
 #include "radar/radarsetup.h"
+#include "gamesnd/gamesnd.h"
 
 class object;
 struct blip;
@@ -25,8 +26,8 @@ class HudGaugeRadarDradis: public HudGaugeRadar
 	int target_brackets;
 	int unknown_contact_icon;
 
-	float sweep_duration; // in seconds
-	float sweep_percent;
+	int sweep_duration; // in milliseconds
+	float sweep_angle;
 
 	matrix view_perturb;
 	vec3d Orb_eye_position;
@@ -55,20 +56,20 @@ class HudGaugeRadarDradis: public HudGaugeRadar
 	gamesnd_id arrival_beep_snd;
 	gamesnd_id departure_beep_snd;
 
-	gamesnd_id m_stealth_arrival_snd;
+	gamesnd_id stealth_arrival_snd;
 	gamesnd_id stealth_departure_snd;
 
 	int arrival_beep_delay;
 	int departure_beep_delay;
 
-	int arrival_beep_next_check;
-	int departure_beep_next_check;
+	TIMESTAMP arrival_beep_next_check;
+	TIMESTAMP departure_beep_next_check;
 protected:
 	bool shouldDoSounds();
 public:
 	HudGaugeRadarDradis();
 	void initBitmaps(char* fname_xy, char* fname_xz_yz, char* fname_sweep, char* fname_target_brackets, char* fname_unknown);
-	void initSound(gamesnd_id loop_snd, float _loop_sound_volume,  gamesnd_id arrival_snd, gamesnd_id departue_snd, gamesnd_id stealth_arrival_snd, gamesnd_id stealth_departue_snd, float arrival_delay, float departure_delay);
+	void initSound(gamesnd_id loop_snd, float _loop_sound_volume,  gamesnd_id arrival_snd, gamesnd_id departure_snd, gamesnd_id _stealth_arrival_snd, gamesnd_id _stealth_departure_snd, float arrival_delay, float departure_delay);
 
 	void blipDrawDistorted(blip *b, vec3d *pos, float alpha);
 	void blipDrawFlicker(blip *b, vec3d *pos, float alpha);
@@ -79,7 +80,7 @@ public:
 	void doneDrawingHtl();
 	void drawOutlinesHtl();
 	void setupViewHtl();
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void pageIn() override;
 	void plotBlip(blip* b, vec3d *pos, float *alpha);
 

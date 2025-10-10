@@ -14,6 +14,7 @@
 
 #include "stats/scoring.h"
 #include "parse/sexp.h"
+#include "cfile/cfile.h"
 #include "parse/sexp_container.h"
 
 struct sexp_variable;
@@ -53,9 +54,16 @@ struct sexp_variable;
 // but the flag is kept in order to maintain compatibility with older campaigns
 #define CMISSION_FLAG_BASTION	(1<<0)	// set if stationed on Bastion, else Galatea
 
-#define CMISSION_FLAG_SKIPPED	(1<<1)	// set if skipped, else not
-#define CMISSION_FLAG_HAS_LOOP	(1<<2)	// mission loop, e.g. FS2 SOC loops
-#define CMISSION_FLAG_HAS_FORK	(1<<3)	// campaign fork, e.g. Scroll or BWO (mutually exclusive with loop)
+#define CMISSION_FLAG_SKIPPED				(1<<1)	// set if skipped, else not
+#define CMISSION_FLAG_HAS_LOOP				(1<<2)	// mission loop, e.g. FS2 SOC loops
+#define CMISSION_FLAG_HAS_FORK				(1<<3)	// campaign fork, e.g. Scroll or BWO (mutually exclusive with loop)
+
+// internal flags start from the end, except for some flags that are grandfathered in
+#define CMISSION_FLAG_FRED_LOAD_PENDING		(1<<31)	// originally handled by num_goals being set to -1
+#define CMISSION_FIRST_INTERNAL_FLAG		CMISSION_FLAG_FRED_LOAD_PENDING
+
+// all flags below FIRST_INTERNAL_FLAG, except SKIPPED, HAS_LOOP, and HAS_FORK
+#define CMISSION_EXTERNAL_FLAG_MASK		((static_cast<unsigned int>(CMISSION_FIRST_INTERNAL_FLAG) - 1) & ~CMISSION_FLAG_SKIPPED & ~CMISSION_FLAG_HAS_LOOP & ~CMISSION_FLAG_HAS_FORK)
 
 #define CAMPAIGN_LOOP_MISSION_UNINITIALIZED	-2
 
@@ -87,12 +95,9 @@ public:
 	char				briefing_cutscene[NAME_LENGTH];	// name of the cutscene to be played before this mission
 	int				formula;					// sexpression used to determine mission branching.
 	int				completed;				// has the player completed this mission
-	int				num_goals;				// number of goals this mission had
-	mgoal			*goals;					// malloced array of mgoals (of num_goals size) which has the goal completion status
-	int				num_events;				// number of events this mission had
-	mevent			*events;				// malloced array of mevents (of num_events size) which has event completion status
-	int				num_variables;			// number of variables this mission had - Goober5000
-	sexp_variable	*variables;				// malloced array of sexp_variables (of num_variables size) containing mission-persistent variables - Goober5000
+	SCP_vector<mgoal> goals;				// vector of mgoals which has the goal completion status
+	SCP_vector<mevent> events;				// vector of mevents which has the event completion status
+	SCP_vector<sexp_variable> variables;	// vector of sexp_variables (of num_variables size) containing mission-persistent variables - Goober5000
 	int				mission_loop_formula;	// formula to determine whether to allow a side loop
 	char			*mission_branch_desc;	// message in popup
 	char			*mission_branch_brief_anim;
@@ -101,6 +106,7 @@ public:
 	int				pos;					// what x position on level it's on (Fred)
 	int				flags;
 	SCP_string		main_hall;				// which main hall the player is in - converted to SCP_string by CommanderDJ
+	SCP_string		substitute_main_hall;	// really only needed for FRED
 	ubyte			debrief_persona_index;	// which persona is used for ranks/badges - Goober5000
 	scoring_struct	stats;
 };
@@ -109,14 +115,14 @@ class campaign
 {
 public:
 	char	name[NAME_LENGTH];						// name of the campaign
-	char	filename[MAX_FILENAME_LEN];				// filename the campaign info is in
+	char	filename[CF_MAX_PATHNAME_LENGTH];			// filename the campaign info is in
 	char	*desc;									// description of campaign
 	int		type;									// type of campaign
 	int		flags;									// flags - Goober5000
 	int		num_missions;							// number of missions in the campaign
 	int		num_missions_completed;					// number of missions in the campaign that have been flown
 	int		current_mission;						// the current mission that the player is playing.  Only valid during the mission
-	int		next_mission;							// number of the next mission to fly when comtinuing the campaign.  Always valid
+	int		next_mission;							// number of the next mission to fly when continuing the campaign.  Always valid
 	int		prev_mission;							// mission that we just came from.  Always valid
 	int		loop_enabled;							// whether mission loop is chosen - true during a loop, false otherwise
 	int		loop_mission;							// mission number of misssion loop (if any)
@@ -130,6 +136,7 @@ public:
 	SCP_vector<sexp_variable> red_alert_variables;		// state of the variables in the previous mission of a Red Alert scenario.
 	SCP_vector<sexp_container> persistent_containers;	// These containers will be saved at the end of a mission
 	SCP_vector<sexp_container> red_alert_containers;		// state of the containers in the previous mission of a Red Alert scenario.
+	SCP_map<SCP_string, SCP_string> custom_data;        // Custom data for the campaign
 
 	campaign()
 		: desc(nullptr), num_missions(0)
@@ -156,8 +163,8 @@ extern SCP_vector<SCP_string> Ignored_campaigns;
 
 extern char Default_campaign_file_name[MAX_FILENAME_LEN - 4];
 
-// if the campaign file is missing this will get set for us to check against
-extern int Campaign_file_missing;
+extern bool Campaign_file_missing;	// if the campaign file is missing this will get set for us to check against
+extern int Campaign_load_failure;
 
 /*
  * initialise Player_loadout with default values
@@ -168,7 +175,7 @@ void player_loadout_init();
 void mission_campaign_init( void );
 
 // load up and initialize a new campaign
-int mission_campaign_load(const char* filename, player* pl = nullptr, int load_savefile = 1, bool reset_stats = true);
+int mission_campaign_load(const char* filename, const char* full_path = nullptr, player* pl = nullptr, int load_savefile = 1);
 
 bool campaign_is_ignored(const char *filename);
 
@@ -177,7 +184,7 @@ extern void mission_campaign_savefile_delete(const char* cfilename);
 extern void mission_campaign_delete_all_savefiles( char *pilot_name );
 
 // if a given campaign is a multiplayer campaign, we can load and save the multiplayer info portion with these functions
-extern int mission_campaign_parse_is_multi(char *filename, char *name);
+extern int mission_campaign_parse_is_multi(const char *filename, char *name);
 
 // function which sets up internal variable for player to play next mission in the campaign
 extern int mission_campaign_next_mission( void );
@@ -203,19 +210,17 @@ extern void mission_campaign_maybe_play_movie(int type);
 // save persistent information
 extern void mission_campaign_save_persistent( int type, int index );
 
-void mission_campaign_savefile_generate_root(char *filename, player *pl = NULL);
-
 // The following are functions I added to set up the globals and then
 // execute the corresponding mission_campaign_savefile functions.
 
 // get name and type of specified campaign file
-int mission_campaign_get_info(const char *filename, char *name, int *type, int *max_players, char **desc = nullptr, char **first_mission = nullptr);
+bool mission_campaign_get_info(const char *filename, SCP_string &name, int *type, int *max_players, char **desc = nullptr, char **first_mission = nullptr);
 
 // get a listing of missions in a campaign
 int mission_campaign_get_mission_list(const char *filename, char **list, int max);
 
 // load up a campaign for the current player.
-int mission_load_up_campaign( player *p = NULL );
+int mission_load_up_campaign(bool fall_back_from_current = false);
 
 // stores mission goals and events in Campaign struct
 void mission_campaign_store_goals_and_events();
@@ -236,13 +241,13 @@ void mission_campaign_eval_next_mission();
 int mission_campaign_previous_mission();
 
 // proceeds to next mission in campaign
-void mission_campaign_skip_to_next(int start_game = 1);
+void mission_campaign_skip_to_next();
 
 // break out of loop
 void mission_campaign_exit_loop();
 
 // jump to specified mission
-void mission_campaign_jump_to_mission(const char* name, bool no_skip = false);
+bool mission_campaign_jump_to_mission(const char* filename, bool no_skip = false);
 
 // stuff for the end of the campaign of the single player game
 void mission_campaign_end_init();

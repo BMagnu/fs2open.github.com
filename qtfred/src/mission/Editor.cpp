@@ -6,6 +6,7 @@
 #include <clocale>
 
 #include <SDL.h>
+#include <ai/ai.h>
 #include <sound/audiostr.h>
 #include <parse/parselo.h>
 #include <missionui/fictionviewer.h>
@@ -18,6 +19,7 @@
 #include <starfield/nebula.h>
 #include <object/objectdock.h>
 #include <localization/fhash.h>
+#include <scripting/global_hooks.h>
 
 #include "iff_defs/iff_defs.h" // iff_init
 #include "object/object.h" // obj_init
@@ -32,17 +34,18 @@
 
 #include "object.h"
 #include "management.h"
+#include "util.h"
 #include "FredApplication.h"
 
 namespace {
 
-int query_referenced_in_ai_goals(int type, const char* name) {
+std::pair<int, sexp_src> query_referenced_in_ai_goals(sexp_ref_type type, const char* name) {
 	int i;
 
 	for (i = 0; i < MAX_AI_INFO; i++) {  // loop through all Ai_info entries
 		if (Ai_info[i].shipnum >= 0) {  // skip if unused
 			if (query_referenced_in_ai_goals(Ai_info[i].goals, type, name)) {
-				return Ai_info[i].shipnum | SRC_SHIP_ORDER;
+				return std::make_pair(Ai_info[i].shipnum, sexp_src::SHIP_ORDER);
 			}
 		}
 	}
@@ -50,12 +53,12 @@ int query_referenced_in_ai_goals(int type, const char* name) {
 	for (i = 0; i < MAX_WINGS; i++) {
 		if (Wings[i].wave_count) {
 			if (query_referenced_in_ai_goals(Wings[i].ai_goals, type, name)) {
-				return i | SRC_WING_ORDER;
+				return std::make_pair(i, sexp_src::WING_ORDER);
 			}
 		}
 	}
 
-	return 0;
+	return std::make_pair(-1, sexp_src::NONE);
 }
 
 // Used in the FRED drop-down menu and in error_check_initial_orders
@@ -64,12 +67,16 @@ int query_referenced_in_ai_goals(int type, const char* name) {
 ai_goal_list Ai_goal_list[] = {
 	{ "Waypoints",				AI_GOAL_WAYPOINTS,			0 },
 	{ "Waypoints once",			AI_GOAL_WAYPOINTS_ONCE,		0 },
-	{ "Attack",					AI_GOAL_CHASE | AI_GOAL_CHASE_WING,	0 },
+	{ "Attack",					AI_GOAL_CHASE,				0 },
+	{ "Attack",					AI_GOAL_CHASE_WING,			0 },	// duplicate needed because we can no longer use bitwise operators
 	{ "Attack any ship",		AI_GOAL_CHASE_ANY,			0 },
 	{ "Attack ship class",		AI_GOAL_CHASE_SHIP_CLASS,	0 },
-	{ "Guard",					AI_GOAL_GUARD | AI_GOAL_GUARD_WING, 0 },
+	{ "Guard",					AI_GOAL_GUARD,				0 },
+	{ "Guard",					AI_GOAL_GUARD_WING,			0 },	// duplicate needed because we can no longer use bitwise operators
 	{ "Disable ship",			AI_GOAL_DISABLE_SHIP,		0 },
+	{ "Disable ship (tactical)",AI_GOAL_DISABLE_SHIP_TACTICAL, 0 },
 	{ "Disarm ship",			AI_GOAL_DISARM_SHIP,		0 },
+	{ "Disarm ship (tactical)",	AI_GOAL_DISARM_SHIP_TACTICAL, 0 },
 	{ "Destroy subsystem",		AI_GOAL_DESTROY_SUBSYSTEM,	0 },
 	{ "Dock",					AI_GOAL_DOCK,				0 },
 	{ "Undock",					AI_GOAL_UNDOCK,				0 },
@@ -91,15 +98,10 @@ char Fred_alt_names[MAX_SHIPS][NAME_LENGTH + 1];
 
 extern void allocate_parse_text(size_t size);
 
-extern int Nmodel_num;
-extern int Nmodel_instance_num;
-extern matrix Nmodel_orient;
-extern int Nmodel_bitmap;
-
 namespace fso {
 namespace fred {
 	
-Editor::Editor() : currentObject{ -1 }, Shield_sys_teams(Iff_info.size(), 0), Shield_sys_types(MAX_SHIP_CLASSES, 0) {
+Editor::Editor() : currentObject{ -1 }, Shield_sys_teams(Iff_info.size(), GlobalShieldStatus::HasShields), Shield_sys_types(MAX_SHIP_CLASSES, GlobalShieldStatus::HasShields) {
 	connect(fredApp, &FredApplication::onIdle, this, &Editor::update);
 
 	// When the mission changes we need to update all renderers
@@ -128,16 +130,68 @@ void Editor::update() {
 	}
 }
 
+void Editor::maybeUseAutosave(std::string& filepath)
+{
+	// first, just grab the info of this mission
+	if (!parse_main(filepath.c_str(), MPF_ONLY_MISSION_INFO))
+		return;
+	SCP_string created = The_mission.created;
+	CFileLocation res = cf_find_file_location(filepath.c_str(), CF_TYPE_ANY);
+	time_t modified = res.m_time;
+	if (!res.found)
+	{
+		UNREACHABLE("Couldn't find path '%s' even though parse_main() succeeded!", filepath.c_str());
+		return;
+	}
+
+	// now check all the autosaves
+	SCP_string backup_name;
+	CFileLocation backup_res;
+	for (int i = 1; i <= MISSION_BACKUP_DEPTH; ++i)
+	{
+		backup_name = MISSION_BACKUP_NAME;
+		char extension[5];
+		sprintf(extension, ".%.3d", i);
+		backup_name += extension;
+
+		backup_res = cf_find_file_location(backup_name.c_str(), CF_TYPE_MISSIONS);
+		if (backup_res.found && parse_main(backup_res.full_name.c_str(), MPF_ONLY_MISSION_INFO))
+		{
+			SCP_string this_created = The_mission.created;
+			time_t this_modified = backup_res.m_time;
+
+			if (created == this_created && this_modified > modified)
+				break;
+		}
+
+		backup_name.clear();
+	}
+
+	// maybe load from the backup instead
+	if (!backup_name.empty())
+	{
+		SCP_string prompt = "Autosaved file ";
+		prompt += backup_name;
+		prompt += " has a file modification time more recent than the specified file.  Do you want to load the autosave instead?";
+
+		auto z = _lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Question,
+																	"Recover from autosave",
+																	prompt.c_str(),
+																	{ DialogButton::Yes, DialogButton::No });
+		if (z == DialogButton::Yes)
+			filepath = backup_res.full_name;	// replace the specified file with the autosave file
+	}
+}
+
 bool Editor::loadMission(const std::string& mission_name, int flags) {
 	char name[512], * old_name;
 	int i, j, k, ob;
-	int used_pool[MAX_WEAPON_TYPES];
 	object* objp;
 
 	// activate the localizer hash table
 	fhash_flush();
 
-	clearMission();
+	clearMission(flags & MPF_FAST_RELOAD);
 
 	std::string filepath = mission_name;
 	auto res = cf_find_file_location(filepath.c_str(), CF_TYPE_MISSIONS);
@@ -150,28 +204,39 @@ bool Editor::loadMission(const std::string& mission_name, int flags) {
 		}
 	}
 
+	// message 1: required version
 	if (!parse_main(filepath.c_str(), flags)) {
-		if (flags & MPF_IMPORT_FSM) {
-			SCP_string msg;
-			sprintf(msg, "Unable to import the file \"%s\".", filepath.c_str());
+		auto term = (flags & MPF_IMPORT_FSM) ? "import" : "load";
+		SCP_string msg;
 
-			_lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Error,
-																  "Load Error",
-																  msg,
-																  { DialogButton::Ok });
-		} else {
-			SCP_string msg;
-			sprintf(msg, "Unable to load the file \"%s\".", filepath.c_str());
-			_lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Error,
-																  "Load Error",
-																  msg,
-																  { DialogButton::Ok });
+		// the version will have been assigned before loading was aborted
+		if (!gameversion::check_at_least(The_mission.required_fso_version)) {
+			msg += "The file \"";
+			msg += filepath;
+			msg += "\" cannot be ";
+			msg += term;
+			msg += "ed because it requires FSO version ";
+			msg += format_version(The_mission.required_fso_version, true);
+			msg += ".";
 		}
+		else {
+			msg += "Unable to ";
+			msg += term;
+			msg += " the file \"";
+			msg += filepath;
+			msg += "\".";
+		}
+
+		_lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Error,
+																"Load Error",
+																msg,
+																{ DialogButton::Ok });
 		createNewMission();
 
 		return false;
 	}
 
+	// message 2: unknown classes
 	if ((Num_unknown_ship_classes > 0) || (Num_unknown_weapon_classes > 0) || (Num_unknown_loadout_classes > 0)) {
 		if (flags & MPF_IMPORT_FSM) {
 			SCP_string msg;
@@ -190,6 +255,40 @@ bool Editor::loadMission(const std::string& mission_name, int flags) {
 																  "Fred encountered unknown ship/weapon classes when parsing the mission file. This may be due to mission disk data you do not have.",
 																  { DialogButton::Ok });
 		}
+	}
+
+	// message 3: warning about saving under a new version
+	if (!(flags & MPF_IMPORT_FSM) && (The_mission.required_fso_version != LEGACY_MISSION_VERSION) && (MISSION_VERSION > The_mission.required_fso_version)) {
+		SCP_string msg = "This mission's file format is ";
+		msg += format_version(The_mission.required_fso_version, true);
+		msg += ".  When you save this mission, the file format will be migrated to ";
+		msg += format_version(MISSION_VERSION, true);
+		msg += ".  FSO versions earlier than this will not be able to load the mission.";
+
+		_lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Information,
+															  "Mission File Format",
+															  msg,
+															  { DialogButton::Ok });
+	}
+
+	// message 4: check for "immobile" flag migration
+	if (!Fred_migrated_immobile_ships.empty()) {
+		SCP_string msg = "The \"immobile\" ship flag has been superseded by the \"don't-change-position\", and \"don't-change-orientation\" flags.  "
+			"All ships which previously had \"Does Not Move\" checked in the ship flags editor will now have both \"Does Not Change Position\" and "
+			"\"Does Not Change Orientation\" checked.  After you close this dialog, the error checker will check for any potential issues, including "
+			"issues involving these flags.\n\nThe following ships have been migrated:";
+
+		for (int shipnum : Fred_migrated_immobile_ships) {
+			msg += "\n\t";
+			msg += Ships[shipnum].ship_name;
+		}
+
+		truncate_message_lines(msg, 30);
+		_lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Information,
+														"Ship Flag Migration",
+														msg,
+														{ DialogButton::Ok });
+		_lastActiveViewport->Error_checker_checks_potential_issues_once = true;
 	}
 
 	obj_merge_created_list();
@@ -220,7 +319,7 @@ bool Editor::loadMission(const std::string& mission_name, int flags) {
 				old_name = Ships[Wings[i].ship_index[j]].ship_name;
 				if (stricmp(name, old_name) != 0) {  // need to fix name
 					update_sexp_references(old_name, name);
-					ai_update_goal_references(REF_TYPE_SHIP, old_name, name);
+					ai_update_goal_references(sexp_ref_type::SHIP, old_name, name);
 					update_texture_replacements(old_name, name);
 					for (k = 0; k < Num_reinforcements; k++) {
 						if (!strcmp(old_name, Reinforcements[k].name)) {
@@ -233,27 +332,27 @@ bool Editor::loadMission(const std::string& mission_name, int flags) {
 				}
 			}
 		}
-	}
+	} 
 
 	for (i = 0; i < Num_teams; i++) {
-		generate_team_weaponry_usage_list(i, used_pool);
+		generate_team_weaponry_usage_list(i, _weapon_usage[i]);
 		for (j = 0; j < Team_data[i].num_weapon_choices; j++) {
 			// The amount used in wings is always set by a static loadout entry so skip any that were set by Sexp variables
 			if ((!strlen(Team_data[i].weaponry_pool_variable[j]))
 				&& (!strlen(Team_data[i].weaponry_amount_variable[j]))) {
 				// convert weaponry_pool to be extras available beyond the current ships weapons
-				Team_data[i].weaponry_count[j] -= used_pool[Team_data[i].weaponry_pool[j]];
+				Team_data[i].weaponry_count[j] -= _weapon_usage[i][Team_data[i].weaponry_pool[j]];
 				if (Team_data[i].weaponry_count[j] < 0) {
 					Team_data[i].weaponry_count[j] = 0;
 				}
 
 				// zero the used pool entry
-				used_pool[Team_data[i].weaponry_pool[j]] = 0;
+				_weapon_usage[i][Team_data[i].weaponry_pool[j]] = 0;
 			}
 		}
 		// double check the used pool is empty
 		for (j = 0; j < static_cast<int>(Weapon_info.size()); j++) {
-			if (used_pool[j] != 0) {
+			if (_weapon_usage[i][j] != 0) {
 				Warning(LOCATION,
 						"%s is used in wings of team %d but was not in the loadout. Fixing now",
 						Weapon_info[j].name,
@@ -261,7 +360,7 @@ bool Editor::loadMission(const std::string& mission_name, int flags) {
 
 				// add the weapon as a new entry
 				Team_data[i].weaponry_pool[Team_data[i].num_weapon_choices] = j;
-				Team_data[i].weaponry_count[Team_data[i].num_weapon_choices] = used_pool[j];
+				Team_data[i].weaponry_count[Team_data[i].num_weapon_choices] = _weapon_usage[i][j];
 				strcpy_s(Team_data[i].weaponry_amount_variable[Team_data[i].num_weapon_choices], "");
 				strcpy_s(Team_data[i].weaponry_pool_variable[Team_data[i].num_weapon_choices++], "");
 			}
@@ -301,6 +400,12 @@ bool Editor::loadMission(const std::string& mission_name, int flags) {
 	stars_post_level_init();
 
 	missionLoaded(filepath);
+
+	// This hook will allow for scripts to know when a mission has been loaded
+	// which will then allow them to update any LuaEnums that may be related to sexps
+	if (scripting::hooks::FredOnMissionLoad->isActive()) {
+		scripting::hooks::FredOnMissionLoad->run();
+	}
 
 	return true;
 }
@@ -360,7 +465,7 @@ void Editor::unmarkObject(int obj) {
 	}
 }
 
-void Editor::clearMission() {
+void Editor::clearMission(bool fast_reload) {
 	// clean up everything we need to before we reset back to defaults.
 #if 0
     if (Briefing_dialog){
@@ -370,70 +475,39 @@ void Editor::clearMission() {
 
 	allocate_parse_text(PARSE_TEXT_SIZE);
 
-	The_mission.cutscenes.clear();
-	fiction_viewer_reset();
-	cmd_brief_reset();
-	mission_event_shutdown();
-
-	Asteroid_field.num_initial_asteroids = 0;  // disable asteroid field by default.
-	Asteroid_field.speed = 0.0f;
-	vm_vec_make(&Asteroid_field.min_bound, -1000.0f, -1000.0f, -1000.0f);
-	vm_vec_make(&Asteroid_field.max_bound, 1000.0f, 1000.0f, 1000.0f);
-	vm_vec_make(&Asteroid_field.inner_min_bound, -500.0f, -500.0f, -500.0f);
-	vm_vec_make(&Asteroid_field.inner_max_bound, 500.0f, 500.0f, 500.0f);
-	Asteroid_field.has_inner_bound = 0;
-	Asteroid_field.field_type = FT_ACTIVE;
-	Asteroid_field.debris_genre = DG_ASTEROID;
-	Asteroid_field.field_debris_type[0] = -1;
-	Asteroid_field.field_debris_type[1] = -1;
-	Asteroid_field.field_debris_type[2] = -1;
-
-	strcpy_s(Mission_parse_storm_name, "none");
+	mission_init(&The_mission);
 
 	obj_init();
-	model_free_all();                // Free all existing models
-	ai_init();
-	ship_init();
-	jumpnode_level_close();
-	waypoint_level_close();
 
-	Num_wings = 0;
-	for (auto i = 0; i < MAX_WINGS; i++) {
-		Wings[i].wave_count = 0;
-		Wings[i].wing_squad_filename[0] = '\0';
-		Wings[i].wing_insignia_texture = -1;
-	}
+	if (!fast_reload)
+		model_free_all();                // Free all existing models
+
+	ai_init();
+	asteroid_level_init();
+	ship_level_init();
+	nebula_init(Nebula_index, Nebula_pitch, Nebula_bank, Nebula_heading);
 
 	Shield_sys_teams.clear();
-	Shield_sys_teams.resize(Iff_info.size(), 0);
+	Shield_sys_teams.resize(Iff_info.size(), GlobalShieldStatus::HasShields);
 
-	Num_ai_dock_names = 0;
-	Num_reinforcements = 0;
+	for (int i = 0; i < MAX_SHIP_CLASSES; i++) {
+		Shield_sys_types[i] = GlobalShieldStatus::HasShields;
+	}
+
 	setupCurrentObjectIndices(-1);
 
 	auto userName = getUsername();
 
 	time_t currentTime;
 	time(&currentTime);
-	auto tm_info = localtime(&currentTime);
-	char time_buffer[26];
-	strftime(time_buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+	auto timeinfo = localtime(&currentTime);
 
 	strcpy_s(The_mission.name, "Untitled");
-	strcpy_s(The_mission.author, userName.c_str());
-	The_mission.author[NAME_LENGTH - 1] = 0;
-	strcpy_s(The_mission.created, time_buffer);
+	The_mission.author = userName;
+	time_to_mission_info_string(timeinfo, The_mission.created, DATE_TIME_LENGTH - 1);
 	strcpy_s(The_mission.modified, The_mission.created);
-	strcpy_s(The_mission.notes, "This is a FRED2_OPEN created mission.\n");
-	strcpy_s(The_mission.mission_desc, "Put mission description here\n");
-	The_mission.game_type = MISSION_TYPE_SINGLE;
-	strcpy_s(The_mission.squad_name, "");
-	strcpy_s(The_mission.squad_filename, "");
-	The_mission.num_respawns = 3;
-	The_mission.max_respawn_delay = -1;
-
-	Player_starts = 0;
-	Num_teams = 1;
+	strcpy_s(The_mission.notes, "This is a FRED2_OPEN created mission.");
+	strcpy_s(The_mission.mission_desc, "Put mission description here");
 
 	// reset alternate name & callsign stuff
 	for (auto i = 0; i < MAX_SHIPS; i++) {
@@ -458,7 +532,7 @@ void Editor::clearMission() {
 
 		count = 0;
 		for (auto j = 0; j < static_cast<int>(Weapon_info.size()); j++) {
-			if (Weapon_info[j].wi_flags[Weapon::Info_Flags::Player_allowed]) {
+			if (Weapon_info[j].wi_flags[Weapon::Info_Flags::Default_player_weapon]) {
 				if (Weapon_info[j].subtype == WP_LASER) {
 					Team_data[i].weaponry_count[count] = 16;
 				} else {
@@ -474,81 +548,15 @@ void Editor::clearMission() {
 		Team_data[i].num_weapon_choices = count;
 	}
 
-	waypoint_parse_init();
-	Num_mission_events = 0;
-	Num_goals = 0;
 	unmark_all();
-	obj_init();
-	model_free_all();                // Free all existing models
 
 	for (auto& viewport : _viewports) {
 		viewport->resetView();
-	}
-
-	init_sexp();
-	messages_init();
-	brief_reset();
-	debrief_reset();
-	event_music_reset_choices();
-	clear_texture_replacements();
-
-	Event_annotations.clear();
-
-	mission_parse_reset_alt();        // alternate ship type names
-	mission_parse_reset_callsign();
-
-	strcpy(Cargo_names[0], "Nothing");
-	Num_cargo = 1;
-	for (auto& viewport : _viewports) {
 		viewport->resetViewPhysics();
 	}
 
-	// reset background bitmaps and suns
-	stars_pre_level_init();
-	Nebula_index = 0;
-	Mission_palette = 1;
-	Nebula_pitch = (int) ((float) (Random::next() & 0x0fff) * 360.0f / 4096.0f);
-	Nebula_bank = (int) ((float) (Random::next() & 0x0fff) * 360.0f / 4096.0f);
-	Nebula_heading = (int) ((float) (Random::next() & 0x0fff) * 360.0f / 4096.0f);
-	Neb2_awacs = -1.0f;
-	Neb2_poof_flags = 0;
-	strcpy_s(Neb2_texture_name, "");
-	for (size_t i = 0; i < MAX_NEB2_POOFS; i++) {
-		Neb2_poof_flags |= (1 << i);
-	}
-
-	Nmodel_flags = DEFAULT_NMODEL_FLAGS;
-	Nmodel_num = -1;
-	Nmodel_instance_num = -1;
-	vm_set_identity(&Nmodel_orient);
-	Nmodel_bitmap = -1;
-
-	The_mission.contrail_threshold = CONTRAIL_THRESHOLD_DEFAULT;
-
-	// Goober5000
-	The_mission.command_persona = Default_command_persona;
-	strcpy_s(The_mission.command_sender, DEFAULT_COMMAND);
-
-	// Goober5000: reset ALL mission flags, not just nebula!
-	The_mission.flags.reset();
-	The_mission.support_ships.max_support_ships = -1;    // negative means infinite
-	The_mission.support_ships.max_hull_repair_val = 0.0f;
-	The_mission.support_ships.max_subsys_repair_val = 100.0f;
-	The_mission.ai_profile = &Ai_profiles[Default_ai_profile];
-
-	nebula_init(Nebula_filenames[Nebula_index], Nebula_pitch, Nebula_bank, Nebula_heading);
-
-	strcpy_s(The_mission.loading_screen[GR_640], "");
-	strcpy_s(The_mission.loading_screen[GR_1024], "");
-	strcpy_s(The_mission.skybox_model, "");
-	vm_set_identity(&The_mission.skybox_orientation);
-	strcpy_s(The_mission.envmap_name, "");
-	The_mission.skybox_flags = DEFAULT_NMODEL_FLAGS;
-
-	// no sound environment
-	The_mission.sound_environment.id = -1;
-
-	ENVMAP = -1;
+	Event_annotations.clear();
+	Fred_migrated_immobile_ships.clear();
 
 	// free memory from all parsing so far -- see also the stop_parse() in player_select_close() which frees all tbls found during game_init()
 	stop_parse();
@@ -559,13 +567,8 @@ void Editor::clearMission() {
 }
 
 void Editor::initialSetup() {
-	// Get the default player ship
-	Default_player_model = get_default_player_ship_index();
-
-	Id_select_type_jump_node = (int) (Ship_info.size() + 1);
-	Id_select_type_waypoint = (int) (Ship_info.size());
-
-	createNewMission();
+	Id_select_type_waypoint = static_cast<int>(Ship_info.size());
+	Id_select_type_jump_node = static_cast<int>(Ship_info.size() + 1);
 }
 
 void Editor::setupCurrentObjectIndices(int selectedObj) {
@@ -661,18 +664,22 @@ void Editor::updateAllViewports() {
 	}
 }
 
-int Editor::create_player(int  /*num*/, vec3d* pos, matrix* orient, int type, int  /*init*/) {
+int Editor::create_player(vec3d* pos, matrix* orient, int type) {
 	int obj;
 
 	if (type == -1) {
-		type = Default_player_model;
+		type = get_default_player_ship_index();
 	}
-
 	Assert(type >= 0);
-	Assert(Player_starts < MAX_PLAYERS);
-	Player_starts++;
+
 	obj = create_ship(orient, pos, type);
 	Objects[obj].type = OBJ_START;
+
+	Assert(Player_starts < MAX_PLAYERS);
+	Player_starts++;
+	if (Player_start_shipnum < 0) {
+		Player_start_shipnum = Objects[obj].instance;
+	}
 
 	// be sure arrival/departure cues are set
 	Ships[Objects[obj].instance].arrival_cue = Locked_sexp_true;
@@ -685,7 +692,7 @@ int Editor::create_player(int  /*num*/, vec3d* pos, matrix* orient, int type, in
 }
 
 int Editor::create_ship(matrix* orient, vec3d* pos, int ship_type) {
-	int obj, z1, z2;
+	int obj;
 	float temp_max_hull_strength;
 	ship_info* sip;
 
@@ -710,9 +717,9 @@ int Editor::create_ship(matrix* orient, vec3d* pos, int ship_type) {
 	// default shield setting
 	shipp->special_shield = -1;
 
-	z1 = Shield_sys_teams[shipp->team];
-	z2 = Shield_sys_types[ship_type];
-	if (((z1 == 1) && z2) || (z2 == 1)) {
+	auto z1 = Shield_sys_teams[shipp->team];
+	auto z2 = Shield_sys_types[ship_type];
+	if (((z1 == GlobalShieldStatus::NoShields) && z2 != GlobalShieldStatus::HasShields) || (z2 == GlobalShieldStatus::NoShields)) {
 		Objects[obj].flags.set(Object::Object_Flags::No_shields);
 	}
 
@@ -781,7 +788,8 @@ void Editor::fix_ship_name(int ship) {
 
 void Editor::createNewMission() {
 	clearMission();
-	create_player(0, &vmd_zero_vector, &vmd_identity_matrix);
+	create_player(&vmd_zero_vector, &vmd_identity_matrix);
+	stars_post_level_init();
 }
 void Editor::hideMarkedObjects() {
 	object* ptr;
@@ -804,6 +812,32 @@ void Editor::showHiddenObjects() {
 	ptr = GET_FIRST(&obj_used_list);
 	while (ptr != END_OF_LIST(&obj_used_list)) {
 		ptr->flags.remove(Object::Object_Flags::Hidden);
+		ptr = GET_NEXT(ptr);
+	}
+
+	updateAllViewports();
+}
+void Editor::lockMarkedObjects() {
+	object* ptr;
+
+	ptr = GET_FIRST(&obj_used_list);
+	while (ptr != END_OF_LIST(&obj_used_list)) {
+		if (ptr->flags[Object::Object_Flags::Marked]) {
+			ptr->flags.set(Object::Object_Flags::Locked_from_editing);
+			unmarkObject(OBJ_INDEX(ptr));
+		}
+
+		ptr = GET_NEXT(ptr);
+	}
+
+	updateAllViewports();
+}
+void Editor::unlockAllObjects() {
+	object* ptr;
+
+	ptr = GET_FIRST(&obj_used_list);
+	while (ptr != END_OF_LIST(&obj_used_list)) {
+		ptr->flags.remove(Object::Object_Flags::Locked_from_editing);
 		ptr = GET_NEXT(ptr);
 	}
 
@@ -853,7 +887,6 @@ int Editor::dup_object(object* objp) {
 
 		aip1 = &Ai_info[Ships[n].ai_index];
 		aip2 = &Ai_info[Ships[inst].ai_index];
-		aip1->behavior = aip2->behavior;
 		aip1->ai_class = aip2->ai_class;
 		for (i = 0; i < MAX_AI_GOALS; i++) {
 			aip1->goals[i] = aip2->goals[i];
@@ -913,7 +946,8 @@ int Editor::dup_object(object* objp) {
 }
 
 int Editor::common_object_delete(int obj) {
-	char msg[255], * name;
+	char msg[255];
+	const char *name;
 	int i, z, r, type;
 	object* objp;
 	SCP_list<CJumpNode>::iterator jnp;
@@ -934,7 +968,7 @@ int Editor::common_object_delete(int obj) {
 		Assert((i >= 0) && (i < MAX_SHIPS));
 		sprintf(msg, "Player %d", i + 1);
 		name = msg;
-		r = reference_handler(name, REF_TYPE_PLAYER, obj);
+		r = reference_handler(name, sexp_ref_type::PLAYER, obj);
 		if (r) {
 			return r;
 		}
@@ -947,7 +981,7 @@ int Editor::common_object_delete(int obj) {
 		}
 
 		Objects[obj].type = OBJ_SHIP;  // was allocated as a ship originally, so remove as such.
-		invalidate_references(name, REF_TYPE_PLAYER);
+		invalidate_references(name, sexp_ref_type::PLAYER);
 
 		// check if any ship is docked with this ship and break dock if so
 		while (object_is_docked(&Objects[obj])) {
@@ -978,7 +1012,7 @@ int Editor::common_object_delete(int obj) {
 		// we'll end up deleting the path, so check for path references
 		if (count == 1) {
 			name = wp_list->get_name();
-			r = reference_handler(name, REF_TYPE_PATH, obj);
+			r = reference_handler(name, sexp_ref_type::WAYPOINT_PATH, obj);
 			if (r) {
 				return r;
 			}
@@ -987,16 +1021,16 @@ int Editor::common_object_delete(int obj) {
 		// check for waypoint references
 		sprintf(msg, "%s:%d", wp_list->get_name(), index + 1);
 		name = msg;
-		r = reference_handler(name, REF_TYPE_WAYPOINT, obj);
+		r = reference_handler(name, sexp_ref_type::WAYPOINT, obj);
 		if (r) {
 			return r;
 		}
 
 		// at this point we've confirmed we want to delete it
 
-		invalidate_references(name, REF_TYPE_WAYPOINT);
+		invalidate_references(name, sexp_ref_type::WAYPOINT);
 		if (count == 1) {
-			invalidate_references(wp_list->get_name(), REF_TYPE_PATH);
+			invalidate_references(wp_list->get_name(), sexp_ref_type::WAYPOINT_PATH);
 		}
 
 		// the actual removal code has been moved to this function in waypoints.cpp
@@ -1004,14 +1038,14 @@ int Editor::common_object_delete(int obj) {
 
 	} else if (type == OBJ_SHIP) {
 		name = Ships[Objects[obj].instance].ship_name;
-		r = reference_handler(name, REF_TYPE_SHIP, obj);
+		r = reference_handler(name, sexp_ref_type::SHIP, obj);
 		if (r) {
 			return r;
 		}
 
 		z = Objects[obj].instance;
 		if (Ships[z].wingnum >= 1) {
-			invalidate_references(name, REF_TYPE_SHIP);
+			invalidate_references(name, sexp_ref_type::SHIP);
 			r = delete_ship_from_wing(z);
 			if (r) {
 				return r;
@@ -1023,7 +1057,7 @@ int Editor::common_object_delete(int obj) {
 				return r;
 			}
 
-			invalidate_references(name, REF_TYPE_SHIP);
+			invalidate_references(name, sexp_ref_type::SHIP);
 		}
 
 		for (i = 0; i < Num_reinforcements; i++) {
@@ -1060,7 +1094,8 @@ int Editor::common_object_delete(int obj) {
 		Objects[obj].type = OBJ_NONE;
 
 		// now call the destructor
-		Jump_nodes.erase(jnp);
+		if (jnp != Jump_nodes.end())
+			Jump_nodes.erase(jnp);
 
 		// now restore the jump node type so that the below unmark and obj_delete will work
 		Objects[obj].type = OBJ_JUMP_NODE;
@@ -1090,29 +1125,29 @@ void Editor::setActiveViewport(EditorViewport* viewport) {
 	_lastActiveViewport = viewport;
 }
 
-int Editor::reference_handler(const char* name, int type, int obj) {
+int Editor::reference_handler(const char* name, sexp_ref_type type, int obj) {
 
 	char msg[2048], text[128], type_name[128];
-	int r, n, node;
+	int r, node;
 
 	switch (type) {
-	case REF_TYPE_SHIP:
+	case sexp_ref_type::SHIP:
 		sprintf(type_name, "Ship \"%s\"", name);
 		break;
 
-	case REF_TYPE_WING:
+	case sexp_ref_type::WING:
 		sprintf(type_name, "Wing \"%s\"", name);
 		break;
 
-	case REF_TYPE_PLAYER:
+	case sexp_ref_type::PLAYER:
 		strcpy_s(type_name, name);
 		break;
 
-	case REF_TYPE_WAYPOINT:
+	case sexp_ref_type::WAYPOINT:
 		sprintf(type_name, "Waypoint \"%s\"", name);
 		break;
 
-	case REF_TYPE_PATH:
+	case sexp_ref_type::WAYPOINT_PATH:
 		sprintf(type_name, "Waypoint path \"%s\"", name);
 		break;
 
@@ -1120,49 +1155,51 @@ int Editor::reference_handler(const char* name, int type, int obj) {
 		Error(LOCATION, "Type unknown for object \"%s\".  Let Hoffos know now!", name);
 	}
 
-	r = query_referenced_in_sexp(type, name, &node);
-	if (r) {
-		n = r & SRC_DATA_MASK;
-		switch (r & SRC_MASK) {
-		case SRC_SHIP_ARRIVAL:
+	auto pair = query_referenced_in_sexp(type, name, node);
+	int n = pair.first;
+	sexp_src source = pair.second;
+
+	if (source != sexp_src::NONE) {
+		switch (source) {
+		case sexp_src::SHIP_ARRIVAL:
 			sprintf(text, "the arrival cue of ship \"%s\"", Ships[n].ship_name);
 			break;
 
-		case SRC_SHIP_DEPARTURE:
+		case sexp_src::SHIP_DEPARTURE:
 			sprintf(text, "the departure cue of ship \"%s\"", Ships[n].ship_name);
 			break;
 
-		case SRC_WING_ARRIVAL:
+		case sexp_src::WING_ARRIVAL:
 			sprintf(text, "the arrival cue of wing \"%s\"", Wings[n].name);
 			break;
 
-		case SRC_WING_DEPARTURE:
+		case sexp_src::WING_DEPARTURE:
 			sprintf(text, "the departure cue of wing \"%s\"", Wings[n].name);
 			break;
 
-		case SRC_EVENT:
-			if (*Mission_events[n].name) {
-				sprintf(text, "event \"%s\"", Mission_events[n].name);
+		case sexp_src::EVENT:
+			if (!Mission_events[n].name.empty()) {
+				sprintf(text, "event \"%s\"", Mission_events[n].name.c_str());
 			} else {
 				sprintf(text, "event #%d", n);
 			}
 
 			break;
 
-		case SRC_MISSION_GOAL:
-			if (*Mission_goals[n].name) {
-				sprintf(text, "mission goal \"%s\"", Mission_goals[n].name);
+		case sexp_src::MISSION_GOAL:
+			if (!Mission_goals[n].name.empty()) {
+				sprintf(text, "mission goal \"%s\"", Mission_goals[n].name.c_str());
 			} else {
 				sprintf(text, "mission goal #%d", n);
 			}
 
 			break;
 
-		case SRC_DEBRIEFING:
+		case sexp_src::DEBRIEFING:
 			sprintf(text, "debriefing #%d", n);
 			break;
 
-		case SRC_BRIEFING:
+		case sexp_src::BRIEFING:
 			sprintf(text, "briefing #%d", n);
 			break;
 
@@ -1178,7 +1215,7 @@ int Editor::reference_handler(const char* name, int type, int obj) {
 			"Do you want to delete it anyway?\n\n"
 			"(click Cancel to go to the reference)", type_name, text);
 
-		r = sexp_reference_handler(node, r, msg);
+		r = sexp_reference_handler(node, source, n, msg);
 		if (r == 1) {
 			if (obj >= 0) {
 				unmarkObject(obj);
@@ -1193,15 +1230,17 @@ int Editor::reference_handler(const char* name, int type, int obj) {
 		}
 	}
 
-	r = query_referenced_in_ai_goals(type, name);
-	if (r) {
-		n = r & SRC_DATA_MASK;
-		switch (r & SRC_MASK) {
-		case SRC_SHIP_ORDER:
+	pair = query_referenced_in_ai_goals(type, name);
+	n = pair.first;
+	source = pair.second;
+
+	if (source != sexp_src::NONE) {
+		switch (source) {
+		case sexp_src::SHIP_ORDER:
 			sprintf(text, "ship \"%s\"", Ships[n].ship_name);
 			break;
 
-		case SRC_WING_ORDER:
+		case sexp_src::WING_ORDER:
 			sprintf(text, "wing \"%s\"", Wings[n].name);
 			break;
 
@@ -1214,7 +1253,7 @@ int Editor::reference_handler(const char* name, int type, int obj) {
 			"more initial orders).  Do you want to delete it anyway?\n\n"
 			"(click Cancel to go to the reference)", type_name, text);
 
-		r = orders_reference_handler(r, msg);
+		r = orders_reference_handler(source, n, msg);
 		if (r == 1) {
 			if (obj >= 0) {
 				unmarkObject(obj);
@@ -1229,7 +1268,7 @@ int Editor::reference_handler(const char* name, int type, int obj) {
 		}
 	}
 
-	if ((type != REF_TYPE_SHIP) && (type != REF_TYPE_WING)) {
+	if ((type != sexp_ref_type::SHIP) && (type != sexp_ref_type::WING)) {
 		return 0;
 	}
 
@@ -1257,7 +1296,7 @@ int Editor::reference_handler(const char* name, int type, int obj) {
 	return 0;
 }
 
-int Editor::orders_reference_handler(int  /*code*/, char* msg) {
+int Editor::orders_reference_handler(sexp_src /*source*/, int /*source_index*/, char* msg) {
 	auto r = _lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Warning,
 																   "Warning",
 																   msg,
@@ -1276,27 +1315,26 @@ int Editor::orders_reference_handler(int  /*code*/, char* msg) {
 	/*
 	ShipGoalsDlg dlg_goals;
 
-	auto n = code & SRC_DATA_MASK;
-	switch (code & SRC_MASK) {
-	case SRC_SHIP_ORDER:
+	switch (source) {
+	case sexp_src::SHIP_ORDER:
 		unmark_all();
-		mark_object(Ships[n].objnum);
+		mark_object(Ships[source_index].objnum);
 
-		dlg_goals.self_ship = n;
+		dlg_goals.self_ship = source_index;
 		dlg_goals.DoModal();
-		if (!query_initial_orders_empty(Ai_info[Ships[n].ai_index].goals))
-			if ((Ships[n].wingnum >= 0) && (query_initial_orders_conflict(Ships[n].wingnum)))
+		if (!query_initial_orders_empty(Ai_info[Ships[source_index].ai_index].goals))
+			if ((Ships[source_index].wingnum >= 0) && (query_initial_orders_conflict(Ships[source_index].wingnum)))
 				Fred_main_wnd->MessageBox("This ship's wing also has initial orders", "Possible conflict");
 
 		break;
 
-	case SRC_WING_ORDER:
+	case sexp_src::WING_ORDER:
 		unmark_all();
-		mark_wing(n);
+		mark_wing(source_index);
 
-		dlg_goals.self_wing = n;
+		dlg_goals.self_wing = source_index;
 		dlg_goals.DoModal();
-		if (query_initial_orders_conflict(n))
+		if (query_initial_orders_conflict(source_index))
 			Fred_main_wnd->MessageBox("One or more ships of this wing also has initial orders", "Possible conflict");
 
 		break;
@@ -1309,7 +1347,7 @@ int Editor::orders_reference_handler(int  /*code*/, char* msg) {
 	delete_flag = 1;
 	return 2;
 }
-int Editor::sexp_reference_handler(int  /*node*/, int  /*code*/, const char* msg) {
+int Editor::sexp_reference_handler(int  /*node*/, sexp_src /*source*/, int /*source_index*/, const char* msg) {
 	auto r = _lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Warning,
 																   "Warning",
 																   msg,
@@ -1326,9 +1364,10 @@ int Editor::sexp_reference_handler(int  /*node*/, int  /*code*/, const char* msg
 
 	// TODO: add a generic dialog system for showing these dialogs
 	/*
-	switch (code & SRC_MASK) {
-	case SRC_SHIP_ARRIVAL:
-	case SRC_SHIP_DEPARTURE:
+	int n = source_index;
+	switch (source) {
+	case sexp_src::SHIP_ARRIVAL:
+	case sexp_src::SHIP_DEPARTURE:
 		if (!Ship_editor_dialog.GetSafeHwnd())
 			Ship_editor_dialog.Create();
 
@@ -1338,11 +1377,11 @@ int Editor::sexp_reference_handler(int  /*node*/, int  /*code*/, const char* msg
 
 		Ship_editor_dialog.select_sexp_node = node;
 		unmark_all();
-		mark_object(Ships[code & SRC_DATA_MASK].objnum);
+		mark_object(Ships[n].objnum);
 		break;
 
-	case SRC_WING_ARRIVAL:
-	case SRC_WING_DEPARTURE:
+	case sexp_src::WING_ARRIVAL:
+	case sexp_src::WING_DEPARTURE:
 		if (!Wing_editor_dialog.GetSafeHwnd())
 			Wing_editor_dialog.Create();
 
@@ -1352,10 +1391,10 @@ int Editor::sexp_reference_handler(int  /*node*/, int  /*code*/, const char* msg
 
 		Wing_editor_dialog.select_sexp_node = node;
 		unmark_all();
-		mark_wing(code & SRC_DATA_MASK);
+		mark_wing(n);
 		break;
 
-	case SRC_EVENT:
+	case sexp_src::EVENT:
 		if (Message_editor_dlg) {
 			Fred_main_wnd->MessageBox("You must close the message editor before the event editor can be opened");
 			break;
@@ -1371,7 +1410,7 @@ int Editor::sexp_reference_handler(int  /*node*/, int  /*code*/, const char* msg
 		Event_editor_dlg->ShowWindow(SW_RESTORE);
 		break;
 
-	case SRC_MISSION_GOAL: {
+	case sexp_src::MISSION_GOAL: {
 		CMissionGoalsDlg dlg;
 
 		dlg.select_sexp_node = node;
@@ -1379,7 +1418,7 @@ int Editor::sexp_reference_handler(int  /*node*/, int  /*code*/, const char* msg
 		break;
 	}
 
-	case SRC_DEBRIEFING: {
+	case sexp_src::DEBRIEFING: {
 		debriefing_editor_dlg dlg;
 
 		dlg.select_sexp_node = node;
@@ -1387,7 +1426,7 @@ int Editor::sexp_reference_handler(int  /*node*/, int  /*code*/, const char* msg
 		break;
 	}
 
-	case SRC_BRIEFING: {
+	case sexp_src::BRIEFING: {
 		if (!Briefing_dialog) {
 			Briefing_dialog = new briefing_editor_dlg;
 			Briefing_dialog->create();
@@ -1464,7 +1503,7 @@ int Editor::delete_ship_from_wing(int ship) {
 	missionChanged();
 	return 0;
 }
-int Editor::invalidate_references(const char* name, int type) {
+int Editor::invalidate_references(const char* name, sexp_ref_type type) {
 	char new_name[512];
 	int i;
 
@@ -1480,7 +1519,7 @@ int Editor::invalidate_references(const char* name, int type) {
 
 	return 0;
 }
-void Editor::ai_update_goal_references(int type, const char* old_name, const char* new_name) {
+void Editor::ai_update_goal_references(sexp_ref_type type, const char* old_name, const char* new_name) {
 	int i;
 
 	for (i = 0; i < MAX_AI_INFO; i++) {  // loop through all Ai_info entries
@@ -1502,14 +1541,18 @@ void Editor::update_texture_replacements(const char* old_name, const char* new_n
 			strcpy_s(ii->ship_name, new_name);
 	}
 }
-int Editor::rename_ship(int ship, char* name) {
+int Editor::rename_ship(int ship, const char* name) {
 	int i;
 
 	Assert(ship >= 0);
 	Assert(strlen(name) < NAME_LENGTH);
 
+	// we may not need to rename it
+	if (strcmp(Ships[ship].ship_name, name) == 0)
+		return 0;
+
 	update_sexp_references(Ships[ship].ship_name, name);
-	ai_update_goal_references(REF_TYPE_SHIP, Ships[ship].ship_name, name);
+	ai_update_goal_references(sexp_ref_type::SHIP, Ships[ship].ship_name, name);
 	update_texture_replacements(Ships[ship].ship_name, name);
 	for (i = 0; i < Num_reinforcements; i++) {
 		if (!stricmp(Ships[ship].ship_name, Reinforcements[i].name)) {
@@ -1535,7 +1578,7 @@ void Editor::delete_reinforcement(int num) {
 }
 int Editor::check_wing_dependencies(int wing_num) {
 	const char* name = Wings[wing_num].name;
-	return reference_handler(name, REF_TYPE_WING, -1);
+	return reference_handler(name, sexp_ref_type::WING, -1);
 }
 int Editor::set_reinforcement(const char* name, int state) {
 	int i, index, cur = -1;
@@ -1699,6 +1742,36 @@ void Editor::generate_team_weaponry_usage_list(int team, int* arr) {
 			generate_wing_weaponry_usage_list(arr, Starting_wings[i]);
 		}
 	}
+}
+void Editor::generate_ship_usage_list(int* arr, int wing) {
+	int i; 
+
+	if (wing < 0) {
+		return;
+	}
+
+	i = Wings[wing].wave_count;
+	while (i--) {
+		arr[Ships[Wings[wing].ship_index[i]].ship_info_index]++; 
+	}
+}
+void Editor::updateStartingWingLoadoutUseCounts() {
+	memset(_ship_usage, 0, sizeof(int) * MAX_TVT_TEAMS * MAX_SHIP_CLASSES);
+
+	if (The_mission.game_type & MISSION_TYPE_MULTI_TEAMS) { 
+		for (int i = 0; i<MAX_TVT_TEAMS; i++) {
+			for (int j = 0; j<MAX_TVT_WINGS_PER_TEAM; j++) {
+				generate_ship_usage_list(_ship_usage[i], TVT_wings[(i*MAX_TVT_WINGS_PER_TEAM) + j]);
+			}			
+			generate_team_weaponry_usage_list(i, _weapon_usage[i]);
+		}
+	}
+	else {
+		for (int i = 0; i < MAX_STARTING_WINGS; i++) {
+			generate_ship_usage_list(_ship_usage[0], Starting_wings[i]);
+		}
+		generate_team_weaponry_usage_list(0, _weapon_usage[0]);
+	}	
 }
 void Editor::delete_marked() {
 	object* ptr, * next;
@@ -1891,6 +1964,8 @@ int Editor::global_error_check_impl() {
 	int bs, i, j, n, s, t, z, ai, count, ship, wing, obj, team, point, multi;
 	object* ptr;
 	brief_stage* sp;
+	SCP_string anchor_message;
+	SCP_set<int> anchor_shipnums_checked;
 
 	g_err = multi = 0;
 	if (The_mission.game_type & MISSION_TYPE_MULTI) {
@@ -2079,17 +2154,29 @@ int Editor::global_error_check_impl() {
 				return -1;
 			}
 
-			if (Ships[i].arrival_location != ARRIVE_AT_LOCATION) {
+			if (Ships[i].arrival_location != ArrivalLocation::AT_LOCATION) {
 				if (Ships[i].arrival_anchor < 0) {
 					if (error("Ship \"%s\" requires a valid arrival target", Ships[i].ship_name)) {
 						return 1;
 					}
 				}
+				if (Ships[i].arrival_location == ArrivalLocation::FROM_DOCK_BAY) {
+					check_anchor_for_hangar_bay(anchor_message, anchor_shipnums_checked, Ships[i].arrival_anchor, Ships[i].ship_name, true, true);
+					if (!anchor_message.empty() && error("%s", anchor_message.c_str())) {
+						return 1;
+					}
+				}
 			}
 
-			if (Ships[i].departure_location != DEPART_AT_LOCATION) {
+			if (Ships[i].departure_location != DepartureLocation::AT_LOCATION) {
 				if (Ships[i].departure_anchor < 0) {
 					if (error("Ship \"%s\" requires a valid departure target", Ships[i].ship_name)) {
+						return 1;
+					}
+				}
+				if (Ships[i].departure_location == DepartureLocation::TO_DOCK_BAY) {
+					check_anchor_for_hangar_bay(anchor_message, anchor_shipnums_checked, Ships[i].departure_anchor, Ships[i].ship_name, true, false);
+					if (!anchor_message.empty() && error("%s", anchor_message.c_str())) {
 						return 1;
 					}
 				}
@@ -2295,17 +2382,29 @@ int Editor::global_error_check_impl() {
 				return -1;
 			}
 
-			if (Wings[i].arrival_location != ARRIVE_AT_LOCATION) {
+			if (Wings[i].arrival_location != ArrivalLocation::AT_LOCATION) {
 				if (Wings[i].arrival_anchor < 0) {
 					if (error("Wing \"%s\" requires a valid arrival target", Wings[i].name)) {
 						return 1;
 					}
 				}
+				if (Wings[i].arrival_location == ArrivalLocation::FROM_DOCK_BAY) {
+					check_anchor_for_hangar_bay(anchor_message, anchor_shipnums_checked, Wings[i].arrival_anchor, Wings[i].name, false, true);
+					if (!anchor_message.empty() && error("%s", anchor_message.c_str())) {
+						return 1;
+					}
+				}
 			}
 
-			if (Wings[i].departure_location != DEPART_AT_LOCATION) {
+			if (Wings[i].departure_location != DepartureLocation::AT_LOCATION) {
 				if (Wings[i].departure_anchor < 0) {
 					if (error("Wing \"%s\" requires a valid departure target", Wings[i].name)) {
+						return 1;
+					}
+				}
+				if (Wings[i].departure_location == DepartureLocation::TO_DOCK_BAY) {
+					check_anchor_for_hangar_bay(anchor_message, anchor_shipnums_checked, Wings[i].departure_anchor, Wings[i].name, false, false);
+					if (!anchor_message.empty() && error("%s", anchor_message.c_str())) {
 						return 1;
 					}
 				}
@@ -2328,18 +2427,17 @@ int Editor::global_error_check_impl() {
 		return internal_error("Num_wings is incorrect");
 	}
 
-	SCP_list<waypoint_list>::iterator ii;
-	for (ii = Waypoint_lists.begin(); ii != Waypoint_lists.end(); ++ii) {
+	for (const auto &ii: Waypoint_lists) {
 		for (z = 0; z < obj_count; z++) {
 			if (names[z]) {
-				if (!stricmp(names[z], ii->get_name())) {
+				if (!stricmp(names[z], ii.get_name())) {
 					return internal_error("Waypoint path name is also used by an object (%s)", names[z]);
 				}
 			}
 		}
 
-		for (j = 0; (uint) j < ii->get_waypoints().size(); j++) {
-			sprintf(buf, "%s:%d", ii->get_name(), j + 1);
+		for (j = 0; (uint) j < ii.get_waypoints().size(); j++) {
+			sprintf(buf, "%s:%d", ii.get_name(), j + 1);
 			for (z = 0; z < obj_count; z++) {
 				if (names[z]) {
 					if (!stricmp(names[z], buf)) {
@@ -2412,14 +2510,14 @@ int Editor::global_error_check_impl() {
 		return i;
 	}
 
-	for (i = 0; i < Num_mission_events; i++) {
-		if (fred_check_sexp(Mission_events[i].formula, OPR_NULL, "mission event \"%s\"", Mission_events[i].name)) {
+	for (i = 0; i < (int)Mission_events.size(); i++) {
+		if (fred_check_sexp(Mission_events[i].formula, OPR_NULL, "mission event \"%s\"", Mission_events[i].name.c_str())) {
 			return -1;
 		}
 	}
 
-	for (i = 0; i < Num_goals; i++) {
-		if (fred_check_sexp(Mission_goals[i].formula, OPR_BOOL, "mission goal \"%s\"", Mission_goals[i].name)) {
+	for (i = 0; i < (int)Mission_goals.size(); i++) {
+		if (fred_check_sexp(Mission_goals[i].formula, OPR_BOOL, "mission goal \"%s\"", Mission_goals[i].name.c_str())) {
 			return -1;
 		}
 	}
@@ -2570,45 +2668,57 @@ int Editor::internal_error(const char* msg, ...) {
 
 	return -1;
 }
-int Editor::fred_check_sexp(int sexp, int type, const char* msg, ...) {
-	SCP_string buf, sexp_buf, error_buf, bad_node_str;
+int Editor::fred_check_sexp(int sexp, int type, const char* location, ...) {
+	SCP_string location_buf, sexp_buf, error_buf, bad_node_str, issue_msg;
 	int err = 0, z, faulty_node;
 	va_list args;
 
-	va_start(args, msg);
-	vsprintf(buf, msg, args);
+	va_start(args, location);
+	vsprintf(location_buf, location, args);
 	va_end(args);
 
 	if (sexp == -1)
 		return 0;
 
 	z = check_sexp_syntax(sexp, type, 1, &faulty_node);
-	if (!z)
-		return 0;
+	if (z)
+	{
+		convert_sexp_to_string(sexp_buf, sexp, SEXP_ERROR_CHECK_MODE);
+		truncate_message_lines(sexp_buf, 30);
 
-	convert_sexp_to_string(sexp_buf, sexp, SEXP_ERROR_CHECK_MODE);
-	truncate_message_lines(sexp_buf, 30);
+		stuff_sexp_text_string(bad_node_str, faulty_node, SEXP_ERROR_CHECK_MODE);
+		if (!bad_node_str.empty())		// the previous function adds a space at the end
+			bad_node_str.pop_back();
 
-	stuff_sexp_text_string(bad_node_str, faulty_node, SEXP_ERROR_CHECK_MODE);
-	if (!bad_node_str.empty()) {	// the previous function adds a space at the end
-		bad_node_str.pop_back();
+		sprintf(error_buf, "Error in %s: %s\n\n%s\n\n(Bad node appears to be: %s)", location_buf.c_str(), sexp_error_message(z), sexp_buf.c_str(), bad_node_str.c_str());
+
+		if (z < 0 && z > -100)
+			err = 1;
+
+		if (err)
+			return internal_error("%s", error_buf.c_str());
+
+		if (error("%s", error_buf.c_str()))
+			return 1;
 	}
 
-	sprintf(error_buf,
-			"Error in %s: %s\n\nIn sexpression: %s\n\n(Bad node appears to be: %s)",
-			buf.c_str(),
-			sexp_error_message(z),
-			sexp_buf.c_str(),
-			bad_node_str.c_str());
+	if (_lastActiveViewport->Error_checker_checks_potential_issues || _lastActiveViewport->Error_checker_checks_potential_issues_once)
+		z = check_sexp_potential_issues(sexp, &faulty_node, issue_msg);
+	if (z)
+	{
+		convert_sexp_to_string(sexp_buf, sexp, SEXP_ERROR_CHECK_MODE);
+		truncate_message_lines(sexp_buf, 30);
 
-	if (z < 0 && z > -100)
-		err = 1;
+		stuff_sexp_text_string(bad_node_str, faulty_node, SEXP_ERROR_CHECK_MODE);
+		if (!bad_node_str.empty())		// the previous function adds a space at the end
+			bad_node_str.pop_back();
 
-	if (err)
-		return internal_error("%s", error_buf.c_str());
+		sprintf(error_buf, "Potential issue detected in %s:\n\n%s\n\n%s\n\n(Suspect node appears to be: %s)", location_buf.c_str(), issue_msg.c_str(), sexp_buf.c_str(), bad_node_str.c_str());
 
-	if (error("%s", error_buf.c_str()))
-		return 1;
+		if (_lastActiveViewport->dialogProvider->showButtonDialog(DialogType::Warning, "Warning", error_buf.c_str(), { DialogButton::Ok, DialogButton::Cancel }) != DialogButton::Ok)
+			return 1;
+	}
+	_lastActiveViewport->Error_checker_checks_potential_issues_once = false;
 
 	return 0;
 }
@@ -2667,7 +2777,9 @@ const char* Editor::error_check_initial_orders(ai_goal* goals, int ship, int win
 		case AI_GOAL_CHASE:
 		case AI_GOAL_GUARD:
 		case AI_GOAL_DISARM_SHIP:
+		case AI_GOAL_DISARM_SHIP_TACTICAL:
 		case AI_GOAL_DISABLE_SHIP:
+		case AI_GOAL_DISABLE_SHIP_TACTICAL:
 		case AI_GOAL_EVADE_SHIP:
 		case AI_GOAL_STAY_NEAR_SHIP:
 		case AI_GOAL_IGNORE:
@@ -2824,6 +2936,9 @@ const char* Editor::error_check_initial_orders(ai_goal* goals, int ship, int win
 
 			break;
 		}
+
+		default:
+			break;
 		}
 
 		switch (goals[i].ai_mode) {
@@ -2835,33 +2950,36 @@ const char* Editor::error_check_initial_orders(ai_goal* goals, int ship, int win
 				else
 					return "Wing assigned to guard a different team";
 			}
-
 			break;
 
 		case AI_GOAL_CHASE:
 		case AI_GOAL_CHASE_WING:
 		case AI_GOAL_DESTROY_SUBSYSTEM:
 		case AI_GOAL_DISARM_SHIP:
+		case AI_GOAL_DISARM_SHIP_TACTICAL:
 		case AI_GOAL_DISABLE_SHIP:
+		case AI_GOAL_DISABLE_SHIP_TACTICAL:
 			if (team == team2) {
 				if (ship >= 0)
 					return "Ship assigned to attack same team";
 				else
 					return "Wings assigned to attack same team";
 			}
+			break;
 
+		default:
 			break;
 		}
 	}
 
 	return NULL;
 }
-const char* Editor::get_order_name(int order) {
+const char* Editor::get_order_name(ai_goal_mode order) {
 	if (order == AI_GOAL_NONE)  // special case
 		return "None";
 
 	for (auto& entry : Ai_goal_list)
-		if (entry.def & order)
+		if (entry.def == order)
 			return entry.name;
 
 	return "???";
@@ -3147,59 +3265,58 @@ int Editor::global_error_check_mixed_player_wing(int w) {
 	return 0;
 }
 
-bool Editor::compareShieldSysData(const std::vector<int>& teams, const std::vector<int>& types) const {
-	Assert(Shield_sys_teams.size() == teams.size());
-	Assert(Shield_sys_types.size() == types.size());
+bool Editor::compareShieldSysData(const SCP_vector<GlobalShieldStatus>& teams, const SCP_vector<GlobalShieldStatus>& types) const {
+	Assertion(Shield_sys_teams.size() == teams.size(), "Mismatched shield data from global shield dialog!");
+	Assertion(Shield_sys_types.size() == types.size(), "Mismatched shield data from global shield dialog!");
 
 	return (Shield_sys_teams == teams) && (Shield_sys_types == types);
 }
 
-void Editor::exportShieldSysData(std::vector<int>& teams, std::vector<int>& types) const {
+void Editor::exportShieldSysData(SCP_vector<GlobalShieldStatus>& teams, SCP_vector<GlobalShieldStatus>& types) const {
 	teams = Shield_sys_teams;
 	types = Shield_sys_types;
 }
 
-void Editor::importShieldSysData(const std::vector<int>& teams, const std::vector<int>& types) {
-	Assert(Shield_sys_teams.size() == teams.size());
-	Assert(Shield_sys_types.size() == types.size());
+void Editor::importShieldSysData(const SCP_vector<GlobalShieldStatus>& teams, const SCP_vector<GlobalShieldStatus>& types) {
+	Assertion(Shield_sys_teams.size() == teams.size(), "Mismatched shield data from global shield dialog!");
+	Assertion(Shield_sys_types.size() == types.size(), "Mismatched shield data from global shield dialog!");
 
 	Shield_sys_teams = teams;
 	Shield_sys_types = types;
 
 	for (int i = 0; i < MAX_SHIPS; i++) {
 		if (Ships[i].objnum >= 0) {
-			int z = Shield_sys_teams[Ships[i].team];
-			if (!Shield_sys_types[Ships[i].ship_info_index])
-				z = 0;
-			else if (Shield_sys_types[Ships[i].ship_info_index] == 1)
-				z = 1;
+			auto z = Shield_sys_teams[Ships[i].team];
+			if (Shield_sys_types[Ships[i].ship_info_index] == GlobalShieldStatus::HasShields)
+				z = GlobalShieldStatus::HasShields;
+			else if (Shield_sys_types[Ships[i].ship_info_index] == GlobalShieldStatus::NoShields)
+				z = GlobalShieldStatus::NoShields;
 
-			if (!z)
+			if (z == GlobalShieldStatus::HasShields)
 				Objects[Ships[i].objnum].flags.remove(Object::Object_Flags::No_shields);
-			else if (z == 1)
+			else if (z == GlobalShieldStatus::NoShields)
 				Objects[Ships[i].objnum].flags.set(Object::Object_Flags::No_shields);
 		}
 	}
 }
 
 // adapted from shield_sys_dlg OnInitDialog()
-// 0 = has shields, 1 = no shields, 2 = conflict/inconsistent
 void Editor::normalizeShieldSysData() {
 	std::vector<int> teams(Iff_info.size(), 0);
 	std::vector<int> types(MAX_SHIP_CLASSES, 0);
 
 	for (int i = 0; i < MAX_SHIPS; i++) {
 		if (Ships[i].objnum >= 0) {
-			int z = (Objects[Ships[i].objnum].flags[Object::Object_Flags::No_shields]) ? 1 : 0;
+			auto z = (Objects[Ships[i].objnum].flags[Object::Object_Flags::No_shields]) ? GlobalShieldStatus::NoShields : GlobalShieldStatus::HasShields;
 			if (!teams[Ships[i].team])
 				Shield_sys_teams[Ships[i].team] = z;
 			else if (Shield_sys_teams[Ships[i].team] != z)
-				Shield_sys_teams[Ships[i].team] = 2;
+				Shield_sys_teams[Ships[i].team] = GlobalShieldStatus::MixedShields;
 
 			if (!types[Ships[i].ship_info_index])
 				Shield_sys_types[Ships[i].ship_info_index] = z;
 			else if (Shield_sys_types[Ships[i].ship_info_index] != z)
-				Shield_sys_types[Ships[i].ship_info_index] = 2;
+				Shield_sys_types[Ships[i].ship_info_index] = GlobalShieldStatus::MixedShields;
 
 			teams[Ships[i].team]++;
 			types[Ships[i].ship_info_index]++;
@@ -3220,6 +3337,49 @@ void Editor::pad_with_newline(SCP_string& str, size_t max_size) {
 		str += "\n";
 	}
 }
+
+void Editor::lcl_fred_replace_stuff(QString& text)
+{
+	// this should be kept in sync with the function in localize.cpp
+	text.replace("\"", "$quote");
+	text.replace(";", "$semicolon");
+	text.replace("/", "$slash");
+	text.replace("\\", "$backslash");
+}
+
+SCP_string Editor::get_display_name_for_text_box(const SCP_string &orig_name)
+{
+	auto index = get_index_of_first_hash_symbol(orig_name);
+	if (index >= 0)
+	{
+		SCP_string display_name(orig_name);
+		end_string_at_first_hash_symbol(display_name);
+		return display_name;
+	}
+	else
+		return "<none>";
+}
+
+SCP_vector<int> Editor::getStartingWingLoadoutUseCounts() {
+	// update before sending so that we have the most up to date info.
+	updateStartingWingLoadoutUseCounts();
+
+	SCP_vector<int> out;
+
+	for (int i = 0; i < MAX_TVT_TEAMS; i++) {
+		for (auto& entry : _ship_usage[i]) {
+			out.push_back(entry);
+		}
+	}
+	for (int i = 0; i < MAX_TVT_TEAMS; i++) {
+		for (auto& entry : _weapon_usage[i]) {
+			out.push_back(entry);
+		}
+	}
+
+	return out;
+}
+
 
 
 } // namespace fred

@@ -42,6 +42,7 @@
 #include "mission/missiongoals.h"
 #include "network/multi_log.h"
 #include "network/multi_rate.h"
+#include "network/multi_lua.h"
 #include "hud/hudescort.h"
 #include "hud/hudmessage.h"
 #include "globalincs/alphacolors.h"
@@ -50,6 +51,7 @@
 #include "network/multi_fstracker.h"
 #include "network/multi_sw.h"
 #include "network/multi_portfwd.h"
+#include "network/multi_turret_manager.h"
 #include "pilotfile/pilotfile.h"
 #include "debugconsole/console.h"
 #include "network/psnet2.h"
@@ -90,7 +92,13 @@
 #define MULTI_SERVER_SLOW_PING_TIME					700					// when average ping time to server reaches this -- display hud icon
 
 // update times for clients ships based on object update level
-#define MULTI_CLIENT_UPDATE_TIME						333
+int Multi_client_update_intervals[MAX_OBJ_UPDATE_LEVELS]	= 
+{
+	333,				// Dialup, 3x a second
+	166,				// Medium, 6x a second
+	80,					// High, 12.5x a second
+	30,					// LAN, 33x a second
+};					
 
 int Multi_display_netinfo = 1;
 
@@ -111,10 +119,8 @@ int Multi_button_info_ok = 0;										// flag saying it is ok to apply critical
 int Multi_button_info_id = 0;										// identifier of the stored button info to be applying
 
 // misc data
-active_game* Active_game_head;									// linked list of active games displayed on Join screen
-int Active_game_count;												// for interface screens as well
+SCP_list<active_game> Active_games;							// list of active games displayed on the Join screen
 CFILE* Multi_chat_stream;											// for streaming multiplayer chat strings to a file
-int Multi_has_cd = 0;												// if this machine has a cd or not (call multi_common_verify_cd() to set this)
 int Multi_connection_speed;										// connection speed of this machine.
 int Multi_num_players_at_start = 0;								// the # of players present (kept track of only on the server) at the very start of the mission
 short Multi_id_num = 0;												// for assigning player id #'s
@@ -124,9 +130,9 @@ server_item* Game_server_head;								// list of permanent game servers to be qu
 
 // timestamp data
 int Netgame_send_time = -1;							// timestamp used to send netgame info to players before misison starts
-int State_send_time = -1;								// timestamp used to send state information to the host before a mission starts
+time_t State_send_time = -1;								// timestamp used to send state information to the host before a mission starts
 int Gameinfo_send_time = -1;							// timestamp used by master to send game information to clients
-int Next_ping_time = -1;								// when we should next ping all
+time_t Next_ping_time = -1;								// when we should next ping all
 int Multi_server_check_count = 0;					// var to keep track of reentrancy when checking server status
 int Next_bytes_time = -1;								// bytes sent
 
@@ -238,16 +244,11 @@ void multi_vars_init()
 	// reentrant variable
 	Multi_read_count = 0;
 
-	// unset the "have cd" var
-	// NOTE: we unset this here because we are going to be calling multi_common_verify_cd() 
-	//       immediately after this (in multi_level_init() to re-check the status)
-	Multi_has_cd = 0;
-
 	// current file checksum
 	Multi_current_file_checksum = 0;
 	Multi_current_file_length = -1;
 
-	Active_game_head = NULL;
+	Active_games.clear();
 	Game_server_head = NULL;
 
 	// only the server should ever care about this
@@ -491,7 +492,7 @@ void multi_client_check_server()
 //	Prelimiary verification of the magic number and checksum are done here.  
 //
 
-void process_packet_normal(ubyte* data, header *header_info)
+void process_packet_normal(ubyte* data, header *header_info, bool reliable)
 {
 	// this is for helping to diagnose misaligned packets.  The last sensible packet 
 	// is usually the culprit that needs to be analyzed.
@@ -930,6 +931,14 @@ void process_packet_normal(ubyte* data, header *header_info)
 			process_sexp_packet(data, header_info);
 			break; 
 
+		case TURRET_TRACK:
+			process_turret_tracking_packet(data, header_info);
+			break;
+
+		case LUA_DATA_PACKET:
+			process_lua_packet(data, header_info, reliable);
+			break;
+
 		default:
 			mprintf(("Received packet with unknown type %d\n", data[0] ));
 			header_info->bytes_processed = 10000;
@@ -997,7 +1006,7 @@ void multi_process_bigdata(ubyte *data, int len, net_addr *from_addr, int reliab
 		}		
 
 		// perform any special processing checks here		
-		process_packet_normal(buf,&header_info);
+		process_packet_normal(buf,&header_info, reliable != 0);
 		 
 		// MWA -- magic number was removed from header on 8/4/97.  Replaced with bytes_processed
 		// variable which gets stuffed whenever a packet is processed.
@@ -1189,7 +1198,7 @@ void multi_do_frame()
 		
 		// ping everyone
 		multi_ping_send_all();
-		Next_ping_time = (int) time(NULL);		
+		Next_ping_time = time(NULL);		
 	}	
 	
 	// if I am the master, and we are not yet actually playing the mission, send off netgame
@@ -1209,7 +1218,7 @@ void multi_do_frame()
 					send_netplayer_update_packet();
 				}				
 				
-				State_send_time = (int) time(NULL);
+				State_send_time = time(NULL);
 			}
 		}
 	}
@@ -1280,7 +1289,10 @@ void multi_do_frame()
 
 			// sending new objects from here is dependent on having objects only created after
 			// the game is done moving the objects.  I think that I can enforce this.				
-			multi_oo_process();			
+			multi_oo_process();
+
+			// send updates for turret tracking.
+			Multi_Turret_Manager.send_queued_packets();			
 
 			// evaluate whether the time limit has been reached or max kills has been reached
 			// Commented out by Sandeep 4/12/98, was causing problems with testing.
@@ -1304,7 +1316,7 @@ void multi_do_frame()
 					
 					send_client_update_packet(&Net_players[idx]);
 					
-					Multi_client_update_times[idx] = ui_timestamp(MULTI_CLIENT_UPDATE_TIME);
+					Multi_client_update_times[idx] = ui_timestamp(Multi_client_update_intervals[Net_players[idx].p_info.options.obj_update_level]);
 				}
 			}
 		}
@@ -1391,7 +1403,7 @@ void multi_pause_do_frame()
 	if((Next_ping_time < 0) || ((time(NULL) - Next_ping_time) > PING_SEND_TIME) ){
 		multi_ping_send_all();
 		
-		Next_ping_time = (int) time(NULL);
+		Next_ping_time = time(NULL);
 	}
 
 	// periodically send a client update packet to all clients
@@ -1404,7 +1416,7 @@ void multi_pause_do_frame()
 					
 					send_client_update_packet(&Net_players[idx]);
 					
-					Multi_client_update_times[idx] = ui_timestamp(MULTI_CLIENT_UPDATE_TIME);
+					Multi_client_update_times[idx] = ui_timestamp(Multi_client_update_intervals[Net_players[idx].p_info.options.obj_update_level]);
 				}
 			}				
 		}

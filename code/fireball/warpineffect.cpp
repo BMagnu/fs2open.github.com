@@ -22,16 +22,6 @@
 #include "render/batching.h"
 #include "ship/ship.h"
 
-bool Fireball_warp_flash = false;
-
-static auto WarpFlashOption = options::OptionBuilder<bool>("Graphics.WarpFlash", "Warp Flash", "Show flash upon warp open or close")
-							 .category("Graphics")
-							 .default_val(true)
-							 .level(options::ExpertLevel::Advanced)
-							 .bind_to_once(&Fireball_warp_flash)
-							 .importance(65)
-							 .finish();
-
 void warpin_batch_draw_face( int texture, vertex *v1, vertex *v2, vertex *v3 )
 {
 	vec3d norm;
@@ -52,7 +42,7 @@ void warpin_batch_draw_face( int texture, vertex *v1, vertex *v2, vertex *v3 )
 	batching_add_tri(texture, vertlist); // TODO render as emissive
 }
 
-void warpin_queue_render(model_draw_list *scene, object *obj, matrix *orient, vec3d *pos, int texture_bitmap_num, float radius, float life_percent, float max_radius, bool warp_3d, int warp_glow_bitmap, int warp_ball_bitmap, int warp_model_id)
+void warpin_queue_render(model_draw_list *scene, object *obj, matrix *orient, vec3d *pos, int texture_bitmap_num, float radius, float life_percent, float flare_rad, float flicker_magnitude, float max_radius, bool warp_3d, int warp_glow_bitmap, int warp_ball_bitmap, int warp_model_id, bool warp_flash)
 {
 	vec3d center;
 	vec3d vecs[5];
@@ -66,53 +56,29 @@ void warpin_queue_render(model_draw_list *scene, object *obj, matrix *orient, ve
 	verts[1] = verts[2] = verts[3] = verts[4] = verts[0];
 
 	if (warp_glow_bitmap >= 0) {
-		float r = radius;
-		bool render_it = true;
+		float r = flare_rad;
 
-#define OUT_PERCENT1 0.80f
-#define OUT_PERCENT2 0.90f
+		// Add in noise 
+		int noise_frame = fl2i(Missiontime/15.0f) % NOISE_NUM_FRAMES;
 
-#define IN_PERCENT1 0.10f
-#define IN_PERCENT2 0.20f
+		r *= (0.40f + Noise[noise_frame] * flicker_magnitude);
 
-		if (Fireball_warp_flash)
-		{
-			if ( (life_percent >= IN_PERCENT1) && (life_percent < IN_PERCENT2) ) {
-				r *= (life_percent - IN_PERCENT1) / (IN_PERCENT2 - IN_PERCENT1);
-				//render_it = true;
-			} else if ( (life_percent >= OUT_PERCENT1) && (life_percent < OUT_PERCENT2) ) {
-				r *= (OUT_PERCENT2 - life_percent) / (OUT_PERCENT2 - OUT_PERCENT1);
-				//render_it = true;
-			}
-		}
+		vecs[4] = center;
+		verts[4].texture_position.u = 0.5f; verts[4].texture_position.v = 0.5f; 
 
-		if (render_it) {
-			// Add in noise 
-			int noise_frame = fl2i(Missiontime/15.0f) % NOISE_NUM_FRAMES;
+		g3_transfer_vertex( &verts[4], &vecs[4] );
 
-			r *= (0.40f + Noise[noise_frame] * 0.30f);
+		float alpha = 1.0f;
+		nebula_handle_alpha(alpha, &obj->pos, 1.0f);
 
-			// Bobboau's warp thingie, toggled by cmdline
-			if (Fireball_warp_flash) {
-				r += powf((2.0f * life_percent) - 1.0f, 24.0f) * max_radius * 1.5f;
-			}
-
-			vecs[4] = center;
-			verts[4].texture_position.u = 0.5f; verts[4].texture_position.v = 0.5f; 
-
-			g3_transfer_vertex( &verts[4], &vecs[4] );
-
-			float alpha = (The_mission.flags[Mission::Mission_Flags::Fullneb]) ? neb2_get_fog_visibility(&obj->pos, 1.0f) : 1.0f;
-
-			//batch_add_bitmap(warp_glow_bitmap, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT, &verts[4], 0, r, alpha);
-			batching_add_bitmap(warp_glow_bitmap, &verts[4], 0, r, alpha);
-		}
+		//batch_add_bitmap(warp_glow_bitmap, TMAP_FLAG_TEXTURED | TMAP_HTL_3D_UNLIT, &verts[4], 0, r, alpha);
+		batching_add_bitmap(warp_glow_bitmap, &verts[4], 0, r, alpha);
 	}
 
 	if ( (warp_model_id >= 0) && (warp_3d) ) {
 		model_render_params render_info;
 
-		float scale = radius / 25.0f;
+		float scale = radius;
 
 		vec3d warp_scale;
 
@@ -176,7 +142,7 @@ void warpin_queue_render(model_draw_list *scene, object *obj, matrix *orient, ve
 		warpin_batch_draw_face( texture_bitmap_num, &verts[0], &verts[3], &verts[4] );
 	}
 
-	if (warp_ball_bitmap >= 0 && Fireball_warp_flash) {
+	if (warp_ball_bitmap >= 0 && warp_flash) {
 		flash_ball warp_ball(20, .1f,.25f, &orient->vec.fvec, pos, 4.0f, 0.5f);
 
 		float adg = (2.0f * life_percent) - 1.0f;

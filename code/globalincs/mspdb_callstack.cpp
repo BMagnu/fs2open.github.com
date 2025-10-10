@@ -105,7 +105,7 @@ BOOL SCP_mspdbcs_ResolveSymbol( HANDLE hProcess, UINT_PTR dwAddress, SCP_mspdbcs
 
 			if ( siSymbol.dwOffset != 0 )
 			{
-				sprintf_s( szWithOffset, SCP_MSPDBCS_MAX_SYMBOL_LENGTH, "%s + %lld bytes", pszSymbol, siSymbol.dwOffset );
+				snprintf( szWithOffset, SCP_MSPDBCS_MAX_SYMBOL_LENGTH, "%s + %lld bytes", pszSymbol, siSymbol.dwOffset );
 				szWithOffset[ SCP_MSPDBCS_MAX_SYMBOL_LENGTH - 1 ] = '\0'; /* Because sprintf doesn't guarantee NULL terminating */
 				pszSymbol = szWithOffset;
 			}
@@ -216,6 +216,11 @@ DWORD WINAPI SCP_mspdbcs_DumpStackThread( LPVOID pv )
 	stackFrame.AddrPC.Offset = context.Rip;
 	stackFrame.AddrStack.Offset = context.Rsp;
 	stackFrame.AddrFrame.Offset = context.Rbp;
+#elif defined(_M_ARM64)
+	dwMachType = IMAGE_FILE_MACHINE_ARM64;
+	stackFrame.AddrPC.Offset = context.Pc;
+	stackFrame.AddrStack.Offset = context.Sp;
+	stackFrame.AddrFrame.Offset = context.Fp;
 #else
 #		error UNKNOWN ARCHITECTURE
 #endif

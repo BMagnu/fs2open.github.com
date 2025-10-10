@@ -16,6 +16,7 @@
 #include "mod_table/mod_table.h"
 #include "osapi/osapi.h"
 #include "scpui/IncludeNodeHandler.h"
+#include "scpui/RocketDecoratorsInstancer.h"
 #include "scpui/RocketFileInterface.h"
 #include "scpui/RocketLuaSystemInterface.h"
 #include "scpui/RocketRenderingInterface.h"
@@ -41,6 +42,8 @@
 
 #include <codecvt>
 #include <locale>
+
+#include <SDL_stdinc.h>
 
 using namespace Rocket::Core;
 
@@ -335,16 +338,50 @@ Input::KeyIdentifier translateKey(SDL_Keycode Key)
 		return Rocket::Core::Input::KI_DOWN;
 	case SDLK_KP_PLUS:
 		return Rocket::Core::Input::KI_ADD;
-	case SDLK_BACKSPACE:
-		return Rocket::Core::Input::KI_BACK;
-	case SDLK_DELETE:
-		return Rocket::Core::Input::KI_DELETE;
+	case SDLK_KP_MINUS:
+		return Rocket::Core::Input::KI_SUBTRACT;
+	case SDLK_KP_MULTIPLY:
+		return Rocket::Core::Input::KI_MULTIPLY;
 	case SDLK_KP_DIVIDE:
 		return Rocket::Core::Input::KI_DIVIDE;
+	case SDLK_KP_DECIMAL:
+		return Rocket::Core::Input::KI_DECIMAL;
+	case SDLK_KP_ENTER:
+		return Rocket::Core::Input::KI_NUMPADENTER;
+	case SDLK_MINUS:
+		return Rocket::Core::Input::KI_OEM_MINUS;
+	case SDLK_EQUALS:
+		return Rocket::Core::Input::KI_OEM_PLUS;
+	case SDLK_BACKSPACE:
+		return Rocket::Core::Input::KI_BACK;
+	case SDLK_LEFTBRACKET:
+		return Rocket::Core::Input::KI_OEM_4;
+	case SDLK_RIGHTBRACKET:
+		return Rocket::Core::Input::KI_OEM_6;
+	case SDLK_BACKSLASH:
+		return Rocket::Core::Input::KI_OEM_5;
+	case SDLK_SEMICOLON:
+		return Rocket::Core::Input::KI_OEM_1;
+	case SDLK_QUOTE:
+		return Rocket::Core::Input::KI_OEM_7;
+	case SDLK_COMMA:
+		return Rocket::Core::Input::KI_OEM_COMMA;
+	case SDLK_PERIOD:
+		return Rocket::Core::Input::KI_OEM_PERIOD;
+	case SDLK_SLASH:
+		return Rocket::Core::Input::KI_OEM_2;
+	case SDLK_INSERT:
+		return Rocket::Core::Input::KI_INSERT;
+	case SDLK_HOME:
+		return Rocket::Core::Input::KI_HOME;
+	case SDLK_PAGEUP:
+		return Rocket::Core::Input::KI_PRIOR;
+	case SDLK_DELETE:
+		return Rocket::Core::Input::KI_DELETE;
 	case SDLK_END:
 		return Rocket::Core::Input::KI_END;
-	case SDLK_ESCAPE:
-		return Rocket::Core::Input::KI_ESCAPE;
+	case SDLK_PAGEDOWN:
+		return Rocket::Core::Input::KI_NEXT;
 	case SDLK_F1:
 		return Rocket::Core::Input::KI_F1;
 	case SDLK_F2:
@@ -375,28 +412,28 @@ Input::KeyIdentifier translateKey(SDL_Keycode Key)
 		return Rocket::Core::Input::KI_F14;
 	case SDLK_F15:
 		return Rocket::Core::Input::KI_F15;
-	case SDLK_HOME:
-		return Rocket::Core::Input::KI_HOME;
-	case SDLK_INSERT:
-		return Rocket::Core::Input::KI_INSERT;
+	case SDLK_ESCAPE:
+		return Rocket::Core::Input::KI_ESCAPE;
 	case SDLK_LCTRL:
 		return Rocket::Core::Input::KI_LCONTROL;
-	case SDLK_LSHIFT:
-		return Rocket::Core::Input::KI_LSHIFT;
-	case SDLK_KP_MULTIPLY:
-		return Rocket::Core::Input::KI_MULTIPLY;
-	case SDLK_PAUSE:
-		return Rocket::Core::Input::KI_PAUSE;
 	case SDLK_RCTRL:
 		return Rocket::Core::Input::KI_RCONTROL;
+	case SDLK_LALT:
+		return Rocket::Core::Input::KI_LMETA;
+	case SDLK_RALT:
+		return Rocket::Core::Input::KI_RMETA;
+	case SDLK_CAPSLOCK:
+		return Rocket::Core::Input::KI_CAPITAL;
+	case SDLK_PAUSE:
+		return Rocket::Core::Input::KI_PAUSE;
 	case SDLK_RETURN:
 		return Rocket::Core::Input::KI_RETURN;
+	case SDLK_LSHIFT:
+		return Rocket::Core::Input::KI_LSHIFT;
 	case SDLK_RSHIFT:
 		return Rocket::Core::Input::KI_RSHIFT;
 	case SDLK_SPACE:
 		return Rocket::Core::Input::KI_SPACE;
-	case SDLK_KP_MINUS:
-		return Rocket::Core::Input::KI_SUBTRACT;
 	case SDLK_TAB:
 		return Rocket::Core::Input::KI_TAB;
 	};
@@ -471,21 +508,6 @@ bool key_event_handler(const SDL_Event& evt)
 		return input_context->ProcessKeyUp(translateKey(evt.key.keysym.sym), get_modifier_state());
 	}
 }
-#if _MSC_VER >= 1900
-std::u16string utf8_to_utf16(const char* utf8_string)
-{
-	std::wstring_convert<std::codecvt_utf8_utf16<int16_t>, int16_t> convert;
-	auto intString = convert.from_bytes(utf8_string);
-
-	return std::u16string(reinterpret_cast<const char16_t*>(intString.data()));
-}
-#else
-std::u16string utf8_to_utf16(const char* utf8_string)
-{
-	std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> convert;
-	return convert.from_bytes(utf8_string);
-}
-#endif
 
 bool text_input_handler(const SDL_Event& evt)
 {
@@ -500,7 +522,23 @@ bool text_input_handler(const SDL_Event& evt)
 	}
 
 	// libRocket expects UCS-2 so we first need to convert to that
-	auto ucs2String = utf8_to_utf16(evt.text.text);
+	// NOTE: not using SDL_iconv_utf8_ucs2() macro here due to Linux compatiblity issue
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+	const char *tocode = "UCS-2BE";
+#else
+	const char *tocode = "UCS-2LE";
+#endif
+
+	auto text = reinterpret_cast<char16_t *>(SDL_iconv_string(tocode, "UTF-8", evt.text.text, SDL_strlen(evt.text.text)+1));
+
+	if ( !text ) {
+		// encoding failed
+		return false;
+	}
+
+	auto ucs2String = std::u16string(text);
+
+	SDL_free(text);
 
 	bool consumed = true;
 	for (auto& c : ucs2String) {
@@ -543,6 +581,18 @@ void initialize()
 		->RemoveReference();
 
 	XMLParser::RegisterNodeHandler("include", new IncludeNodeHandler())->RemoveReference();
+
+	// Register custom underline decorator with its own instancer
+	Rocket::Core::DecoratorInstancer* underline_instancer = new scpui::decorators::UnderlineDecoratorInstancer();
+	Rocket::Core::Factory::RegisterDecoratorInstancer("underline", underline_instancer);
+
+	// Register custom corner-borders decorator with its own instancer
+	Rocket::Core::DecoratorInstancer* corner_borders_instancer = new scpui::decorators::BorderDecoratorInstancer();
+	Rocket::Core::Factory::RegisterDecoratorInstancer("corner-borders", corner_borders_instancer);
+
+	// Decrease the reference counts (as it is managed by libRocket after registration)
+	underline_instancer->RemoveReference();
+	corner_borders_instancer->RemoveReference();
 
 	// Setup the plugin a style sheet properties for the sound support
 	Rocket::Core::RegisterPlugin(new SoundPlugin());
@@ -654,6 +704,11 @@ void reloadAllContexts()
 	for (auto i = 0; i < Rocket::Core::GetNumContexts(); ++i) {
 		reloadContext(Rocket::Core::GetContext(i));
 	}
+}
+
+Rocket::Core::Context* getContext()
+{
+	return input_context;
 }
 
 void enableInput(Rocket::Core::Context* main_ctx)

@@ -6,8 +6,10 @@
 #include "gamesnd/gamesnd.h"
 #include "menuui/credits.h"
 #include "menuui/mainhallmenu.h"
+#include "mission/missionmessage.h"
 #include "missionui/missionbrief.h"
 #include "render/3d.h"
+#include "weapon/weapon.h"
 #include "scripting/api/objs/audio_stream.h"
 #include "scripting/api/objs/enums.h"
 #include "scripting/api/objs/sound.h"
@@ -46,6 +48,19 @@ ADE_VIRTVAR(MasterEventMusicVolume,
 		LuaError(L, "This property is read-only!");
 	}
 	return ade_set_args(L, "f", Master_event_music_volume);
+}
+
+ADE_VIRTVAR(MasterEffectsVolume,
+	l_Audio,
+	nullptr,
+	"The current master effects volume. This property is read-only.",
+	"number",
+	"The volume in the range from 0 to 1")
+{
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "This property is read-only!");
+	}
+	return ade_set_args(L, "f", Master_sound_volume);
 }
 
 ADE_FUNC(getSoundentry, l_Audio, "string/number", "Return a sound entry matching the specified index or name. If you are using a number then the first valid index is 1", "soundentry", "soundentry or invalid handle on error")
@@ -103,7 +118,7 @@ ADE_FUNC(playSound, l_Audio, "soundentry", "Plays the specified sound entry hand
 	if (!ade_get_args(L, "o", l_SoundEntry.GetPtr(&seh)))
 		return ade_set_error(L, "o", l_Sound.Set(sound_h()));
 
-	if (seh == NULL || !seh->IsValid())
+	if (seh == NULL || !seh->isValid())
 		return ade_set_error(L, "o", l_Sound.Set(sound_h()));
 
 	auto handle = snd_play(seh->Get());
@@ -124,7 +139,7 @@ ADE_FUNC(playLoopingSound, l_Audio, "soundentry", "Plays the specified sound as 
 	if (!ade_get_args(L, "o", l_SoundEntry.GetPtr(&seh)))
 		return ade_set_error(L, "o", l_Sound.Set(sound_h()));
 
-	if (seh == NULL || !seh->IsValid())
+	if (seh == NULL || !seh->isValid())
 		return ade_set_error(L, "o", l_Sound.Set(sound_h()));
 
 	auto handle = snd_play_looping(seh->Get());
@@ -150,7 +165,7 @@ ADE_FUNC(play3DSound, l_Audio, "soundentry, [vector source, vector listener]",
 	if (!ade_get_args(L, "o|oo", l_SoundEntry.GetPtr(&seh), l_Vector.GetPtr(&source), l_Vector.GetPtr(&listener)))
 		return ade_set_error(L, "o", l_Sound3D.Set(sound_h()));
 
-	if (seh == NULL || !seh->IsValid())
+	if (seh == NULL || !seh->isValid())
 		return ade_set_error(L, "o", l_Sound3D.Set(sound_h()));
 
 	auto handle = snd_play_3d(seh->Get(), source, listener);
@@ -201,7 +216,7 @@ ADE_FUNC(playGameSound,
 	}
 }
 
-ADE_FUNC(playInterfaceSound, l_Audio, "sound index", "Plays a sound from #Interface Sounds in sounds.tbl", "boolean", "True if sound was played, false if not")
+ADE_FUNC(playInterfaceSound, l_Audio, "number index", "Plays a sound from #Interface Sounds in sounds.tbl", "boolean", "True if sound was played, false if not")
 {
 	int idx;
 	if(!ade_get_args(L, "i", &idx))
@@ -359,6 +374,57 @@ ADE_FUNC(openAudioStream,
 		return ade_set_args(L, "o", l_AudioStream.Set(-1));
 
 	return ade_set_args(L, "o", l_AudioStream.Set(ah));
+}
+
+ADE_FUNC(pauseWeaponSounds,
+	l_Audio,
+	"boolean pause",
+	"Pauses or unpauses all weapon sounds. The boolean argument should be true to pause and false to unpause.",
+	nullptr,
+	nullptr)
+{
+	bool pause;
+
+	if (!ade_get_args(L, "b", &pause))
+		return ADE_RETURN_NIL;
+
+	if (pause) {
+		weapon_pause_sounds();
+	} else {
+		weapon_unpause_sounds();
+	}
+
+	return ADE_RETURN_NIL;
+}
+
+ADE_FUNC(pauseVoiceMessages,
+	l_Audio,
+	"boolean pause",
+	"Pauses or unpauses all voice message sounds. The boolean argument should be true to pause and false to unpause.",
+	nullptr,
+	nullptr)
+{
+	bool pause;
+
+	if (!ade_get_args(L, "b", &pause))
+		return ADE_RETURN_NIL;
+
+	if (pause) {
+		message_pause_all();
+	} else {
+		message_resume_all();
+	}
+
+	return ADE_RETURN_NIL;
+}
+
+ADE_FUNC(killVoiceMessages, l_Audio, nullptr, "Kills all currently playing voice messages.", nullptr, nullptr)
+{
+	SCP_UNUSED(L);
+
+	message_kill_all(true);
+
+	return ADE_RETURN_NIL;
 }
 
 } // namespace api

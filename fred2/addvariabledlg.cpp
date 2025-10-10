@@ -44,9 +44,9 @@ void CAddVariableDlg::DoDataExchange(CDataExchange* pDX) {
 	CDialog::DoDataExchange(pDX);
 	//{{AFX_DATA_MAP(CAddVariableDlg)
 	DDX_Text(pDX, IDC_ADD_VARIABLE_DEFAULT_VALUE, m_default_value);
-	DDV_MaxChars(pDX, m_default_value, 31);
+	DDV_MaxChars(pDX, m_default_value, TOKEN_LENGTH - 1);
 	DDX_Text(pDX, IDC_ADD_VARIABLE_NAME, m_variable_name);
-	DDV_MaxChars(pDX, m_variable_name, 31);
+	DDV_MaxChars(pDX, m_variable_name, TOKEN_LENGTH - 1);
 	//}}AFX_DATA_MAP
 }
 
@@ -138,7 +138,7 @@ void CAddVariableDlg::OnOK() {
 		//		}
 		//
 		//		m_sexp_var_index = sexp_add_variable(temp_value, temp_name, type);
-		//		this get done for free CDialog::OnOk() UpdateData(TRUE);
+		//		this get done for free CDialog::OnOK() UpdateData(TRUE);
 		m_create = true;
 
 		CDialog::OnOK();

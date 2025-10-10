@@ -61,7 +61,9 @@
 #include "cmdline/cmdline.h"
 #include "object/objectshield.h"
 #include "sound/audiostr.h"
-
+#include "scripting/hook_api.h"
+#include "scripting/global_hooks.h"
+#include "cheats_table/cheats_table.h"
 /**
 * Natural number factor lookup class.
 */
@@ -164,6 +166,8 @@ void factor_table::resize(size_t size)
 	}
 }
 
+// Cyborg -- You may see a linter or coverity complain about this function, since it basically discards a lot of the result of the float division.
+// But using modulo division instead is actually about 60% slower based on some quick testing I did, and it gives the same results.
 bool factor_table::isNaturalNumberFactor(size_t factor, size_t n)
 {
 	return ((float)n / (float)factor) == n / factor;
@@ -179,10 +183,11 @@ factor_table ftables;
 // time compression/dilation values - Goober5000
 // (Volition sez "can't compress below 0.25"... not sure if
 // this is arbitrary or dictated by code)
-#define MAX_TIME_MULTIPLIER		64
-#define MAX_TIME_DIVIDER		4
+constexpr int MAX_TIME_MULTIPLIER = 64;
+constexpr int MAX_TIME_DIVIDER    =  4;
+constexpr int MAX_TIME_MULTIPLIER_RETAIL = 4;
+constexpr int MAX_TIME_DIVIDER_RETAIL   =  1;
 
-#define CHEAT_BUFFER_LEN	17
 char CheatBuffer[CHEAT_BUFFER_LEN+1];
 
 enum cheatCode {
@@ -205,19 +210,16 @@ static struct Cheat cheatsTable[] = {
   { CHEAT_CODE_FISH,      "vasudanswuvfishes" },
   { CHEAT_CODE_HEADZ,     "humanheadsinside." },
   { CHEAT_CODE_TOOLED,    "tooledworkedowned" },
-  { CHEAT_CODE_PIRATE,    "arrrrwalktheplank" },
   { CHEAT_CODE_SKIP,      "skipmemymissionyo" }
 };
 
-#define CHEATS_TABLE_LEN	6
+#define CHEATS_TABLE_LEN	5
+
 
 int Tool_enabled = 0;
-bool Perspective_locked=false;
 
 extern int AI_watch_object;
 extern int Countermeasures_enabled;
-
-extern float do_subobj_hit_stuff(object *ship_obj, object *other_obj, vec3d *hitpos, int submodel_num, float damage, bool *hull_should_apply_armor);
 
 extern void mission_goal_mark_all_true( int type );
 
@@ -333,11 +335,16 @@ int Normal_key_set[] = {
 
 	TOGGLE_GLIDING,
 	CYCLE_PRIMARY_WEAPON_SEQUENCE,
+	CYCLE_PRIMARY_WEAPON_PATTERN,
 	CUSTOM_CONTROL_1,
     CUSTOM_CONTROL_2,
     CUSTOM_CONTROL_3,
 	CUSTOM_CONTROL_4,
-	CUSTOM_CONTROL_5
+	CUSTOM_CONTROL_5,
+		
+	COMMS_MENU_MOVE_UP,
+	COMMS_MENU_MOVE_DOWN,
+	COMMS_MENU_SELECT
 };
 
 int Dead_key_set[] = {
@@ -477,7 +484,11 @@ int Non_critical_key_set[] = {
     CUSTOM_CONTROL_2,
     CUSTOM_CONTROL_3,
 	CUSTOM_CONTROL_4,
-	CUSTOM_CONTROL_5
+	CUSTOM_CONTROL_5,
+
+	COMMS_MENU_MOVE_UP,
+	COMMS_MENU_MOVE_DOWN,
+	COMMS_MENU_SELECT
 };
 
 int Ignored_keys[CCFG_MAX];
@@ -640,7 +651,7 @@ extern int Framerate_delay;
 
 extern vec3d Eye_position;
 extern matrix Eye_matrix;
-extern void g3_set_view_matrix(const vec3d *view_pos, const matrix *view_matrix, float zoom);
+extern void g3_set_view_matrix(const vec3d *view_pos, const matrix *view_matrix, fov_t zoom);
 
 extern int Show_cpu;
 
@@ -746,28 +757,24 @@ void process_debug_keys(int k)
 		case KEY_DEBUGGED + KEY_SHIFTED + KEY_COMMA:
 		case KEY_DEBUGGED1 + KEY_SHIFTED + KEY_COMMA:
 			if ( Game_mode & GM_NORMAL ) {
-				if ( Game_time_compression > (F1_0/MAX_TIME_DIVIDER) ) {
-					change_time_compression(0.5);
-				} else {
-					gamesnd_play_error_beep();
+				if (Game_time_compression > (F1_0 / (Cmdline_retail_time_compression_range ? MAX_TIME_DIVIDER_RETAIL : MAX_TIME_DIVIDER))) {
+					change_time_compression(0.5f);
+					break;
 				}
-			} else {
-				gamesnd_play_error_beep();
 			}
+			gamesnd_play_error_beep();
 			break;
 
 		// Goober5000: handle as normal here
 		case KEY_DEBUGGED + KEY_SHIFTED + KEY_PERIOD:
 		case KEY_DEBUGGED1 + KEY_SHIFTED + KEY_PERIOD:
 			if ( Game_mode & GM_NORMAL ) {
-				if ( Game_time_compression < (F1_0*MAX_TIME_MULTIPLIER) ) {
-					change_time_compression(2);
-				} else {
-					gamesnd_play_error_beep();
+				if (Game_time_compression < (F1_0 * (Cmdline_retail_time_compression_range ? MAX_TIME_MULTIPLIER_RETAIL : MAX_TIME_MULTIPLIER))) {
+					change_time_compression(2.0f);
+					break;
 				}
-			} else {
-				gamesnd_play_error_beep();
 			}
+			gamesnd_play_error_beep();
 			break;
 
 		//	Kill! the currently targeted ship.
@@ -797,11 +804,8 @@ void process_debug_keys(int k)
 		// play the next mission message
 		case KEY_DEBUGGED + KEY_V:		
 			extern int Message_debug_index;
-			extern int Num_messages_playing;
 			// stop any other messages
-			if(Num_messages_playing){
-				message_kill_all(1);
-			}
+			message_kill_all(true);
 
 			// next message
 			if(Message_debug_index >= Num_messages - 1){
@@ -811,7 +815,7 @@ void process_debug_keys(int k)
 			}
 			
 			// play the message
-			message_send_unique_to_player( Messages[Message_debug_index].name, Message_waves[Messages[Message_debug_index].wave_info.index].name, MESSAGE_SOURCE_SPECIAL, MESSAGE_PRIORITY_HIGH, 0, 0 );			
+			message_send_unique( Messages[Message_debug_index].name, Message_waves[Messages[Message_debug_index].wave_info.index].name, MESSAGE_SOURCE_SPECIAL, MESSAGE_PRIORITY_HIGH, 0, 0 );			
 			if (Messages[Message_debug_index].avi_info.index == -1) {
 				HUD_printf("No anim set for message \"%s\"; None will play!", Messages[Message_debug_index].name);
 			}
@@ -820,11 +824,8 @@ void process_debug_keys(int k)
 		// play the previous mission message
 		case KEY_DEBUGGED + KEY_SHIFTED + KEY_V:
 			extern int Message_debug_index;
-			extern int Num_messages_playing;
 			// stop any other messages
-			if(Num_messages_playing){
-				message_kill_all(1);
-			}
+			message_kill_all(true);
 
 			// go maybe go down one
 			if(Message_debug_index == Num_builtin_messages - 1){
@@ -834,7 +835,7 @@ void process_debug_keys(int k)
 			}
 			
 			// play the message
-			message_send_unique_to_player( Messages[Message_debug_index].name, Message_waves[Messages[Message_debug_index].wave_info.index].name, MESSAGE_SOURCE_SPECIAL, MESSAGE_PRIORITY_HIGH, 0, 0 );
+			message_send_unique( Messages[Message_debug_index].name, Message_waves[Messages[Message_debug_index].wave_info.index].name, MESSAGE_SOURCE_SPECIAL, MESSAGE_PRIORITY_HIGH, 0, 0 );
 			if (Messages[Message_debug_index].avi_info.index == -1) {
 				HUD_printf("No avi associated with this message; None will play!");
 			}
@@ -872,13 +873,17 @@ void process_debug_keys(int k)
 
 					do_subobj_hit_stuff(objp, Player_obj, &g_subobj_pos, Player_ai->targeted_subsys->system_info->subobj_num, (float) -Player_ai->targeted_subsys->system_info->type, NULL); //100.0f);
 
-					if ( sp->subsys_info[SUBSYSTEM_ENGINE].aggregate_current_hits <= 0.0f ) {
-						mission_log_add_entry(LOG_SHIP_DISABLED, sp->ship_name, NULL );
-						sp->flags.set(Ship::Ship_Flags::Disabled);				// add the disabled flag
+					if ( Player_ai->targeted_subsys->system_info->type == SUBSYSTEM_ENGINE ) {
+						if ( sp->subsys_info[SUBSYSTEM_ENGINE].aggregate_current_hits <= 0.0f ) {
+							mission_log_add_entry(LOG_SHIP_DISABLED, sp->ship_name, NULL );
+							sp->flags.set(Ship::Ship_Flags::Disabled);				// add the disabled flag
+						}
 					}
 
-					if ( sp->subsys_info[SUBSYSTEM_TURRET].aggregate_current_hits <= 0.0f ) {
-						mission_log_add_entry(LOG_SHIP_DISARMED, sp->ship_name, NULL );
+					if ( Player_ai->targeted_subsys->system_info->type == SUBSYSTEM_TURRET ) {
+						if ( sp->subsys_info[SUBSYSTEM_TURRET].aggregate_current_hits <= 0.0f ) {
+							mission_log_add_entry(LOG_SHIP_DISARMED, sp->ship_name, NULL );
+						}
 					}
 				}
 			}
@@ -955,13 +960,13 @@ void process_debug_keys(int k)
 				debug_max_secondary_weapons(Player_obj);
 				debug_max_primary_weapons(Player_obj);
 				if (k & KEY_SHIFTED) {
-					object	*objp;
-
-					for ( objp = GET_FIRST(&obj_used_list); objp !=END_OF_LIST(&obj_used_list); objp = GET_NEXT(objp) )
-						if (objp->type == OBJ_SHIP) {
-							debug_max_secondary_weapons(objp);
-							debug_max_primary_weapons(objp);
-						}
+					for (auto so: list_range(&Ship_obj_list)) {
+						auto objp = &Objects[so->objnum];
+						if (objp->flags[Object::Object_Flags::Should_be_dead])
+							continue;
+						debug_max_secondary_weapons(objp);
+						debug_max_primary_weapons(objp);
+					}
 				}
 
 			} else
@@ -1012,7 +1017,6 @@ void process_debug_keys(int k)
 		case KEY_DEBUGGED + KEY_U: {
 		case KEY_DEBUGGED1 + KEY_U:
 			// launch asteroid
-			object *asteroid_create(asteroid_field *asfieldp, int asteroid_type, int subtype);
 			object *objp = asteroid_create(&Asteroid_field, 0, 0);
 			if(objp == NULL) {
 				break;
@@ -1261,17 +1265,17 @@ void process_debug_keys(int k)
 		case KEY_PADMINUS: {
 			int init_flag = 0;
 
-			if ( keyd_pressed[KEY_1] )	{
+			if ( key_is_pressed(KEY_1) ) {
 				init_flag = 1;
 				HUD_color_red -= 4;
 			} 
 
-			if ( keyd_pressed[KEY_2] )	{
+			if ( key_is_pressed(KEY_2) ) {
 				init_flag = 1;
 				HUD_color_green -= 4;
-			} 
+			}
 
-			if ( keyd_pressed[KEY_3] )	{
+			if ( key_is_pressed(KEY_3) ) {
 				init_flag = 1;
 				HUD_color_blue -= 4;
 			} 
@@ -1290,17 +1294,17 @@ void process_debug_keys(int k)
 		case KEY_PADPLUS: {
 			int init_flag = 0;
 
-			if ( keyd_pressed[KEY_1] )	{
+			if ( key_is_pressed(KEY_1) ) {
 				init_flag = 1;
 				HUD_color_red += 4;
 			} 
 
-			if ( keyd_pressed[KEY_2] )	{
+			if ( key_is_pressed(KEY_2) ) {
 				init_flag = 1;
 				HUD_color_green += 4;
 			} 
 
-			if ( keyd_pressed[KEY_3] )	{
+			if ( key_is_pressed(KEY_3) ) {
 				init_flag = 1;
 				HUD_color_blue += 4;
 			} 
@@ -1320,7 +1324,7 @@ void process_debug_keys(int k)
 				break;
 			}
 			cam->set_fov(cam->get_fov() + 0.1f);
-			HUD_sourced_printf(HUD_SOURCE_HIDDEN, "Camera fov raised to %0.2f" , cam->get_fov());
+			HUD_sourced_printf(HUD_SOURCE_HIDDEN, "Camera fov raised to %0.2f" , g3_get_hfov(cam->get_fov()));
 			}
 			break;
 
@@ -1334,7 +1338,7 @@ void process_debug_keys(int k)
 				break;
 			}
 			cam->set_fov(cam->get_fov() - 0.1f);
-			HUD_sourced_printf(HUD_SOURCE_HIDDEN, "Camera fov lowered to %0.2f" , cam->get_fov());
+			HUD_sourced_printf(HUD_SOURCE_HIDDEN, "Camera fov lowered to %0.2f" , g3_get_hfov(cam->get_fov()));
 			}
 			break;
 		case KEY_DEBUGGED + KEY_Z:
@@ -1454,7 +1458,7 @@ void process_player_ship_keys(int k)
 	// moved this line to beginning of function since hotkeys now encompass
 	// F5 - F12.  We can return after using F11 as a hotkey.
 	ppsk_hotkeys(masked_k);
-	if (keyd_pressed[KEY_DEBUG_KEY]){
+	if (key_is_pressed(KEY_DEBUG_KEY)){
 		return;
 	}
 
@@ -1511,7 +1515,8 @@ void game_do_end_mission_popup()
 		game_stop_time();
 		game_stop_looped_sounds();
 		audiostream_pause_all();
-		snd_stop_all();
+		weapon_pause_sounds();
+		message_pause_all();
 
 		pf_flags = PF_BODY_BIG | PF_USE_AFFIRMATIVE_ICON | PF_USE_NEGATIVE_ICON;
 		choice = popup(pf_flags, 3, POPUP_NO, XSTR( "&Yes, Quit", 28), XSTR( "Yes, &Restart", 29), XSTR( "Do you really want to end the mission?", 30));
@@ -1532,6 +1537,8 @@ void game_do_end_mission_popup()
 				game_start_subspace_ambient_sound();
 			}
 			audiostream_unpause_all();
+			weapon_unpause_sounds();
+			message_resume_all();
 			break;
 		}
 
@@ -1582,13 +1589,24 @@ void game_process_cheats(int k)
 	
 	cheatCode detectedCheatCode = CHEAT_CODE_NONE;
 
+
 	for(i=0; i < CHEATS_TABLE_LEN; i++) {
 		Cheat cheat = cheatsTable[i];
 
 		if(!strncmp(cheat.data, CheatBuffer, CHEAT_BUFFER_LEN)){
 			detectedCheatCode = cheat.code;
+			scripting::hooks::OnCheat->run(scripting::hook_param_list(scripting::hook_param("Cheat", 's', cheat.data)));
+			CheatUsed = cheat.data;
 			break;
 		}
+	}
+
+	// When we find a custom cheat we need to clear the buffer, as they don't use the fixed cheat code length like the originals.
+	if (checkForCustomCheats(CheatBuffer, CHEAT_BUFFER_LEN+1))
+	{
+		memset(CheatBuffer, 0, (CHEAT_BUFFER_LEN+1)*sizeof(char));
+		if (detectedCheatCode == CHEAT_CODE_NONE) return;
+		// If detectedCheatCode is anything else, then the modder overwrote an original cheat, and we still want that behavior, so continue.
 	}
 
 	if(detectedCheatCode == CHEAT_CODE_FREESPACE){
@@ -1603,15 +1621,14 @@ void game_process_cheats(int k)
 	}
 	if(detectedCheatCode == CHEAT_CODE_FISH){
 		// only enable in the Vasudan main hall
-		if ((gameseq_get_state() == GS_STATE_MAIN_MENU) && main_hall_is_vasudan()) {
-			extern void fishtank_start();
-			fishtank_start();
+		if ((gameseq_get_state() == GS_STATE_MAIN_MENU) && main_hall_allows_fish()) {
+			main_hall_start_fishies();
 		}
 	}
 	if(detectedCheatCode == CHEAT_CODE_HEADZ){
 		// only enable in the Vasudan main hall
-		if ((gameseq_get_state() == GS_STATE_MAIN_MENU) && main_hall_is_vasudan()) {
-			main_hall_vasudan_funny();
+		if ((gameseq_get_state() == GS_STATE_MAIN_MENU) && main_hall_allows_headz()) {
+			main_hall_set_door_headz();
 		}
 	}
 	if(detectedCheatCode ==  CHEAT_CODE_SKIP && (gameseq_get_state() == GS_STATE_MAIN_MENU)){
@@ -1621,71 +1638,6 @@ void game_process_cheats(int k)
 	if(detectedCheatCode == CHEAT_CODE_TOOLED && (Game_mode & GM_IN_MISSION)){
 		Tool_enabled = 1;
 		HUD_printf("Prepare to be taken to school");
-	}
-	if(detectedCheatCode == CHEAT_CODE_PIRATE && (Game_mode & GM_IN_MISSION) && (Player_obj != NULL)){
-		extern void prevent_spawning_collision(object *new_obj);
-		ship_subsys *ptr;
-		char name[NAME_LENGTH];
-		int ship_idx, ship_class; 
-
-		// if not found, then don't create it :(
-		ship_class = ship_info_lookup("Volition Bravos");
-		if (ship_class < 0)
-			return;
-
-		HUD_printf(NOX("Walk the plank"));
-
-		vec3d pos = Player_obj->pos;
-		matrix orient = Player_obj->orient;
-		pos.xyz.x += frand_range(-700.0f, 700.0f);
-		pos.xyz.y += frand_range(-700.0f, 700.0f);
-		pos.xyz.z += frand_range(-700.0f, 700.0f);
-
-		int objnum = ship_create(&orient, &pos, ship_class);
-		if (objnum < 0)
-			return;
-
-		ship *shipp = &Ships[Objects[objnum].instance];
-		shipp->ship_name[0] = '\0';
-		shipp->display_name.clear();
-		for(size_t j = 0; j < Player_orders.size(); j++)
-			shipp->orders_accepted.insert(j);
-
-		// Goober5000 - stolen from support ship creation
-		// create a name for the ship.  use "Volition Bravos #".  look for collisions until one isn't found anymore
-		ship_idx = 1;
-		do {
-			sprintf(name, NOX("Volition Bravos %d"), ship_idx);
-			if ( (ship_name_lookup(name) == -1) && (ship_find_exited_ship_by_name(name) == -1) )
-			{
-				strcpy_s(shipp->ship_name, name);
-				break;
-			}
-
-			ship_idx++;
-		} while(1);
-
-		shipp->flags.set(Ship::Ship_Flags::Escort);
-		shipp->escort_priority = 1000 - ship_idx;
-
-		// now make sure we're not colliding with anyone
-		prevent_spawning_collision(&Objects[objnum]);
-			
-		// Goober5000 - beam free
-		for (ptr = GET_FIRST(&shipp->subsys_list); ptr != END_OF_LIST(&shipp->subsys_list); ptr = GET_NEXT(ptr))
-		{
-			// mark all turrets as beam free
-			if (ptr->system_info->type == SUBSYSTEM_TURRET)
-			{
-				ptr->weapons.flags.set(Ship::Weapon_Flags::Beam_Free);
-				ptr->turret_next_fire_stamp = timestamp((int) frand_range(50.0f, 4000.0f));
-			}
-		}
-
-		// Cyborg17 to prevent a nullptr...
-		ship_set_warp_effects(&Objects[objnum]);
-		// warpin
-		shipfx_warpin_start(&Objects[objnum]);
 	}
 }
 
@@ -1725,21 +1677,40 @@ void game_process_keys()
 						break;
 					}
 
-					//If topdown view in non-2D mission, go back to cockpit view.
-					if ( (Viewer_mode & VM_TOPDOWN) && !(The_mission.flags[Mission::Mission_Flags::Mission_2d]) && !(Perspective_locked) ) {
-						Viewer_mode &= ~VM_TOPDOWN;
-						break;
+					bool changed_view = false;
+
+					if (!Perspective_locked) {
+						bool default_is_chase = (Default_start_chase_view != The_mission.flags[Mission::Mission_Flags::Toggle_start_chase_view]);
+
+						//If topdown view in non-2D mission, revert
+						if ((Viewer_mode & VM_TOPDOWN) && !(The_mission.flags[Mission::Mission_Flags::Mission_2d])) {
+							Viewer_mode &= ~VM_TOPDOWN;
+							changed_view = true;
+						}
+
+						// if in external view, revert
+						if ((Viewer_mode & (VM_EXTERNAL | VM_OTHER_SHIP))) {
+							Viewer_mode &= ~(VM_EXTERNAL | VM_OTHER_SHIP);
+							changed_view = true;
+						}
+
+						// if in non-default chase/cockpit view, revert
+						if (default_is_chase) {
+							if (!(Viewer_mode & VM_CHASE)) {
+								Viewer_mode |= VM_CHASE;
+								changed_view = true;
+							}
+						} else {
+							if (Viewer_mode & VM_CHASE) {
+								Viewer_mode &= ~VM_CHASE;
+								changed_view = true;
+							}
+						}
 					}
 
-					// if in external view or chase view, go back to cockpit view
-					if ( (Viewer_mode & (VM_EXTERNAL|VM_CHASE|VM_OTHER_SHIP)) && !(Perspective_locked) ) {
-						Viewer_mode &= ~(VM_EXTERNAL|VM_CHASE|VM_OTHER_SHIP);
-						break;
-					}
-
-					if (!(Game_mode & GM_DEAD_DIED))
+					// if we haven't done anything yet, show the popup
+					if (!changed_view && !(Game_mode & GM_DEAD_DIED))
 						game_do_end_mission_popup();
-
 				}
 				break;
 
@@ -1852,12 +1823,21 @@ int button_function_critical(int n, net_player *p = NULL)
 					polymodel *pm = model_get( sip->model_num );
 					count = (int)ftables.getNext( pm->gun_banks[ swp->current_primary_bank ].num_slots, swp->primary_bank_slot_count[ swp->current_primary_bank ] );
 					swp->primary_bank_slot_count[ swp->current_primary_bank ] = count;
-					shipp->last_fired_point[ swp->current_primary_bank ] += count - ( shipp->last_fired_point[ swp->current_primary_bank ] % count);
-					shipp->last_fired_point[ swp->current_primary_bank ] -= 1;
-					shipp->last_fired_point[ swp->current_primary_bank ] %= swp->primary_bank_slot_count[ swp->current_primary_bank ];
+					swp->primary_firepoint_next_to_fire_index[swp->current_primary_bank] = 0;
 				}
 			}
 			break;
+
+		case CYCLE_PRIMARY_WEAPON_PATTERN: {
+				ship* shipp = &Ships[objp->instance];
+				ship_weapon* swp = &shipp->weapons;
+				ship_info* sip = &Ship_info[shipp->ship_info_index];
+				if (sip->flags[Ship::Info_Flags::Dyn_primary_linking]) {
+					int new_pattern = (swp->dynamic_firing_pattern[swp->current_primary_bank] + 1) % (sip->dyn_firing_patterns_allowed[swp->current_primary_bank].size());
+					swp->dynamic_firing_pattern[swp->current_primary_bank] = new_pattern;
+					swp->primary_firepoint_next_to_fire_index[swp->current_primary_bank] = 0;
+				}
+			} break;
 
 		// cycle to next primary weapon
 		case CYCLE_NEXT_PRIMARY:
@@ -1866,10 +1846,10 @@ int button_function_critical(int n, net_player *p = NULL)
 			}
 
 			hud_gauge_popup_start(HUD_WEAPONS_GAUGE);
-			if (ship_select_next_primary(objp, CYCLE_PRIMARY_NEXT)) {
+			if (ship_select_next_primary(objp, CycleDirection::NEXT)) {
 				ship* shipp = &Ships[objp->instance];
 				if ( timestamp_elapsed(shipp->weapons.next_primary_fire_stamp[shipp->weapons.current_primary_bank]) ) {
-					shipp->weapons.next_primary_fire_stamp[shipp->weapons.current_primary_bank] = timestamp(250);	//	1/4 second delay until can fire
+					shipp->weapons.next_primary_fire_stamp[shipp->weapons.current_primary_bank] = timestamp(BANK_SWITCH_DELAY);	//	1/4 second delay until can fire
 				}
 
 				// multiplayer server should maintain bank/link status here
@@ -1887,10 +1867,10 @@ int button_function_critical(int n, net_player *p = NULL)
 			}
 
 			hud_gauge_popup_start(HUD_WEAPONS_GAUGE);
-			if (ship_select_next_primary(objp, CYCLE_PRIMARY_PREV)) {
+			if (ship_select_next_primary(objp, CycleDirection::PREV)) {
 				ship* shipp = &Ships[objp->instance];
 				if ( timestamp_elapsed(shipp->weapons.next_primary_fire_stamp[shipp->weapons.current_primary_bank]) ) {
-					shipp->weapons.next_primary_fire_stamp[shipp->weapons.current_primary_bank] = timestamp(250);	//	1/4 second delay until can fire
+					shipp->weapons.next_primary_fire_stamp[shipp->weapons.current_primary_bank] = timestamp(BANK_SWITCH_DELAY);	//	1/4 second delay until can fire
 				}
 
 				// multiplayer server should maintain bank/link status here
@@ -1910,7 +1890,7 @@ int button_function_critical(int n, net_player *p = NULL)
 			if (ship_select_next_secondary(objp)) {
 				ship* shipp = &Ships[objp->instance];
 				if ( timestamp_elapsed(shipp->weapons.next_secondary_fire_stamp[shipp->weapons.current_secondary_bank]) ) {
-					shipp->weapons.next_secondary_fire_stamp[shipp->weapons.current_secondary_bank] = timestamp(250);	//	1/4 second delay until can fire
+					shipp->weapons.next_secondary_fire_stamp[shipp->weapons.current_secondary_bank] = timestamp(BANK_SWITCH_DELAY);	//	1/4 second delay until can fire
 				}
 
 				// multiplayer server should maintain bank/link status here
@@ -2249,31 +2229,27 @@ int button_function_demo_valid(int n)
 		break;
 
 	case TIME_SLOW_DOWN:
-		if ( Game_mode & GM_NORMAL ) {
+		ret = 1;
+		if ( Game_mode & GM_NORMAL && !Time_compression_locked ) {
 			// Goober5000 - time dilation only available in cheat mode (see above);
 			// now you can do it with or without pressing the tilde, per Kazan's request
-			if ( ((Game_time_compression > F1_0) || (Cheats_enabled && (Game_time_compression > (F1_0/MAX_TIME_DIVIDER)))) && !Time_compression_locked) {
+			if ((Game_time_compression > F1_0) || (Cheats_enabled && (Game_time_compression > (F1_0 / (Cmdline_retail_time_compression_range ? MAX_TIME_DIVIDER_RETAIL : MAX_TIME_DIVIDER))))) {
 				change_time_compression(0.5f);
-			} else {
-				gamesnd_play_error_beep();
+				break;
 			}
-		} else {
-			gamesnd_play_error_beep();
 		}
-		ret = 1;
+		gamesnd_play_error_beep();
 		break;
 
 	case TIME_SPEED_UP:
-		if ( Game_mode & GM_NORMAL ) {
-			if ( (Game_time_compression < (F1_0*MAX_TIME_MULTIPLIER)) && !Time_compression_locked ) {
-				change_time_compression(2.0f);
-			} else {
-				gamesnd_play_error_beep();
-			}
-		} else {
-			gamesnd_play_error_beep();
-		}
 		ret = 1;
+		if ( Game_mode & GM_NORMAL && !Time_compression_locked ) {
+			if (Game_time_compression < (F1_0 * (Cmdline_retail_time_compression_range ? MAX_TIME_MULTIPLIER_RETAIL : MAX_TIME_MULTIPLIER))) {
+				change_time_compression(2.0f);
+				break;
+			}
+		}
+		gamesnd_play_error_beep();
 		break;
 	}
 
@@ -2412,6 +2388,7 @@ int button_function(int n)
 	 */
 	switch (n) {
 		case CYCLE_PRIMARY_WEAPON_SEQUENCE:
+		case CYCLE_PRIMARY_WEAPON_PATTERN:
 		case CYCLE_NEXT_PRIMARY:	// cycle to next primary weapon
 		case CYCLE_PREV_PRIMARY:	// cycle to previous primary weapon
 		case CYCLE_SECONDARY:		// cycle to next secondary weapon
@@ -2870,6 +2847,18 @@ int button_function(int n)
 		// toggle the squadmate messaging menu
 		case SQUADMSG_MENU:
 			hud_squadmsg_toggle();				// leave the details to the messaging code!!!
+			break;
+			 
+		case COMMS_MENU_MOVE_DOWN:
+			hud_squadmsg_selection_move_down();
+			break;
+
+		case COMMS_MENU_MOVE_UP:
+			hud_squadmsg_selection_move_up();
+			break;
+
+		case COMMS_MENU_SELECT:
+			hud_squadmsg_selection_select();
 			break;
 
 		// show the mission goals screen

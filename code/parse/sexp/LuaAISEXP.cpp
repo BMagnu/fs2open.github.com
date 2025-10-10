@@ -5,16 +5,17 @@
 #include "localization/localize.h"
 #include "parse/parselo.h"
 #include "parse/sexp/LuaSEXP.h"
+#include "hud/hudsquadmsg.h"
 
 using namespace luacpp;
 
 namespace sexp {
-static const SCP_unordered_set<int> allowed_oswpt_parameters{ OPF_SHIP, OPF_WING, OPF_SHIP_POINT, OPF_SHIP_WING, OPF_SHIP_WING_WHOLETEAM, OPF_SHIP_WING_SHIPONTEAM_POINT, OPF_SHIP_WING_POINT, OPF_SHIP_WING_POINT_OR_NONE };
+static const SCP_unordered_set<int> allowed_oswpt_parameters{ OPF_SHIP, OPF_WING, OPF_SHIP_POINT, OPF_SHIP_WING, OPF_SHIP_WING_WHOLETEAM, OPF_SHIP_WING_SHIPONTEAM_POINT, OPF_SHIP_WING_POINT, OPF_SHIP_WING_POINT_OR_NONE, OPF_POINT };
 
 LuaAISEXP::LuaAISEXP(const SCP_string& name) : LuaSEXP(name) {
 	_return_type = OPR_AI_GOAL;
 	_category = OP_CATEGORY_AI;
-	_subcategory = -1;
+	_subcategory = OP_SUBCATEGORY_NONE;
 }
 
 void LuaAISEXP::initialize() {
@@ -40,7 +41,8 @@ int LuaAISEXP::getArgumentType(int argnum) const {
 	}
 };
 
-int LuaAISEXP::execute(int /*node*/) {
+int LuaAISEXP::execute(int /*node*/, int /*parent_node*/)
+{
 	UNREACHABLE("Tried to execute AI Lua SEXP %s! AI-Goal SEXPs should never be run.", _name.c_str());
 	return SEXP_CANT_EVAL;
 }
@@ -138,6 +140,35 @@ void LuaAISEXP::parseTable() {
 			error_display(1, "Player orders must have either no target or a ship-type target parameter!");
 		}
 
+		if (optional_string("+General Order:")) {
+			stuff_boolean(&order.generalOrder);
+
+			order.category = XSTR("General", 1807);
+			if (optional_string("+Category:")) {
+				stuff_string(order.category, F_NAME);
+
+				if (order.category.length() <= 0) {
+					error_display(1, "Order category name must be longer than 0 characters!");
+				}
+
+				// Now get a list of all lua categories to add. Meow.
+				SCP_vector<SCP_string> lua_cat_list = ai_lua_get_general_order_categories();
+
+				// If we have too many categories then we have an oopsie!
+				if ((int)lua_cat_list.size() > (MAX_MENU_ITEMS - NUM_COMM_ORDER_TYPES)) {
+					Warning(LOCATION, "Too many defined Lua General Order Categories! Setting order to first available: %s", lua_cat_list[0].c_str());
+
+					order.category = lua_cat_list[0];
+				}
+
+				// General orders explicitely do not show up in FRED as sexps because they
+				// they are only meant for the comms board
+				_return_type = OPR_NONE;
+				_category = OP_CATEGORY_NONE;
+				_subcategory = OP_SUBCATEGORY_NONE;
+			}
+		}
+
 		required_string("+Display String:");
 		stuff_string(order.displayText, F_NAME);
 
@@ -157,21 +188,24 @@ void LuaAISEXP::parseTable() {
 			}
 		}
 
-		if (optional_string("+Acknowledge Message:")) {
-			int result = -1;
+		if (optional_string("+Ship Restrictions:")) {
+			int result = optional_string_one_of(4, "Any", "Wing", "On Player Wing", "Player Wing");
+			if (result == -1) {
+				error_display(0, "Unknown ship restriction for player order %s. Assuming \"	Any\".", order.displayText.c_str());
+				order.shipRestrictions = player_order_lua::ship_restrictions::ANY;
+			}
+			else {
+				order.shipRestrictions = static_cast<player_order_lua::ship_restrictions>(result);
+			}
+		}
 
+		if (optional_string("+Acknowledge Message:")) {
 			SCP_string message;
 			stuff_string(message, F_NAME);
+			int result = get_builtin_message_type(message.c_str());
 
-			for (int i = 0; i < MAX_BUILTIN_MESSAGE_TYPES; i++) {
-				if (Builtin_messages[i].name == message) {
-					result = i;
-					break;
-				}
-			}
-
-			if (result == -1) {
-				error_display(0, "Unknown acknowledge message for player order %s. Assuming \"yes\".", order.displayText.c_str());
+			if (result == MESSAGE_NONE) {
+				error_display(0, "Unknown acknowledge message for player order %s. Assuming \"Yes\".", order.displayText.c_str());
 				order.ai_message = MESSAGE_YESSIR;
 			}
 			else {

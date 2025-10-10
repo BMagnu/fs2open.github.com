@@ -8,7 +8,7 @@ SET(FREESPACE_SRC freespace.cpp
 				SDLGraphicsOperations.h)
 
 IF(FSO_BUILD_PACKAGE)
-	IF(FSO_INSTRUCTION_SET STREQUAL "SSE2" OR FSO_INSTRUCTION_SET STREQUAL "AVX")
+	IF(FSO_INSTRUCTION_SET STREQUAL "SSE2" OR FSO_INSTRUCTION_SET STREQUAL "AVX" OR FSO_INSTRUCTION_SET STREQUAL "AVX2" )
 		SET(FSO_INSTALLER_ICON "${CMAKE_CURRENT_SOURCE_DIR}/V_sse.ico" CACHE FILEPATH "The path of the installer icon")
 	ELSE()
 		SET(FSO_INSTALLER_ICON "${CMAKE_CURRENT_SOURCE_DIR}/V_app.ico" CACHE FILEPATH "The path of the installer icon")
@@ -20,6 +20,8 @@ IF(MSVC60)
 ENDIF(MSVC60)
 
 ADD_EXECUTABLE(Freespace2 ${EXE_GUI_TYPE} ${FREESPACE_SRC})
+
+target_compile_features(Freespace2 PUBLIC cxx_std_17)
 
 include(resources.cmake)
 
@@ -33,6 +35,10 @@ IF(WIN32)
 	# Link sdl main only here as it interferes with fred
 	TARGET_LINK_LIBRARIES(Freespace2 sdlmain)
 ENDIF(WIN32)
+
+if(FSO_BUILD_WITH_OPENGL_DEBUG)
+	add_definitions(-DFS_OPENGL_DEBUG)
+endif()
 
 IF(FSO_USE_VOICEREC)
 	ADD_DEFINITIONS(-DFS2_VOICER)

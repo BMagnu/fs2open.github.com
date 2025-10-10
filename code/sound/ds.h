@@ -63,8 +63,12 @@ void ds_unload_buffer(int sid);
 ds_sound_handle ds_play(int sid, int snd_id, int priority, const EnhancedSoundData* enhanced_sound_data, float volume,
                         float pan, int looping, bool is_voice_msg = false);
 int ds_get_channel(ds_sound_handle sig);
+int ds_get_channel_raw(ds_sound_handle sig);
 int ds_is_channel_playing(int channel);
+bool ds_is_channel_paused(int channel_id);
 void ds_stop_channel(int channel);
+void ds_pause_channel(int channel_id);
+void ds_resume_channel(int channel_id);
 void ds_stop_channel_all();
 void ds_set_volume( int channel, float vol );
 void ds_set_pan( int channel, float pan );
@@ -91,12 +95,11 @@ void ds_stop_easy(int sid);
 int ds_get_channel_size(int channel);
 
 int ds_get_sound_id(int channel);
-int ds_get_sound_index(int channel_id);
 
 // Returns the number of channels that are actually playing
 int ds_get_number_channels();
 
-ds_sound_handle ds3d_play(int sid, int snd_id, vec3d* pos, vec3d* vel, float min, float max, int looping,
+ds_sound_handle ds3d_play(int sid, int snd_id, const vec3d* pos, const vec3d* vel, float min, float max, bool looping,
                           float max_volume, float estimated_vol, const EnhancedSoundData* enhanced_sound_data,
                           int priority = DS_MUST_PLAY, bool is_ambient = false);
 

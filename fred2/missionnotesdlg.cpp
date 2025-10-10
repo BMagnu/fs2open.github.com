@@ -16,10 +16,11 @@
 #include "CustomWingNames.h"
 #include "soundenvironmentdlg.h"
 #include "Management.h"
-#include "gamesnd/eventmusic.h"
 #include "cfile/cfile.h"
+#include "gamesnd/eventmusic.h"
 #include "mission/missionparse.h"
 #include "mission/missionmessage.h"
+#include "scripting/global_hooks.h"
 
 #ifdef _DEBUG
 #undef THIS_FILE
@@ -66,15 +67,16 @@ CMissionNotesDlg::CMissionNotesDlg(CWnd* pParent /*=NULL*/) : CDialog(CMissionNo
 	m_support_repairs_hull = FALSE;
 	m_beam_free_all_by_default = FALSE;
 	m_player_start_using_ai = FALSE;
-	m_player_start_chase_view = FALSE;
+	m_toggle_start_chase_view = FALSE;
 	m_no_briefing = FALSE;
-	m_no_debriefing = FALSE;
+	m_toggle_debriefing = FALSE;
 	m_autpilot_cinematics = FALSE;
 	m_no_autpilot = FALSE;
 	m_2d_mission = FALSE;
 	m_toggle_showing_goals = FALSE;
 	m_end_to_mainhall = FALSE;
 	m_override_hashcommand = FALSE;
+	m_preload_subspace = FALSE;
 	m_max_hull_repair_val = 0.0f;
 	m_max_subsys_repair_val = 100.0f;
 	m_contrail_threshold = CONTRAIL_THRESHOLD_DEFAULT;
@@ -107,8 +109,8 @@ void CMissionNotesDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Check(pDX, IDC_RED_ALERT, m_red_alert);
 	DDX_Check(pDX, IDC_SCRAMBLE, m_scramble);
 	DDX_Text(pDX, IDC_RESPAWNS, m_num_respawns);
-	DDX_Text(pDX, IDC_MAX_RESPAWN_DELAY, m_max_respawn_delay);
 	DDV_MinMaxUInt(pDX, m_num_respawns, 0, 99);
+	DDX_Text(pDX, IDC_MAX_RESPAWN_DELAY, m_max_respawn_delay);
 	DDV_MinMaxInt(pDX, m_max_respawn_delay, -1, 999);
 	DDX_Check(pDX, IDC_SUPPORT_ALLOWED, m_disallow_support);
 	DDX_Check(pDX, IDC_NO_PROMOTION, m_no_promotion);
@@ -119,15 +121,16 @@ void CMissionNotesDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Check(pDX, IDC_SUPPORT_REPAIRS_HULL, m_support_repairs_hull);
 	DDX_Check(pDX, IDC_BEAM_FREE_ALL_BY_DEFAULT, m_beam_free_all_by_default);
 	DDX_Check(pDX, IDC_PLAYER_START_AI, m_player_start_using_ai);
-	DDX_Check(pDX, IDC_PLAYER_START_CHASE, m_player_start_chase_view);
+	DDX_Check(pDX, IDC_TOGGLE_START_CHASE, m_toggle_start_chase_view);
 	DDX_Check(pDX, IDC_NO_BRIEFING, m_no_briefing);
-	DDX_Check(pDX, IDC_NO_DEBRIEFING, m_no_debriefing);
+	DDX_Check(pDX, IDC_TOGGLE_DEBRIEFING, m_toggle_debriefing);
 	DDX_Check(pDX, IDC_USE_AUTOPILOT_CINEMATICS, m_autpilot_cinematics);
 	DDX_Check(pDX, IDC_2D_MISSION, m_2d_mission);
 	DDX_Check(pDX, IDC_DEACTIVATE_AUTOPILOT, m_no_autpilot);
 	DDX_Check(pDX, IDC_TOGGLE_SHOWING_GOALS, m_toggle_showing_goals);
 	DDX_Check(pDX, IDC_END_TO_MAINHALL, m_end_to_mainhall);
 	DDX_Check(pDX, IDC_OVERRIDE_HASHCOMMAND, m_override_hashcommand);
+	DDX_Check(pDX, IDC_PRELOAD_SUBSPACE, m_preload_subspace);
 	DDX_Text(pDX, IDC_MAX_HULL_REPAIR_VAL, m_max_hull_repair_val);
 	DDV_MinMaxFloat(pDX, m_max_hull_repair_val, 0, 100);
 	DDX_Text(pDX, IDC_MAX_SUBSYS_REPAIR_VAL, m_max_subsys_repair_val);
@@ -150,6 +153,8 @@ BEGIN_MESSAGE_MAP(CMissionNotesDlg, CDialog)
 	ON_BN_CLICKED(IDC_CONTRAIL_THRESHOLD_CHECK, OnToggleContrailThreshold)
 	ON_BN_CLICKED(IDC_CUSTOM_WING_NAMES, OnCustomWingNames)
 	ON_BN_CLICKED(IDC_SOUND_ENVIRONMENT_BUTTON, OnSoundEnvironment)
+	ON_BN_CLICKED(IDC_OPEN_CUSTOM_DATA, OnCustomData)
+	ON_BN_CLICKED(IDC_OPEN_CUSTOM_STRINGS, OnCustomStrings)
 	//}}AFX_MSG_MAP
 END_MESSAGE_MAP()
 
@@ -271,13 +276,13 @@ void CMissionNotesDlg::OnOK()
     The_mission.flags.set(Mission::Mission_Flags::Player_start_ai, m_player_start_using_ai != 0);
 
 	// set player chase view
-    The_mission.flags.set(Mission::Mission_Flags::Player_start_chase_view, m_player_start_chase_view != 0);
+    The_mission.flags.set(Mission::Mission_Flags::Toggle_start_chase_view, m_toggle_start_chase_view != 0);
 
 	// set briefing
     The_mission.flags.set(Mission::Mission_Flags::No_briefing, m_no_briefing != 0);
 
 	// set debriefing
-    The_mission.flags.set(Mission::Mission_Flags::Toggle_debriefing, m_no_debriefing != 0);
+    The_mission.flags.set(Mission::Mission_Flags::Toggle_debriefing, m_toggle_debriefing != 0);
 
 	// set autopilot cinematics
     The_mission.flags.set(Mission::Mission_Flags::Use_ap_cinematics, m_autpilot_cinematics != 0);
@@ -297,24 +302,26 @@ void CMissionNotesDlg::OnOK()
 	// Override #Command
 	The_mission.flags.set(Mission::Mission_Flags::Override_hashcommand, m_override_hashcommand != 0);
 
+	// Preload Subspace Tunnel
+	The_mission.flags.set(Mission::Mission_Flags::Preload_subspace, m_preload_subspace != 0);
+
 	if ( flags != The_mission.flags ){
 		set_modified();
 	}
 
-	//if there's a odd number of quotation marks, the mission won't parse
-	//If there are an even number, nothing after the first one appears
-	//So just get rid of them
-	strip_quotation_marks(m_mission_title);
-	strip_quotation_marks(m_designer_name);
-	strip_quotation_marks(m_mission_notes);
-	strip_quotation_marks(m_mission_desc);
-	strip_quotation_marks(m_squad_name);
+	// originally the dialog stripped out quotation marks here;
+	// now it handles all special characters
+	lcl_fred_replace_stuff(m_mission_title);
+	lcl_fred_replace_stuff(m_designer_name);
+	lcl_fred_replace_stuff(m_mission_notes);
+	lcl_fred_replace_stuff(m_mission_desc);
+	lcl_fred_replace_stuff(m_squad_name);
 
 	// puts "$End Notes:" on a different line to ensure it's not interpreted as part of a comment
 	pad_with_newline(m_mission_notes, NOTES_LENGTH - 1);
 
 	string_copy(The_mission.name, m_mission_title, NAME_LENGTH - 1, 1);
-	string_copy(The_mission.author, m_designer_name, NAME_LENGTH - 1, 1);
+	string_copy(The_mission.author, m_designer_name, true);
 	string_copy(The_mission.loading_screen[GR_640], m_loading_640, NAME_LENGTH - 1, 1);
 	string_copy(The_mission.loading_screen[GR_1024], m_loading_1024, NAME_LENGTH - 1, 1);
 	deconvert_multiline_string(The_mission.notes, m_mission_notes, NOTES_LENGTH - 1);
@@ -353,7 +360,15 @@ void CMissionNotesDlg::OnOK()
 		Num_teams = 2;
 	}
 
+	// This hook will allow for scripts to know when custom data or strings may be updated
+	// which will then allow them to update any LuaEnums that may be related to sexps
+	if (scripting::hooks::FredOnMissionSpecsSave->isActive()) {
+		scripting::hooks::FredOnMissionSpecsSave->run();
+	}
+
 	CDialog::OnOK();
+
+	FREDDoc_ptr->autosave("mission specs editor");
 }
 
 void CMissionNotesDlg::OnCancel()
@@ -374,7 +389,7 @@ BOOL CMissionNotesDlg::OnInitDialog()
 	dogfight = (CButton *)GetDlgItem(IDC_DOGFIGHT);
 
 	m_mission_title_orig = m_mission_title = _T(The_mission.name);
-	m_designer_name_orig = m_designer_name = _T(The_mission.author);
+	m_designer_name_orig = m_designer_name = _T(The_mission.author.c_str());
 	m_created = _T(The_mission.created);
 	m_modified = _T(The_mission.modified);
 	convert_multiline_string(m_mission_notes_orig, The_mission.notes);
@@ -393,15 +408,16 @@ BOOL CMissionNotesDlg::OnInitDialog()
 	m_support_repairs_hull = (The_mission.flags[Mission::Mission_Flags::Support_repairs_hull]) ? 1 : 0;
 	m_beam_free_all_by_default = (The_mission.flags[Mission::Mission_Flags::Beam_free_all_by_default]) ? 1 : 0;
 	m_player_start_using_ai = (The_mission.flags[Mission::Mission_Flags::Player_start_ai]) ? 1 : 0;
-	m_player_start_chase_view = (The_mission.flags[Mission::Mission_Flags::Player_start_chase_view]) ? 1 : 0;
+	m_toggle_start_chase_view = (The_mission.flags[Mission::Mission_Flags::Toggle_start_chase_view]) ? 1 : 0;
 	m_no_briefing = (The_mission.flags[Mission::Mission_Flags::No_briefing]) ? 1 : 0;
-	m_no_debriefing = (The_mission.flags[Mission::Mission_Flags::Toggle_debriefing]) ? 1 : 0;
+	m_toggle_debriefing = (The_mission.flags[Mission::Mission_Flags::Toggle_debriefing]) ? 1 : 0;
 	m_autpilot_cinematics = (The_mission.flags[Mission::Mission_Flags::Use_ap_cinematics]) ? 1 : 0;
 	m_2d_mission = (The_mission.flags[Mission::Mission_Flags::Mission_2d]) ? 1 : 0;
 	m_no_autpilot = (The_mission.flags[Mission::Mission_Flags::Deactivate_ap]) ? 1 : 0;
 	m_toggle_showing_goals = (The_mission.flags[Mission::Mission_Flags::Toggle_showing_goals]) ? 1 : 0;
 	m_end_to_mainhall = (The_mission.flags[Mission::Mission_Flags::End_to_mainhall]) ? 1 : 0;
 	m_override_hashcommand = (The_mission.flags[Mission::Mission_Flags::Override_hashcommand]) ? 1 : 0;
+	m_preload_subspace = (The_mission.flags[Mission::Mission_Flags::Preload_subspace]) ? 1 : 0;
 
 	m_loading_640=_T(The_mission.loading_screen[GR_640]);
 	m_loading_1024=_T(The_mission.loading_screen[GR_1024]);
@@ -426,7 +442,7 @@ BOOL CMissionNotesDlg::OnInitDialog()
 	}
 
 	box = (CComboBox *) GetDlgItem(IDC_COMMAND_PERSONA);
-	for (i=0; i<Num_personas; i++){
+	for (i = 0; i < (int)Personas.size(); i++) {
 		if (Personas[i].flags & PERSONA_FLAG_COMMAND){
 			box->AddString(Personas[i].name);
 			box->SetItemData(box_index, i);
@@ -700,6 +716,27 @@ void CMissionNotesDlg::OnSoundEnvironment()
 	UpdateData(TRUE);
 
 	SoundEnvironment dlg;
+	dlg.DoModal();
+
+	UpdateData(FALSE);
+}
+
+void CMissionNotesDlg::OnCustomData()
+{
+	UpdateData(TRUE);
+
+	CustomDataDlg dlg(&The_mission.custom_data, this);
+	dlg.DoModal();
+
+	UpdateData(FALSE);
+}
+
+
+void CMissionNotesDlg::OnCustomStrings()
+{
+	UpdateData(TRUE);
+
+	CustomStringsDlg dlg;
 	dlg.DoModal();
 
 	UpdateData(FALSE);

@@ -14,6 +14,7 @@
 #define BMPMAN_INTERNAL
 #include "gropenglstate.h"
 #include "gropengltexture.h"
+#include "gropengldraw.h"
 #include "bmpman/bm_internal.h"
 #include "bmpman/bmpman.h"
 #include "cmdline/cmdline.h"
@@ -46,6 +47,42 @@ GLint GL_max_renderbuffer_size = 0;
 extern int GLOWMAP;
 extern int SPECMAP;
 extern int ENVMAP;
+
+const SCP_vector<std::pair<int, std::pair<const char*, int>>> TextureFilteringValues = {{0, {"Bilinear", 1677}},
+																		                { 1, {"Trilinear", 1678}}};
+
+static void parse_texture_filtering_func()
+{
+	SCP_string mode;
+	stuff_string(mode, F_NAME);
+
+	// Convert to lowercase once
+	SCP_tolower(mode);
+
+	// Use a map to associate strings with their respective actions
+	static const std::unordered_map<std::string, std::function<void()>> effectActions = {
+		{"bilinear", []() { GL_mipmap_filter = 0; }},
+		{"trilinear", []() { GL_mipmap_filter = 1; }}};
+
+	auto it = effectActions.find(mode);
+	if (it != effectActions.end()) {
+		it->second(); // Execute the corresponding action
+	} else {
+		error_display(0, "%s is not a valid texturing filtering setting", mode.c_str());
+	}
+}
+
+static auto TextureFilteringOption __UNUSED = options::OptionBuilder<int>("Graphics.TextureFilter",
+                     std::pair<const char*, int>{"Texture Filtering", 1763},
+                     std::pair<const char*, int>{"Texture filtering option", 1764})
+                     .importance(1)
+                     .category(std::make_pair("Graphics", 1825))
+                     .values(TextureFilteringValues)
+                     .default_func([]() {return GL_mipmap_filter;})
+                     .bind_to_once(&GL_mipmap_filter)
+                     .flags({options::OptionFlags::ForceMultiValueSelection})
+                     .parser(parse_texture_filtering_func)
+                     .finish();
 
 static SCP_vector<float> anisotropic_value_enumerator()
 {
@@ -88,16 +125,16 @@ static float anisotropic_default()
 	return max;
 }
 
-static auto AnisotropyOption =
-    options::OptionBuilder<float>("Graphics.Anisotropy", "Anisotropic filtering",
-                                  "Controls the amount of anisotropic filtering of the textures.")
-        .enumerator(anisotropic_value_enumerator)
-        .category("Graphics")
-        .display(anisotropic_display)
-        .default_func(anisotropic_default)
-        .level(options::ExpertLevel::Advanced)
-        .importance(78)
-        .finish();
+static auto AnisotropyOption = options::OptionBuilder<float>("Graphics.Anisotropy",
+                     std::pair<const char*, int>{"Anistropic filtering", 1736},
+                     std::pair<const char*, int>{"Controls the amount of anistropic filtering of the textures", 1737})
+                     .enumerator(anisotropic_value_enumerator)
+                     .category(std::make_pair("Graphics", 1825))
+                     .display(anisotropic_display)
+                     .default_func(anisotropic_default)
+                     .level(options::ExpertLevel::Advanced)
+                     .importance(78)
+                     .finish();
 
 // forward declarations
 int opengl_free_texture(tcache_slot_opengl *t);
@@ -320,7 +357,7 @@ int opengl_free_texture(tcache_slot_opengl *t)
 // bmap_h == height of source bitmap
 // tex_w == width of final texture
 // tex_h == height of final texture
-static int opengl_texture_set_level(int bitmap_handle, int bitmap_type, int bmap_w, int bmap_h, int tex_w, int tex_h,
+static int opengl_texture_set_level(int bitmap_handle, int bitmap_type, int bmap_w, int bmap_h, int tex_w, int tex_h, int tex_d,
                                     ubyte* data, tcache_slot_opengl* tSlot, int base_level, int mipmap_levels,
                                     bool resize, GLenum intFormat) {
 	GR_DEBUG_SCOPE("Upload single frame");
@@ -599,6 +636,12 @@ static int opengl_texture_set_level(int bitmap_handle, int bitmap_type, int bmap
 
 		break;
 	}
+	case TCACHE_TYPE_3DTEX:
+		//Just upload as-is.
+		glTexSubImage3D(tSlot->texture_target, 0, 0, 0, 0, tex_w, tex_h, tex_d,
+			glFormat, texFormat, bmp_data + doffset);
+		break;
+	
 
 	default: {
 		// if we aren't resizing then we can just use bmp_data directly
@@ -630,8 +673,10 @@ static int opengl_texture_set_level(int bitmap_handle, int bitmap_type, int bmap
 		auto mipmap_w = tex_w;
 		auto mipmap_h = tex_h;
 
-		// should never have mipmap levels if we also have to manually resize
-		if ((mipmap_levels > 1) && resize) {
+		// if we are doing mipmap resizing we need to account for adjusted tex size
+		// (we can end up with only one mipmap level if base_level is high enough so don't check it)
+		if (base_level > 0) {
+			Assertion(resize == false, "Cannot use manual and mipmap resizing at the same time!");
 			Assert(texmem == nullptr);
 
 			// If we have mipmaps then tex_w/h are already adjusted for the base level but that will cause problems with
@@ -802,6 +847,9 @@ void opengl_determine_bpp_and_flags(int bitmap_handle, int bitmap_type, ushort& 
 			}
 
 			break;
+		case TCACHE_TYPE_3DTEX:
+			bpp = 32;
+			break;
 	}
 }
 
@@ -866,7 +914,7 @@ int opengl_create_texture(int bitmap_handle, int bitmap_type, tcache_slot_opengl
 		return 0;
 	}
 
-	int width, height;
+	int width, height, depth = 1;
 	bm_get_info(animation_begin, &width, &height, nullptr, nullptr);
 
 	auto start_slot = bm_get_gr_info<tcache_slot_opengl>(animation_begin, true);
@@ -887,7 +935,7 @@ int opengl_create_texture(int bitmap_handle, int bitmap_type, tcache_slot_opengl
 	auto base_level = 0;
 	auto resize = false;
 	if ( (Detail.hardware_textures < 4) && (bitmap_type != TCACHE_TYPE_AABITMAP) && (bitmap_type != TCACHE_TYPE_INTERFACE)
-		&& (bitmap_type != TCACHE_TYPE_CUBEMAP)
+		&& (bitmap_type != TCACHE_TYPE_CUBEMAP) && (bitmap_type != TCACHE_TYPE_3DTEX)
 		&& ((bitmap_type != TCACHE_TYPE_COMPRESSED) || ((bitmap_type == TCACHE_TYPE_COMPRESSED) && (max_levels > 1))) )
 	{
 		if (max_levels == 1) {
@@ -928,7 +976,7 @@ int opengl_create_texture(int bitmap_handle, int bitmap_type, tcache_slot_opengl
 	}
 
 	// if we ended up locking a texture that wasn't originally compressed then this should catch it
-	if ( bitmap_type != TCACHE_TYPE_CUBEMAP && bm_is_compressed(bitmap_handle) ) {
+	if ( bitmap_type != TCACHE_TYPE_CUBEMAP && bitmap_type != TCACHE_TYPE_3DTEX && bm_is_compressed(bitmap_handle) ) {
 		bitmap_type = TCACHE_TYPE_COMPRESSED;
 	}
 
@@ -937,6 +985,9 @@ int opengl_create_texture(int bitmap_handle, int bitmap_type, tcache_slot_opengl
 	tslot->texture_target = GL_TEXTURE_2D_ARRAY;
 	if ( bitmap_type == TCACHE_TYPE_CUBEMAP ) {
 		tslot->texture_target = GL_TEXTURE_CUBE_MAP;
+	}
+	else if ( bitmap_type == TCACHE_TYPE_3DTEX ) {
+		tslot->texture_target = GL_TEXTURE_3D;
 	}
 
 	if (tslot->texture_id == 0) {
@@ -972,6 +1023,11 @@ int opengl_create_texture(int bitmap_handle, int bitmap_type, tcache_slot_opengl
 
 		min_filter = GL_LINEAR_MIPMAP_LINEAR;
 	}
+	else if (mipmap_levels == 1 && bitmap_type == TCACHE_TYPE_3DTEX) {
+		//3D-Tex just filters linearly always
+		min_filter = GL_LINEAR;
+		bm_get_depth(bitmap_handle, &depth);
+	}
 
 	glTexParameteri(tslot->texture_target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(tslot->texture_target, GL_TEXTURE_MIN_FILTER, min_filter);
@@ -986,7 +1042,7 @@ int opengl_create_texture(int bitmap_handle, int bitmap_type, tcache_slot_opengl
 	opengl_determine_bpp_and_flags(animation_begin, bitmap_type, bitmap_flags, bits_per_pixel);
 
 	auto intFormat = opengl_get_internal_format(bitmap_handle, bitmap_type, bits_per_pixel);
-	opengl_tex_array_storage(tslot->texture_target, allocated_mipmap_levels, intFormat, width, height, num_frames);
+	opengl_tex_array_storage(tslot->texture_target, allocated_mipmap_levels, intFormat, width, height, bitmap_type == TCACHE_TYPE_3DTEX ? depth : num_frames);
 
 	bool frames_loaded = true;
 	for (int frame = animation_begin; frame < animation_begin + num_frames; ++frame) {
@@ -1024,7 +1080,7 @@ int opengl_create_texture(int bitmap_handle, int bitmap_type, tcache_slot_opengl
 		frame_slot->array_index = (uint32_t) (frame - animation_begin);
 
 		// call the helper
-		int ret_val   = opengl_texture_set_level(frame, bitmap_type, bmp->w, bmp->h, width, height, (ubyte*)bmp->data,
+		int ret_val   = opengl_texture_set_level(frame, bitmap_type, bmp->w, bmp->h, width, height, depth, (ubyte*)bmp->data,
                                                frame_slot, base_level, mipmap_levels, resize, intFormat);
 		frames_loaded = frames_loaded && ret_val;
 
@@ -1082,7 +1138,7 @@ int gr_opengl_tcache_set_internal(int bitmap_handle, int bitmap_type, float *u_s
 		GL_state.Texture.Enable(tex_unit, t->texture_target, t->texture_id);
 
 		if ( (t->wrap_mode != GL_texture_addressing) && (bitmap_type != TCACHE_TYPE_AABITMAP)
-			&& (bitmap_type != TCACHE_TYPE_INTERFACE) && (bitmap_type != TCACHE_TYPE_CUBEMAP) )
+			&& (bitmap_type != TCACHE_TYPE_INTERFACE) && (bitmap_type != TCACHE_TYPE_CUBEMAP))
 		{
 			// In this case we need to make sure that the texture unit is actually active
 			GL_state.Texture.SetActiveUnit(tex_unit);
@@ -1119,7 +1175,7 @@ int gr_opengl_tcache_set(int bitmap_handle, int bitmap_type, float *u_scale, flo
 	GL_CHECK_FOR_ERRORS("start of tcache_set()");
 
 	// set special type if it's so, needed to be right later, but cubemaps are special
-	if ( !(bitmap_type == TCACHE_TYPE_CUBEMAP) ) {
+	if ( !(bitmap_type == TCACHE_TYPE_CUBEMAP) && !(bitmap_type == TCACHE_TYPE_3DTEX) ) {
 		int type = bm_get_tcache_type(bitmap_handle);
 
 		if (type != TCACHE_TYPE_NORMAL) {
@@ -1193,7 +1249,7 @@ int opengl_compress_image( ubyte **compressed_data, ubyte *in_data, int width, i
 {
 	Assert( in_data != NULL );
 
-	if ( !Texture_compression_available ) {
+	if ( !GLAD_GL_EXT_texture_compression_s3tc ) {
 		return 0;
 	}
 
@@ -1673,8 +1729,13 @@ int opengl_set_render_target( int slot, int face, int is_static )
 			}
 		}
 
-		GL_state.BindFrameBuffer(0);
-		glBindRenderbuffer(GL_RENDERBUFFER, 0);
+		if(Cmdline_window_res) {
+			GL_state.BindFrameBuffer(Back_framebuffer);
+		}
+		else {
+			GL_state.BindFrameBuffer(0);
+			glBindRenderbuffer(GL_RENDERBUFFER, 0);
+		}
 
 		// done with this render target so lets move on
 		render_target = NULL;

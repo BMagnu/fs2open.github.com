@@ -30,6 +30,7 @@ class ship_subsys;
 struct log_entry;
 struct beam_fire_info;
 namespace animation { enum class ModelAnimationDirection; }
+struct tracking_info;
 
 // macros for building up packets -- to save on time and typing.  Important to note that local variables
 // must be named correctly
@@ -43,6 +44,7 @@ namespace animation { enum class ModelAnimationDirection; }
 #define ADD_USHORT(d) do { static_assert(sizeof(d) == sizeof(std::uint16_t), "Size of unsigned short is not right!"); Assert((static_cast<size_t>(packet_size) + sizeof(d)) < MAX_PACKET_SIZE); ushort swap = INTEL_SHORT(d); memcpy(data+packet_size, &swap, sizeof(d) ); packet_size += sizeof(d); } while (false)
 #define ADD_INT(d) do { static_assert(sizeof(d) == sizeof(std::int32_t), "Size of int is not right!"); Assert((static_cast<size_t>(packet_size) + sizeof(d)) < MAX_PACKET_SIZE); int swap = INTEL_INT(d); memcpy(data+packet_size, &swap, sizeof(d) ); packet_size += sizeof(d); } while (false)
 #define ADD_UINT(d) do { static_assert(sizeof(d) == sizeof(std::uint32_t), "Size of unsigned int is not right!"); Assert((static_cast<size_t>(packet_size) + sizeof(d)) < MAX_PACKET_SIZE); uint swap = INTEL_INT(d); memcpy(data+packet_size, &swap, sizeof(d) ); packet_size += sizeof(d); } while (false)
+#define ADD_LONG(d) do { static_assert(sizeof(d) == sizeof(std::int64_t), "Size of long is not right!"); Assert((static_cast<size_t>(packet_size) + sizeof(d)) < MAX_PACKET_SIZE); std::int64_t swap = INTEL_LONG(d); memcpy(data+packet_size, &swap, sizeof(d) ); packet_size += sizeof(d); } while (false)
 #define ADD_ULONG(d) do { static_assert(sizeof(d) == sizeof(std::uint64_t), "Size of unsigned long is not right!"); Assert((static_cast<size_t>(packet_size) + sizeof(d)) < MAX_PACKET_SIZE); std::uint64_t swap = INTEL_LONG(d); memcpy(data+packet_size, &swap, sizeof(d) ); packet_size += sizeof(d); } while (false)
 #define ADD_FLOAT(d) do { Assert((static_cast<size_t>(packet_size) + sizeof(d)) < MAX_PACKET_SIZE); float swap = INTEL_FLOAT(&d); memcpy(data+packet_size, &swap, sizeof(d) ); packet_size += sizeof(d); } while (false)
 #define ADD_STRING(s) do { Assert((static_cast<size_t>(packet_size) + strlen(s) + sizeof(uint8_t)) < MAX_PACKET_SIZE); Assert(strlen(s) <= UINT8_MAX); uint8_t len = static_cast<uint8_t>(strlen(s)); ADD_DATA(len); memcpy(data+packet_size, s, len); packet_size += len; } while (false)
@@ -57,6 +59,7 @@ namespace animation { enum class ModelAnimationDirection; }
 #define GET_USHORT(d) do { std::uint16_t swap; memcpy(&swap, data+offset, sizeof(d) ); d = INTEL_SHORT(swap); offset += sizeof(d); } while(false)
 #define GET_INT(d) do { std::int32_t swap; memcpy(&swap, data+offset, sizeof(d) ); d = INTEL_INT(swap); offset += sizeof(d); } while(false)
 #define GET_UINT(d) do { std::uint32_t swap; memcpy(&swap, data+offset, sizeof(d) ); d = INTEL_INT(swap); offset += sizeof(d); } while(false)
+#define GET_LONG(d) do { std::int64_t swap; memcpy(&swap, data+offset, sizeof(d) ); d = INTEL_LONG(swap); offset += sizeof(d); } while(false)
 #define GET_ULONG(d) do { std::uint64_t swap; memcpy(&swap, data+offset, sizeof(d) ); d = INTEL_LONG(swap); offset += sizeof(d); } while(false)
 #define GET_FLOAT(d) do { float swap; memcpy(&swap, data+offset, sizeof(d) ); d = INTEL_FLOAT(&swap); offset += sizeof(d); } while(false)
 #define GET_STRING(s) do { static_assert(std::is_array<decltype(s)>::value, "GET_STRING() must point to an array!"); uint8_t len; memcpy(&len, data+offset, sizeof(len)); offset += sizeof(len); const auto s_len = std::min(static_cast<size_t>(len), sizeof(s)-1); memcpy(s, data+offset, s_len); offset += len; s[s_len] = '\0'; } while (false)
@@ -74,13 +77,13 @@ namespace animation { enum class ModelAnimationDirection; }
 // data sending wrappers
 
 // send the specified data packet to all players
-void multi_io_send(net_player *pl, ubyte *data, int length);
-void multi_io_send_to_all(ubyte *data, int length, net_player *ignore = NULL);
+void multi_io_send(net_player *pl, const ubyte *data, int length);
+void multi_io_send_to_all(const ubyte *data, int length, const net_player *ignore = nullptr);
 void multi_io_send_force(net_player *pl);
 
 // send the data packet to all players via their reliable sockets
-void multi_io_send_reliable(net_player *pl, ubyte *data, int length);
-void multi_io_send_to_all_reliable(ubyte* data, int length, net_player *ignore = NULL);
+void multi_io_send_reliable(net_player *pl, const ubyte *data, int length);
+void multi_io_send_to_all_reliable(const ubyte* data, int length, const net_player *ignore = nullptr);
 void multi_io_send_reliable_force(net_player *pl);
 
 // send all buffered packets
@@ -268,7 +271,7 @@ void send_game_info_packet( void );
 void send_leave_game_packet(short player_id = -1,int kicked_reason = -1,net_player *target = NULL);
 
 // send a packet indicating a secondary weapon was fired
-void send_secondary_fired_packet( ship *shipp, ushort starting_sig, int starting_count, int num_fired, int allow_swarm );
+void send_secondary_fired_packet( ship *shipp, ushort starting_sig, tracking_info &tinfo, int num_fired, int allow_swarm );
 
 // send a packet indicating a countermeasure was fired
 void send_countermeasure_fired_packet( object *objp, int cmeasure_count, int rand_val );
@@ -294,7 +297,7 @@ void send_netgame_descript_packet(net_addr *addr, int code);
 void send_object_update_packet(int force_all = 0);
 
 // send a packet indicating a ship has been killed
-void send_ship_kill_packet( object *ship_obj, object *other_objp, float percent_killed, int self_destruct );
+void send_ship_kill_packet( const object *ship_obj, const object *other_objp, float percent_killed, int self_destruct );
 
 // send a packet indicating that a missile died.
 void send_missile_kill_packet(object* objp);
@@ -356,9 +359,6 @@ void send_new_player_packet(int new_player_num,net_player *target);
 
 // send a packet telling players to end the mission
 void send_endgame_packet(net_player *pl = NULL);
-
-// send a skip to debrief item packet
-void send_force_end_mission_packet();
 
 // send a position/orientation update for myself (if I'm an observer)
 void send_observer_update_packet();
@@ -464,7 +464,7 @@ void process_ai_info_update_packet(ubyte *data, header *hinfo);
 
 void send_asteroid_create(object *new_objp, object *parent_objp, int asteroid_type, vec3d *relvec);
 void send_asteroid_throw(object *objp);
-void send_asteroid_hit(object *objp, object *other_objp, vec3d *hitpos, float damage);
+void send_asteroid_hit(object *objp, object *other_objp, vec3d *hitpos, float damage, vec3d* force);
 void process_asteroid_info(ubyte *data, header *hinfo);
 
 void send_countermeasure_success_packet(int objnum);
@@ -528,16 +528,16 @@ void send_weapon_detonate_packet(object *objp);
 void process_weapon_detonate_packet(ubyte *data, header *hinfo);
 
 // turret fired packet
-void send_turret_fired_packet( int objnum, int subsys_index, int weapon_objnum );
+void send_turret_fired_packet( int objnum, int subsys_index, int weapon_objnum, float dist_to_target, float target_radius );
 void process_turret_fired_packet( ubyte *data, header *hinfo );
 
 // flak fired packet
-void send_flak_fired_packet(int ship_objnum, int subsys_index, int weapon_objnum, float flak_range);
+void send_flak_fired_packet(int ship_objnum, int subsys_index, int weapon_objnum, float flak_range, float dist_to_target, float target_radius );
 void process_flak_fired_packet(ubyte *data, header *hinfo);
 
 // player pain packet
-void send_player_pain_packet(net_player *pl, int weapon_info_index, float damage, vec3d *force, vec3d *hitpos, int quadrant_num);
-void process_player_pain_packet(ubyte *data, header *hinfo);
+void send_player_pain_packet(net_player *pl, int weapon_info_index, float damage, const vec3d *force, const vec3d *hitpos, int quadrant_num);
+void process_player_pain_packet(const ubyte *data, header *hinfo);
 
 // lightning packet
 void send_lightning_packet(int bolt_type_internal, vec3d *start, vec3d *strike);
@@ -557,5 +557,9 @@ void process_self_destruct_packet(ubyte *data, header *hinfo);
 
 void send_sexp_packet(ubyte *sexp_packet, int num_ubytes);
 void process_sexp_packet(ubyte *data, header *hinfo);
+
+// Turret is tracking new object.
+void send_turret_tracking_packet(int ship_objnum, int subsys_index);
+void process_turret_tracking_packet(ubyte *data, header *hinfo);
 
 #endif

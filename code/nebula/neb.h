@@ -55,13 +55,10 @@ extern float Neb2_fog_visibility_shockwave;
 extern float Neb2_fog_visibility_fireball_const;
 extern float Neb2_fog_visibility_fireball_scaled_factor;
 
-extern int Neb2_poof_flags;
-const size_t MAX_NEB2_POOFS = 32;
-
-#define MAX_NEB2_BITMAPS			10
+extern std::unique_ptr<ubyte[]> Neb2_poof_flags;
 
 // pof texture filenames
-extern char Neb2_bitmap_filenames[MAX_NEB2_BITMAPS][MAX_FILENAME_LEN];
+extern SCP_vector<SCP_string> Neb2_bitmap_filenames;
 
 // texture to use for this level
 extern char Neb2_texture_name[MAX_FILENAME_LEN];
@@ -70,20 +67,34 @@ typedef struct poof_info {
 	char name[NAME_LENGTH];
 	char bitmap_filename[MAX_FILENAME_LEN];
 	generic_anim bitmap;
-	::util::UniformFloatRange scale;
+	::util::ParsedRandomFloatRange scale;
 	float density;						 // poofs per square meter; can get *really* small but vague approximation is ok at those levels
-	::util::UniformFloatRange rotation;
+	::util::ParsedRandomFloatRange rotation;
 	float view_dist;
-	::util::UniformFloatRange alpha;
+	::util::ParsedRandomFloatRange alpha;
+	vec3d alignment;
 
-	poof_info() {
+	// These values are dynamic, unlike the above and can change during a mission.
+	// They are used for fading poof types in and out via sexp
+	TIMESTAMP fade_start;			// when the fade began
+	int fade_duration;		// the length of the fade in milliseconds
+	bool fade_in;			// true if fading the poof type in, false if fading out
+	float fade_multiplier;	// the current multiplier for a poof's alpha transparency used to render the poofs of this type
+
+	poof_info() : 
+		scale(::util::UniformFloatRange(175.f)),
+		rotation(::util::UniformFloatRange(-3.7f, 3.7f)),
+		alpha(::util::UniformFloatRange(0.8f))
+	{
 		bitmap_filename[0] = '\0';
 		generic_anim_init(&bitmap);
-		scale = ::util::UniformFloatRange(175.0f, 175.0f);
 		density = 1 / (110.f * 110.f * 110.f);
-		rotation = ::util::UniformFloatRange(-3.7f, 3.7f);
 		view_dist = 250.f;
-		alpha = ::util::UniformFloatRange(0.8f, 0.8f);
+		fade_start = TIMESTAMP::invalid();
+		fade_duration = -1;
+		fade_in = true;
+		fade_multiplier = -1.0f;
+		alignment = vmd_zero_vector;
 	}
 } poof_info;
 
@@ -129,8 +140,13 @@ typedef struct neb2_detail {
 // initialize neb2 stuff at game startup
 void neb2_init();
 
+// set poof bits using a list of poof names
+void neb2_set_poof_bits(const SCP_vector<SCP_string>& list);
+
 //init neb stuff  - WMC
 void neb2_level_init();
+
+void neb2_pre_level_init();
 
 // initialize nebula stuff - call from game_post_level_init(), so the mission has been loaded
 void neb2_post_level_init(bool fog_color_override);
@@ -146,6 +162,10 @@ void neb2_render_setup(camid cid);
 
 // turns a poof on or off
 void neb2_toggle_poof(int poof_idx, bool enabling);
+void neb2_toggle_poof_finalize();	// must be called after all poofs have been toggled
+
+// fades poofs
+void neb2_fade_poof(int poof_idx, int time, bool type);
 
 // render the player nebula
 void neb2_render_poofs();
@@ -158,7 +178,8 @@ void neb2_get_adjusted_fog_values(float *fnear, float *ffar, float *fdensity = n
 
 // given a position, returns 0 - 1 the fog visibility of that position, 0 = completely obscured
 // distance_mult will multiply the result, use for things that can be obscured but can 'shine through' the nebula more than normal
-float neb2_get_fog_visibility (vec3d* pos, float distance_mult);
+// Don't use unless you know what you're doing. Use nebula_handle_alpha instead.
+float neb2_get_fog_visibility (const vec3d* pos, float distance_mult);
 
 // should we not render this object because its obscured by the nebula?
 int neb2_skip_render(object *objp, float z_depth);
@@ -169,5 +190,10 @@ float neb2_get_lod_scale(int objnum);
 // fogging stuff --------------------------------------------------
 
 void neb2_get_fog_color(ubyte *r, ubyte *g, ubyte *b);
+
+// given a position, multiplies alpha by 0 - 1 based on the visibility of Fullneb2 / Volumetric Fogging if present in mission
+// distance_mult will multiply the result, use for things that can be obscured but can 'shine through' the nebula more than normal
+// returns true if there is a nebula present that could have influence
+bool nebula_handle_alpha(float& alpha, const vec3d* pos, float distance_mult);
 
 #endif

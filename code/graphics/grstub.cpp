@@ -18,6 +18,11 @@
 #include "bmpman/bm_internal.h"
 
 
+void gr_stub_setup_frame()
+{
+
+}
+
 uint gr_stub_lock()
 {
 	return 1;
@@ -226,6 +231,10 @@ void gr_stub_deferred_lighting_begin(bool /*clearNonColorBufs*/)
 {
 }
 
+void gr_stub_deferred_lighting_msaa() 
+{
+}
+
 void gr_stub_deferred_lighting_end()
 {
 }
@@ -295,6 +304,24 @@ void gr_stub_shadow_map_start(matrix4 * /*shadow_view_matrix*/, const matrix*  /
 }
 
 void gr_stub_shadow_map_end()
+{
+}
+
+void gr_stub_start_decal_pass()
+{
+}
+
+void gr_stub_stop_decal_pass()
+{
+}
+
+void gr_stub_render_decals(decal_material* /*material_info*/,
+						primitive_type /*prim_type*/,
+						vertex_layout* /*layout*/,
+						int /*num_elements*/,
+						const indexed_vertex_source& /*buffers*/,
+						const gr_buffer_handle& /*instance_buffer*/,
+						int /*num_instances*/)
 {
 }
 
@@ -417,7 +444,37 @@ void gr_stub_delete_query_object(int  /*obj*/)
 {
 }
 
-bool gr_stub_init() 
+SCP_vector<const char*> gr_stub_openxr_get_extensions() 
+{
+	return {}; 
+}
+
+bool gr_stub_openxr_test_capabilities() 
+{ 
+	return false; 
+}
+
+bool gr_stub_openxr_create_session()
+{ 
+	return false; 
+}
+
+int64_t gr_stub_openxr_get_swapchain_format(const SCP_vector<int64_t>& /*allowed*/)
+{ 
+	return 0; 
+}
+
+bool gr_stub_openxr_acquire_swapchain_buffers()
+{ 
+	return false; 
+}
+
+bool gr_stub_openxr_flip() 
+{
+	return false; 
+}
+
+bool gr_stub_init()
 {
 	if (gr_screen.res != GR_640) {
 		gr_screen.res = GR_640;
@@ -443,8 +500,13 @@ bool gr_stub_init()
 	Gr_blue.mask = 0xff;
 	Gr_t_blue = Gr_blue;
 
+	return true;
+}
+
+void gr_stub_init_function_pointers() {
 	// function pointers...
 	gr_screen.gf_flip				= gr_stub_flip;
+	gr_screen.gf_setup_frame		= gr_stub_setup_frame;
 	gr_screen.gf_set_clip			= gr_stub_set_clip;
 	gr_screen.gf_reset_clip			= gr_stub_reset_clip;
 	
@@ -514,6 +576,7 @@ bool gr_stub_init()
 	gr_screen.gf_copy_effect_texture = gr_stub_copy_effect_texture;
 
 	gr_screen.gf_deferred_lighting_begin = gr_stub_deferred_lighting_begin;
+	gr_screen.gf_deferred_lighting_msaa = gr_stub_deferred_lighting_msaa;
 	gr_screen.gf_deferred_lighting_end = gr_stub_deferred_lighting_end;
 	gr_screen.gf_deferred_lighting_finish = gr_stub_deferred_lighting_finish;
 
@@ -523,6 +586,10 @@ bool gr_stub_init()
 
 	gr_screen.gf_shadow_map_start	= gr_stub_shadow_map_start;
 	gr_screen.gf_shadow_map_end		= gr_stub_shadow_map_end;
+
+	gr_screen.gf_start_decal_pass = gr_stub_start_decal_pass;
+	gr_screen.gf_stop_decal_pass = gr_stub_stop_decal_pass;
+	gr_screen.gf_render_decals = gr_stub_render_decals;
 
 	gr_screen.gf_render_shield_impact = gr_stub_render_shield_impact;
 
@@ -565,5 +632,12 @@ bool gr_stub_init()
 
 	gr_screen.gf_set_viewport = [](int /*x*/, int /*y*/, int /*width*/, int /*height*/) {};
 
-	return true;
+	gr_screen.gf_override_fog = [](bool /*b*/) {};
+
+	gr_screen.gf_openxr_get_extensions = gr_stub_openxr_get_extensions;
+	gr_screen.gf_openxr_test_capabilities = gr_stub_openxr_test_capabilities;
+	gr_screen.gf_openxr_create_session = gr_stub_openxr_create_session;
+	gr_screen.gf_openxr_get_swapchain_format = gr_stub_openxr_get_swapchain_format;
+	gr_screen.gf_openxr_acquire_swapchain_buffers = gr_stub_openxr_acquire_swapchain_buffers;
+	gr_screen.gf_openxr_flip = gr_stub_openxr_flip;
 }

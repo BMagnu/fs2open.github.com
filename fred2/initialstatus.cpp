@@ -402,6 +402,7 @@ BOOL initial_status::OnInitDialog()
 			if (Ship_info[shipp->ship_info_index].uses_team_colors) {
 				//Add a "None" entry at the beginning to allow simple deselection of colours
 				int t = m_team_color_setting.AddString("None");
+				m_team_color_setting.SetCurSel(i);
 				m_team_color_setting.SetItemData(t, i);
 				++i;
 
@@ -598,6 +599,7 @@ void initial_status::change_subsys()
 
 		// update cargo name
 		if (strlen(m_cargo_name) > 0) { //-V805
+			lcl_fred_replace_stuff(m_cargo_name);
 			cargo_index = string_lookup(m_cargo_name, Cargo_names, Num_cargo);
 			if (cargo_index == -1) {
 				if (Num_cargo < MAX_CARGO);

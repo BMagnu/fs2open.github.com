@@ -16,6 +16,7 @@ struct sexp_container;
 // current pilot constants
 static const unsigned int PLR_FILE_ID = 0x5f524c50;	// "PLR_" in file
 static const unsigned int CSG_FILE_ID = 0x5f475343;	// "CSG_" in file
+
 // NOTE: Version should be bumped only for adding/removing sections or section
 //       content.  It should *NOT* be bumped for limit bumps or anything of
 //       that sort!
@@ -26,6 +27,7 @@ static const unsigned int CSG_FILE_ID = 0x5f475343;	// "CSG_" in file
 //   3 - Add SEXP containers
 //   4   Controls are removed, and instead a preset name is saved/loaded
 static const ubyte PLR_VERSION = 4;
+
 //   0 - initial version
 //   1 - re-add recent missions
 //   2 - separate single/multi squad name & pic
@@ -34,7 +36,8 @@ static const ubyte PLR_VERSION = 4;
 //   5 - save rank to flags for quick access
 //   6 - add SEXP containers
 //   7 - Controls are removed, and instead a preset name is saved/loaded.
-static const ubyte CSG_VERSION = 7;
+//   8 - red-alert wing status
+static const ubyte CSG_VERSION = 8;
 
 // pilotfile::version and pilotfile::csg_version value when a file isn't loaded (or was just closed)
 static const ubyte PLR_VERSION_INVALID = 0xFF;
@@ -48,7 +51,7 @@ typedef struct index_list_t {
 // special stats struct, since our use here is not content specific
 typedef struct scoring_special_t {
 	int score{ 0 };
-	int rank{ RANK_ENSIGN };
+	int rank{ 0 };
 	int assists{ 0 };
 	int kill_count{ 0 };
 	int kill_count_ok{ 0 };
@@ -90,11 +93,22 @@ class pilotfile {
 		bool save_player(player *_p = nullptr);
 		bool save_savefile();
 
+		void clear_savefile(bool reset_ships_and_weapons);
+
 		// updating stats, multi and/or all-time
 		void update_stats(scoring_struct *stats, bool training = false);
 		void update_stats_backout(scoring_struct *stats, bool training = false);
 		void set_multi_stats(const scoring_struct *stats);
 		void reset_stats();
+
+		/**
+		 * @brief Export stats to given scoring struct, sanitized for current mod data
+		 * 
+		 * @param[out] stats Scoring struct for exported data
+		 * 
+		 * @returns true if stats were exported successfully
+		 */
+		bool export_stats(scoring_struct *stats);
 
 		/**
 		 * Verifies a pilot file with the given filename
@@ -116,7 +130,7 @@ class pilotfile {
 		bool verify(const char *fname, int *rank = nullptr, char *valid_language = nullptr, int* flags = nullptr);
 
 		// whether current campaign savefile has valid data to work with
-		bool is_invalid()
+		bool is_invalid() const
 		{
 			return m_data_invalid;
 		}
@@ -138,7 +152,7 @@ class pilotfile {
 		bool m_have_info;
 
 		// set in case data appears wrong, so we can avoid loading/saving campaign savefile
-		bool m_data_invalid;	// z64: Not used currently
+		bool m_data_invalid;
 
 		// overall content list, can include reference to more than current
 		// mod/campaign provides
@@ -201,7 +215,7 @@ class pilotfile {
 		// --------------------------------------------------------------------
 		// CSG specific
 		// --------------------------------------------------------------------
-		void csg_reset_data();
+		void csg_reset_data(bool reset_ships_and_weapons);
 		void csg_close();
 
 		void csg_read_flags();

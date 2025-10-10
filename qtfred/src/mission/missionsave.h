@@ -27,8 +27,6 @@ struct sexp_container;
 namespace fso {
 namespace fred {
 
-#define BACKUP_DEPTH    9
-
 enum class MissionFormat {
 	RETAIL = 0, STANDARD = 1, COMPATIBILITY_MODE = 2
 };
@@ -46,8 +44,8 @@ class CFred_mission_save {
 	/**
 	 * @brief Default constructor
 	 */
-	explicit CFred_mission_save(EditorViewport* viewport, MissionFormat format = MissionFormat::STANDARD) :
-		raw_ptr(Parse_text_raw), save_format(format), _editor(viewport->editor), _viewport(viewport) {
+	explicit CFred_mission_save(EditorViewport* viewport = nullptr, MissionFormat format = MissionFormat::STANDARD) :
+		save_format(format), _editor(viewport ? viewport->editor : nullptr), _viewport(viewport) {
 	}
 
 	/**
@@ -145,6 +143,19 @@ class CFred_mission_save {
 	 * @see save_mission_internal()
 	 */
 	int save_bitmaps();
+
+	/**
+	 * @brief Saves the campaign file to the given full pathname
+	 *
+	 * @param[in] pathname The full pathname to save to
+	 *
+	 * @details Returns the success of saving, as far as can be ascertained:
+	 *
+	 * @returns 0 for no error, or
+	 * @returns -1 if the file cannot be opened
+	 *
+	 */
+	int save_campaign_file(const char *pathname);
 
 	/**
 	 * @brief Saves the mission file to the given full pathname
@@ -384,6 +395,16 @@ class CFred_mission_save {
 	int save_music();
 
 	/**
+	 * @brief Saves custom entries to file
+	 *
+	 * @details Returns the value of CFred_mission_save::err, which is:
+	 *
+	 * @returns 0 for no error, or
+	 * @returns A negative value if an error occurred
+	 */
+	int save_custom_data();
+
+	/**
 	* Helper function for save_objects().
 	*/
 	int save_warp_params(WarpDirection direction, ship *shipp);
@@ -461,7 +482,7 @@ class CFred_mission_save {
 	 * @returns 0 for no error, or
 	 * @returns A negative value if an error occurred
 	 */
-	int save_vector(vec3d& v);
+	int save_vector(const vec3d& v);
 
 	/**
 	 * @brief Saves waypoints to file
@@ -483,7 +504,7 @@ class CFred_mission_save {
 	 * @returns 0 for no error, or
 	 * @returns A negative value if an error occurred
 	 */
-	int save_waypoint_list(waypoint_list* w);
+	int save_waypoint_list(const waypoint_list* wp_list);
 
 	/**
 	 * @brief Saves the wing entries to file
@@ -494,6 +515,11 @@ class CFred_mission_save {
 	 * @returns A negative value if an error occurred
 	 */
 	int save_wings();
+
+	/**
+	 * @brief Utility function to save a raw comment, the start of which precedes the current raw_ptr, to a file while handling newlines properly
+	 */
+	void fout_raw_comment(const char *comment_start);
 
 	char* raw_ptr = nullptr;
 	SCP_vector<SCP_string> fso_ver_comment;

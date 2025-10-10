@@ -14,6 +14,7 @@
 
 #include "globalincs/globals.h"
 #include "gamesnd/gamesnd.h"
+#include "mod_table/mod_table.h"
 #include "model/model.h"
 #include "ui/ui.h"
 
@@ -73,12 +74,24 @@ extern int anim_timer_start;
 void common_button_do(int i);
 
 //If new enums are added here be sure to also update the description for the API version in scripting\api\libs\ui.cpp - Mjn
-enum class commit_pressed_status { SUCCESS, GENERAL_FAIL, PLAYER_NO_WEAPONS,  NO_REQUIRED_WEAPON, NO_REQUIRED_WEAPON_MULTIPLE, BANK_GAP_ERROR, PLAYER_NO_SLOT};
+enum class commit_pressed_status { 
+	SUCCESS, 
+	GENERAL_FAIL, 
+	PLAYER_NO_WEAPONS,  
+	NO_REQUIRED_WEAPON, 
+	NO_REQUIRED_WEAPON_MULTIPLE, 
+	BANK_GAP_ERROR, 
+	PLAYER_NO_SLOT, 
+	MULTI_PLAYERS_NO_SHIPS,
+	MULTI_NOT_ALL_ASSIGNED,
+	MULTI_NO_PRIMARY,
+	MULTI_NO_SECONDARY
+};
 
 // common_select_init() performs initialization common to the briefing/ship select/weapon select
 // screens.  This includes loading/setting the palette, loading the background animation, loading
 // the screen switching animations, loading the button animation frames
-void	common_select_init();	
+void common_select_init(bool API_Access = false);
 int	common_select_do(float frametime);
 void	common_select_close();
 void	common_draw_buttons();
@@ -92,7 +105,7 @@ void 	common_render_selected_screen_button();
 void	common_reset_buttons();
 void	common_redraw_pressed_buttons();
 void  common_maybe_clear_focus();
-void ship_select_common_init();
+void ship_select_common_init(bool API_Access = false);
 void common_setup_room_lights();
 
 int mission_ui_background_load(const char *custom_background, const char *single_background, const char *multi_background = NULL);
@@ -106,15 +119,10 @@ void unload_wing_icons();
 void	common_flash_button_init();
 int	common_flash_bright();
 
-// functions for the multiplayer chat window
-void common_render_chat_window();
-void multi_chat_scroll_up();
-void multi_chat_scroll_down();
-
 void	set_active_ui(UI_WINDOW *ui_window);
 
 // music functions exported for multiplayer team selection screen to start briefing music
-SCP_string common_music_get_filename(int score_index);
+const char *common_music_get_filename(int score_index);
 void common_music_init( int score_index );
 void common_music_do();
 void common_music_close();
@@ -205,6 +213,18 @@ typedef struct loadout_data
 
 extern loadout_data Player_loadout;
 
+struct select_effect_params {
+	int effect;                  // effect type (0 = none/rotate, 1 = FS1, 2 = FS2)
+	color fs2_grid_color;        // color of the grid in FS2 effect
+	color fs2_scanline_color;    // color of the scanlines in FS2 effect
+	int fs2_grid_density;        // density of the grid in FS2 effect
+	color fs2_wireframe_color;   // color of the model wireframe in FS2 effect
+
+	select_effect_params() : effect(2), fs2_grid_color(Default_fs2_effect_grid_color), fs2_scanline_color(Default_fs2_effect_scanline_color), fs2_grid_density(Default_fs2_effect_grid_density), fs2_wireframe_color(Default_fs2_effect_wireframe_color)
+	{
+	}
+};
+
 void wss_save_loadout();
 void wss_maybe_restore_loadout();
 void wss_direct_restore_loadout();
@@ -214,8 +234,8 @@ int store_wss_data(ubyte *data, const unsigned int max_size, interface_snd_id so
 int restore_wss_data(ubyte *data);
 
 class ship_info;
-void draw_model_icon(int model_id, int flags, float closeup_zoom, int x1, int x2, int y1, int y2, ship_info* sip = NULL, int resize_mode = GR_RESIZE_FULL, const vec3d *closeup_pos = &vmd_zero_vector);
-void draw_model_rotating(model_render_params *render_info, int model_id, int x1, int y1, int x2, int y2, float *rotation_buffer, vec3d *closeup_pos=NULL, float closeup_zoom = .65f, float rev_rate = REVOLUTION_RATE, int flags = MR_AUTOCENTER | MR_NO_FOGGING, int resize_mode=GR_RESIZE_FULL, int effect = 2);
+void draw_model_icon(int model_id, uint64_t flags, float closeup_zoom, int x1, int x2, int y1, int y2, ship_info* sip = NULL, int resize_mode = GR_RESIZE_FULL, const vec3d *closeup_pos = &vmd_zero_vector);
+void draw_model_rotating(model_render_params *render_info, int model_id, int x1, int y1, int x2, int y2, float *rotation_buffer, const vec3d *closeup_pos=nullptr, float closeup_zoom = .65f, float rev_rate = REVOLUTION_RATE, uint64_t flags = MR_AUTOCENTER | MR_NO_FOGGING, int resize_mode=GR_RESIZE_FULL, select_effect_params effect_params = select_effect_params{});
 
 void common_set_team_pointers(int team);
 void common_reset_team_pointers();

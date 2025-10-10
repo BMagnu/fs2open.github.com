@@ -441,7 +441,17 @@ static void output_hook_variable_list(FILE* fp, const Container& vars)
 		fputs("<dt>", fp);
 		ade_output_type_link(fp, param.type);
 		fprintf(fp, " <i>%s</i></dt>", param.name);
-		fprintf(fp, "<dd><b>Description:</b> %s</dt>", param.description);
+		fprintf(fp, "<dd><b>Description:</b> %s</dd>", param.description);
+	}
+	fputs("</dl>", fp);
+}
+
+template <typename Container>
+static void output_hook_conditions_list(FILE* fp, const Container& vars)
+{
+	fputs("<dl>", fp);
+	for (const auto& param : vars) {
+		fprintf(fp, "<dt><b>%s</b></dt><dd><b>Description:</b> %s</dd>", param.first.c_str(), param.second->documentation.c_str());
 	}
 	fputs("</dl>", fp);
 }
@@ -489,9 +499,36 @@ void output_html_doc(const ScriptingDocumentation& doc, const SCP_string& filena
 			} else {
 				fputs("<br><i>This hook is <b>not</b> overridable</i>", fp);
 			}
+			if (hook.deprecation) {
+				if (hook.deprecation->level_hook == HookDeprecationOptions::DeprecationLevel::LEVEL_ERROR) {
+					fprintf(fp,
+						"<br><b>Removed starting with version %d.%d.%d.</b>\n",
+						hook.deprecation->deprecatedSince.major,
+						hook.deprecation->deprecatedSince.minor,
+						hook.deprecation->deprecatedSince.build);
+				}
+				else if (hook.deprecation->level_override == HookDeprecationOptions::DeprecationLevel::LEVEL_ERROR) {
+					fprintf(fp,
+						"<br><b>Deprecated (+Override removed) starting with version %d.%d.%d.</b>\n",
+						hook.deprecation->deprecatedSince.major,
+						hook.deprecation->deprecatedSince.minor,
+						hook.deprecation->deprecatedSince.build);
+				}
+				else {
+					fprintf(fp,
+						"<br><b>Deprecated starting with version %d.%d.%d.</b>\n",
+						hook.deprecation->deprecatedSince.major,
+						hook.deprecation->deprecatedSince.minor,
+						hook.deprecation->deprecatedSince.build);
+				}
+			}
 			if (!hook.parameters.empty()) {
 				fputs("<br><b>Hook Variables:</b>", fp);
 				output_hook_variable_list(fp, hook.parameters);
+			}
+			if (!hook.conditions.empty()) {
+				fputs("<b>Hook-specific Conditions:</b>", fp);
+				output_hook_conditions_list(fp, hook.conditions);
 			}
 			fputs("</dd>", fp);
 		}
@@ -512,6 +549,15 @@ void output_html_doc(const ScriptingDocumentation& doc, const SCP_string& filena
 	OutputLuaMeta(fp, doc);
 
 	fputs("</dd>", fp);
+
+	//***Options
+	fputs("<dt><b>In Game Options</b></dt>", fp);
+	fputs("<dd><dl>", fp);
+	for (const auto& option : doc.options) {
+		fprintf(fp, "<dt><b>%s</b></dt>", option.title.c_str());
+		fprintf(fp, "<dd><b>Key:</b> %s</dd>", option.key.c_str());
+		fprintf(fp, "<dd><b>Description:</b> %s</dd>", option.description.c_str());
+	}
 
 	//***Enumerations
 	fprintf(fp, "<dt id=\"Enumerations\"><h2>Enumerations</h2></dt>");

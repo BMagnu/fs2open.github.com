@@ -23,6 +23,7 @@
 #include "network/multi_team.h"
 #include "mission/missioncampaign.h"
 #include "mission/missionparse.h"
+#include "options/Option.h"
 #include "parse/parselo.h"
 #include "playerman/player.h"
 #include "cfile/cfile.h"
@@ -50,6 +51,119 @@ char Multi_options_proxy[512] = "";
 ushort Multi_options_proxy_port = 0;
 bool Multi_cfg_missing = true;
 
+auto TogglePXOOption __UNUSED = options::OptionBuilder<bool>("Multi.TogglePXO",
+									std::pair<const char*, int>{"PXO", 1383},
+									std::pair<const char*, int>{"Whether or not to play games on the local network or on PXO", 1809})
+									.category(std::make_pair("Multi", 1828))
+									.level(options::ExpertLevel::Beginner)
+									.default_val(false)  // false to match FSO defaults, will set to default when loading new pilots anyway
+									.bind_to(&Multi_options_g.pxo)
+									.importance(10)
+									.flags({options::OptionFlags::RetailBuiltinOption})
+									.finish();
+
+// These next few options are a little messy because the values are stored in the player file
+// rather than a global. The Change_Listener runs on game start and when the option is changed.
+// The "initial" paramter is used to skip setting the player flag on game start because Player
+// hasn't been initialized yet. On Player Load the static local globals are set based on the
+// player flags and the options will read/save those as necessary. When an option is changed
+// any time after startup the Change_Listener will set the player flags. We don't need to manually
+// save the player flags because the player file already does that. So after the local globals
+// and player flags are sync'd up at game start then we are good to go for the entire runtime.
+
+static bool BroadcastGamesLocally = false;
+
+static bool local_broadcast_change(bool val, bool initial)
+{
+	if (initial) {
+		return false;
+	} else {
+		if (!val) {
+			Player->m_local_options.flags &= ~(MLO_FLAG_LOCAL_BROADCAST);
+		} else {
+			Player->m_local_options.flags |= MLO_FLAG_LOCAL_BROADCAST;
+		}
+		BroadcastGamesLocally = (Player->m_local_options.flags & MLO_FLAG_LOCAL_BROADCAST);
+		return true;
+	}
+}
+
+auto LocalBroadcastOption __UNUSED = options::OptionBuilder<bool>("Multi.LocalBroadcast",
+									std::pair<const char*, int>{"Broadcast Locally", 1387},
+									std::pair<const char*, int>{"Whether or not to broadcast games on the local network", 1808})
+									.category(std::make_pair("Multi", 1828))
+									.level(options::ExpertLevel::Beginner)
+									.default_val(true) // true to match FSO defaults, will set to default when loading new pilots anyway
+                                    .bind_to(&BroadcastGamesLocally)
+									.change_listener(local_broadcast_change)
+									.importance(10)
+									.flags({options::OptionFlags::RetailBuiltinOption})
+									.finish();
+
+static bool AlwaysFlushCache = false;
+
+static bool flush_cache_change(bool val, bool initial)
+{
+	if (initial) {
+		return false;
+	} else {
+		if (!val) {
+			Player->m_local_options.flags &= ~(MLO_FLAG_FLUSH_CACHE);
+		} else {
+			Player->m_local_options.flags |= MLO_FLAG_FLUSH_CACHE;
+		}
+		AlwaysFlushCache = (Player->m_local_options.flags & MLO_FLAG_FLUSH_CACHE);
+		return true;
+	}
+}
+
+static SCP_string flush_cache_display(bool mode) { return mode ? XSTR("Before Game", 1401) : XSTR("Never", 1400); }
+
+auto FlushCacheOption __UNUSED = options::OptionBuilder<bool>("Multi.FlushCache",
+									std::pair<const char*, int>{"Flush Cache", 1399},
+									std::pair<const char*, int>{"Whether or not flush the multidata cache before games", 1810})
+									.category(std::make_pair("Multi", 1828))
+									.level(options::ExpertLevel::Beginner)
+                                    .flags({options::OptionFlags::ForceMultiValueSelection, options::OptionFlags::RetailBuiltinOption})
+                                    .display(flush_cache_display) 
+									.default_val(false)
+                                    .bind_to(&AlwaysFlushCache)
+									.change_listener(flush_cache_change)
+									.importance(10)
+									.finish();
+
+static bool CacheMissionsToMultidata = false;
+
+static bool transfer_missions_change(bool val, bool initial)
+{
+	if (initial) {
+		return false;
+	} else {
+		if (!val) {
+			Player->m_local_options.flags &= ~(MLO_FLAG_XFER_MULTIDATA);
+		} else {
+			Player->m_local_options.flags |= MLO_FLAG_XFER_MULTIDATA;
+		}
+		CacheMissionsToMultidata = (Player->m_local_options.flags & MLO_FLAG_XFER_MULTIDATA);
+		return true;
+	}
+}
+
+static SCP_string transfer_missions_display(bool mode) { return mode ? XSTR("/multidata", 1397) : XSTR("/missions", 1398); }
+
+auto TransferMissionsOption __UNUSED = options::OptionBuilder<bool>("Multi.TransferMissions",
+									std::pair<const char*, int>{"Transfer Missions", 1396},
+									std::pair<const char*, int>{"What appdata folder to save missions to", 1811})
+									.category(std::make_pair("Multi", 1828))
+									.level(options::ExpertLevel::Beginner)
+                                    .flags({options::OptionFlags::ForceMultiValueSelection, options::OptionFlags::RetailBuiltinOption})
+                                    .display(transfer_missions_display) 
+									.default_val(false)
+                                    .bind_to(&CacheMissionsToMultidata)
+									.change_listener(transfer_missions_change)
+									.importance(10)
+									.finish();
+
 // ----------------------------------------------------------------------------------
 // MULTI OPTIONS FUNCTIONS
 //
@@ -71,7 +185,7 @@ void multi_options_read_config()
 	Multi_options_g.log = (Cmdline_multi_log) ? 1 : 0;
 
 	// read in the config file
-	in = cfopen(MULTI_CFG_FILE, "rt", CFILE_NORMAL, CF_TYPE_DATA);
+	in = cfopen(MULTI_CFG_FILE, "rt", CF_TYPE_DATA);
 	
 	// if we failed to open the config file, user default settings
 	if (in == NULL) {
@@ -101,7 +215,7 @@ void multi_options_read_config()
 			if (Is_standalone) {
 				// setup PXO mode
 				if ( SETTING("+pxo") ) {
-					Multi_options_g.pxo = 1;
+					Multi_options_g.pxo = true;
 					// force protocol to TCP
 					Multi_options_g.protocol = NET_TCP;
 					NEXT_TOKEN();
@@ -344,13 +458,8 @@ void multi_options_set_local_defaults(multi_local_options *options)
 	// accept pix by default and broadcast on the local subnet
 	options->flags = (MLO_FLAG_ACCEPT_PIX | MLO_FLAG_LOCAL_BROADCAST);	
 
-	// set the object update level based on the type of network connection specified by the user
-	// at install (or launcher) time.
-	if ( Psnet_connection == NETWORK_CONNECTION_DIALUP ) {
-		options->obj_update_level = OBJ_UPDATE_LOW;
-	} else {
-		options->obj_update_level = Default_multi_object_update_level;
-	}
+	// set the object update level based on the type of network connection specified by the mod
+	options->obj_update_level = Default_multi_object_update_level;
 }
 
 // fill in the passed netgame options struct with the data from my player file data (only host/server should do this)
@@ -372,6 +481,14 @@ void multi_options_local_load(multi_local_options *options, net_player *pxo_pl)
 	if(pxo_pl != NULL){
 		strcpy_s(pxo_pl->p_info.pxo_squad_name, Multi_tracker_squad_name);		
 	}
+}
+
+// fill out the in-game options local globals using the player data
+void multi_options_init_globals()
+{
+	BroadcastGamesLocally = (Player->m_local_options.flags & MLO_FLAG_LOCAL_BROADCAST);
+	AlwaysFlushCache = (Player->m_local_options.flags & MLO_FLAG_FLUSH_CACHE);
+	CacheMissionsToMultidata = (Player->m_local_options.flags & MLO_FLAG_XFER_MULTIDATA);
 }
 
 // add data from a multi_server_options struct
@@ -633,7 +750,7 @@ void multi_options_process_packet(unsigned char *data, header *hinfo)
 	// get mission choice options
 	case MULTI_OPTION_MISSION: {
 		netgame_info ng;
-		char title[NAME_LENGTH+1];
+		SCP_string title;
 		int campaign_type,max_players;
 
 		Assert(Game_mode & GM_STANDALONE_SERVER);
@@ -662,7 +779,6 @@ void multi_options_process_packet(unsigned char *data, header *hinfo)
 
 			// set the netgame max players here if the filename has changed
 			if(strcmp(Netgame.campaign_name,ng.campaign_name) != 0){				
-				memset(title,0,NAME_LENGTH+1);			
 				if(!mission_campaign_get_info(ng.campaign_name,title,&campaign_type,&max_players)){
 					Netgame.max_players = 0;
 				} else {

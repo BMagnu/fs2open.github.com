@@ -18,6 +18,9 @@
 #include "weapon/beam.h"
 #include "weapon/weapon.h"
 #include "tracing/Monitor.h"
+#include "utils/threading.h"
+
+#include <limits>
 
 
 // the next 2 variables are used for pair statistics
@@ -26,6 +29,8 @@ int Num_pairs = 0;
 int Num_pairs_checked = 0;
 
 SCP_vector<int> Collision_sort_list;
+
+static_assert(1 << collision_cache_bitshift > MAX_OBJECTS, "Collision pair caching currently relies on the highest possible objnum being less than 2^collision_cache_bitshift.");
 
 class collider_pair
 {
@@ -44,6 +49,7 @@ public:
 	{}
 };
 
+static SCP_set<object*> Collision_cache_stale_objects;
 static SCP_unordered_map<uint, collider_pair> Collision_cached_pairs;
 
 class checkobject;
@@ -82,10 +88,10 @@ int reject_obj_pair_on_parent(object *A, object *B)
 	return 0;
 }
 
-int reject_due_collision_groups(object *A, object *B)
+bool reject_due_collision_groups(object *A, object *B)
 {
 	if (A->collision_group_id == 0 || B->collision_group_id == 0)
-		return 0;
+		return false;
 
 	return (A->collision_group_id & B->collision_group_id);
 }
@@ -199,7 +205,8 @@ int weapon_will_never_hit( object *obj_weapon, object *other, obj_pair * current
 	weapon_info *wip = &Weapon_info[wp->weapon_info_index];
 
 	// Do some checks for weapons that don't turn
-	if ( !(wip->wi_flags[Weapon::Info_Flags::Turns]) )	{
+	// gotta treat anything being affected by gravity as turning too
+	if ( !(wip->wi_flags[Weapon::Info_Flags::Turns] && (IS_VEC_NULL(&The_mission.gravity) || obj_weapon->phys_info.gravity_const == 0.0))) {
 
 		// This first check is to see if a weapon is behind an object, and they
 		// are heading in opposite directions.   If so, we don't need to ever check	
@@ -251,10 +258,12 @@ int weapon_will_never_hit( object *obj_weapon, object *other, obj_pair * current
 		//If the PF_CONST_VEL flag is set, we can safely assume it doesn't change speed.
 		if (obj_weapon->phys_info.flags & PF_CONST_VEL)
 			max_vel_weapon = obj_weapon->phys_info.speed;
-		else if (wp->lssm_stage==5)
+		else if (wp->lssm_stage == 5)
 			max_vel_weapon = wip->lssm_stage5_vel;
-		else
+		else if (IS_VEC_NULL(&The_mission.gravity) || obj_weapon->phys_info.gravity_const == 0.0f)
 			max_vel_weapon = wp->weapon_max_vel;
+		else
+			max_vel_weapon = obj_weapon->phys_info.speed + wp->lifeleft * vm_vec_mag(&The_mission.gravity);
 
 		float max_vel_other = other->phys_info.max_vel.xyz.z;
 		if (max_vel_other < 10.0f) {
@@ -271,15 +280,13 @@ int weapon_will_never_hit( object *obj_weapon, object *other, obj_pair * current
 		// look for two time solutions to Xw = Xs, where Xw = Xw0 + Vwt*t  Xs = Xs + Vs*(t+dt), where Vs*dt = radius of ship 
 		// Since direction of Vs is unknown, solve for (Vs*t) and find norm of both sides
 		if ( !(wip->wi_flags[Weapon::Info_Flags::Turns]) && (obj_weapon->phys_info.flags & PF_CONST_VEL) ) {
-			vec3d delta_x, weapon_vel;
+			vec3d delta_x;
 			float a,b,c, delta_x_dot_vl, delta_t;
 			float root1, root2, root, earliest_time;
 
 			vm_vec_sub( &delta_x, &obj_weapon->pos, &other->pos );
-			weapon_vel = obj_weapon->phys_info.vel;
-			float weapon_speed = vm_vec_mag(&weapon_vel);
 
-			if (weapon_speed == max_vel_other) {
+			if (max_vel_weapon == max_vel_other) {
 				// this will give us NAN using the below formula, so check every frame
 				current_pair->next_check_time = timestamp(0);
 				return 0;
@@ -287,9 +294,9 @@ int weapon_will_never_hit( object *obj_weapon, object *other, obj_pair * current
 
 			// vm_vec_copy_scale( &laser_vel, &weapon->orient.vec.fvec, max_vel_weapon );
 			delta_t = (other->radius + 10.0f) / max_vel_other;		// time to get from center to radius of other obj
-			delta_x_dot_vl = vm_vec_dot( &delta_x, &weapon_vel);
+			delta_x_dot_vl = vm_vec_dot( &delta_x, &obj_weapon->phys_info.vel);
 
-			a = weapon_speed * weapon_speed - max_vel_other*max_vel_other;
+			a = max_vel_weapon * max_vel_weapon - max_vel_other*max_vel_other;
 			b = 2.0f * (delta_x_dot_vl - max_vel_other*max_vel_other*delta_t);
 			c = vm_vec_mag_squared( &delta_x ) - max_vel_other*max_vel_other*delta_t*delta_t;
 
@@ -311,7 +318,7 @@ int weapon_will_never_hit( object *obj_weapon, object *other, obj_pair * current
 			}
 
 			// standard algorithm
-			if (weapon_speed > max_vel_other) {
+			if (max_vel_weapon > max_vel_other) {
 				// find earliest positive time
 				if ( root1 > root2 ) {
 					float temp = root1;
@@ -389,11 +396,9 @@ int weapon_will_never_hit( object *obj_weapon, object *other, obj_pair * current
 //	radius is radius of object moving from curpos to goalpos.
 int pp_collide(vec3d *curpos, vec3d *goalpos, object *goalobjp, float radius)
 {
-	mc_info mc;
-	mc_info_init(&mc);
-
 	Assert(goalobjp->type == OBJ_SHIP);
 
+	mc_info mc;
 	mc.model_instance_num = Ships[goalobjp->instance].model_instance_num;
 	mc.model_num = Ship_info[Ships[goalobjp->instance].ship_info_index].model_num;			// Fill in the model to check
 	mc.orient = &goalobjp->orient;	// The object's orient
@@ -437,6 +442,9 @@ int collide_predict_large_ship(object *objp, float distance)
 	vm_vec_scale_add(&goal_pos, &cur_pos, &objp->orient.vec.fvec, distance);
 
 	for ( objp2 = GET_FIRST(&obj_used_list); objp2 != END_OF_LIST(&obj_used_list); objp2 = GET_NEXT(objp2) ) {
+		if (objp2->flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
 		if ((objp != objp2) && (objp2->type == OBJ_SHIP)) {
 			if (Ship_info[Ships[objp2->instance].ship_info_index].is_big_or_huge()) {
 				if (dock_check_find_docked_object(objp, objp2))
@@ -546,7 +554,8 @@ void set_hit_struct_info(collision_info_struct *hit, mc_info *mc, bool submodel_
 	hit->edge_hit = mc->edge_hit;
 	hit->hit_pos = mc->hit_point_world;
 	hit->hit_time = mc->hit_dist;
-	hit->submodel_num = mc->hit_submodel;
+	hit->heavy_model_num = mc->model_num;
+	hit->heavy_submodel_num = mc->hit_submodel;
 
 	hit->submodel_move_hit = submodel_move_hit;
 }
@@ -603,11 +612,31 @@ void obj_reset_colliders()
 	Collision_cached_pairs.clear();
 }
 
-void obj_collide_retime_cached_pairs()
+void obj_collide_retime_stale_pairs()
 {
-	for ( auto& pair : Collision_cached_pairs ) {
-		pair.second.next_check_time = timestamp(0);
+	TRACE_SCOPE(tracing::RetimeCollisionCache);
+
+	auto it = Collision_cached_pairs.begin();
+	while (it != Collision_cached_pairs.end()) {
+		auto &pair = it->second;
+		if (pair.signature_a != pair.a->signature || pair.signature_b != pair.b->signature) {
+			it = Collision_cached_pairs.erase(it);
+		} else {
+			if (pair.a->flags[Object::Object_Flags::Collision_cache_stale] || pair.b->flags[Object::Object_Flags::Collision_cache_stale])
+				pair.next_check_time = timestamp(0);
+			it++;
+		}
 	}
+
+	for (auto objp : Collision_cache_stale_objects)
+		objp->flags.remove(Object::Object_Flags::Collision_cache_stale);
+	Collision_cache_stale_objects.clear();
+}
+
+void obj_collide_obj_cache_stale(object* objp)
+{
+	objp->flags.set(Object::Object_Flags::Collision_cache_stale);
+	Collision_cache_stale_objects.insert(objp);
 }
 
 //local helper functions only used in objcollide.cpp
@@ -696,19 +725,128 @@ void obj_quicksort_colliders(SCP_vector<int> *list, int left, int right, int axi
     }
 }
 
+struct collision_thread_data {
+	struct collision_queue_item {
+		obj_pair objs;
+		uint ctype;
+	};
+	struct collision_queue_result {
+		obj_pair objs;
+		bool never_recheck;
+		std::any collision_data;
+		void (*process_collision)( obj_pair *pair,  const std::any& collision_data );
+	};
+
+	std::atomic_size_t queue_length, result_length;
+	std::mutex queue_mutex, result_mutex;
+	std::unique_ptr<SCP_vector<collision_queue_item>> queue_load, queue_process;
+	std::unique_ptr<SCP_vector<collision_queue_result>> queue_results, queue_send;
+
+	collision_thread_data() :
+		queue_length(0),
+		result_length(0),
+		queue_load(std::make_unique<SCP_vector<collision_queue_item>>()),
+		queue_process(std::make_unique<SCP_vector<collision_queue_item>>()),
+		queue_results(std::make_unique<SCP_vector<collision_queue_result>>()),
+		queue_send(std::make_unique<SCP_vector<collision_queue_result>>()) {}
+};
+
+std::unique_ptr<collision_thread_data[]> collision_thread_data_buffer;
+std::atomic_bool collision_processing_done = false;
+
+void spin_up_mp_collision() {
+	collision_processing_done.store(false);
+	threading::spin_up_threaded_task(threading::WorkerThreadTask::COLLISION);
+}
+
+void spin_down_mp_collision() {
+	threading::spin_down_threaded_task();
+	collision_processing_done.store(true);
+}
+
+void queue_mp_collision(uint ctype, const obj_pair& colliding) {
+	size_t min_queue_length = std::numeric_limits<size_t>::max();
+	size_t target_thread = 0;
+	for (size_t i = 0; i < threading::get_num_workers(); i++) {
+		size_t queue_length = collision_thread_data_buffer[i].queue_length.load(std::memory_order_acquire);
+		if (queue_length == 0) {
+			target_thread = i;
+			break;
+		}
+		else if (queue_length < min_queue_length) {
+			target_thread = i;
+			min_queue_length = queue_length;
+		}
+	}
+	{
+		auto& thread = collision_thread_data_buffer[target_thread];
+		std::scoped_lock lock(thread.queue_mutex);
+		thread.queue_load->emplace_back( collision_thread_data::collision_queue_item{colliding, ctype} );
+		thread.queue_length.fetch_add(1, std::memory_order_release);
+	}
+}
+
+void post_process_threaded_collisions() {
+	SCP_map<size_t, size_t> workerThreads;
+	for (size_t i = 0; i < threading::get_num_workers(); i++)
+		workerThreads.emplace(i, 0);
+
+	while (!workerThreads.empty()) {
+		for(auto& [i, processed] : workerThreads) {
+			auto& thread = collision_thread_data_buffer[i];
+
+			size_t queue_length = thread.queue_length.load(std::memory_order_acquire);
+			size_t result_length = thread.result_length.load(std::memory_order_acquire);
+
+			if (result_length > processed) {
+				{
+					std::scoped_lock lock(thread.result_mutex);
+					thread.queue_results.swap(thread.queue_send);
+				}
+				for (auto& collision : *thread.queue_send) {
+					uint key = (OBJ_INDEX(collision.objs.a) << collision_cache_bitshift) + OBJ_INDEX(collision.objs.b);
+					collider_pair *collision_info = &Collision_cached_pairs[key];
+
+					if (collision.collision_data.has_value())
+						collision.process_collision(&collision.objs, collision.collision_data);
+
+					if (collision.never_recheck) {
+						collision_info->next_check_time = -1;
+					} else {
+						collision_info->next_check_time = collision.objs.next_check_time;
+					}
+				}
+				processed += thread.queue_send->size();
+				thread.queue_send->clear();
+			}
+			else if (queue_length == 0) {
+				thread.queue_results->clear();
+				workerThreads.erase(i);
+				break;
+			}
+		}
+	}
+
+	spin_down_mp_collision();
+}
+
 void obj_collide_pair(object *A, object *B)
 {
     TRACE_SCOPE(tracing::CollidePair);
 
     int (*check_collision)( obj_pair *pair ) = nullptr;
     int swapped = 0;
+	bool support_mp = false;
 
     if ( A==B ) return;		// Don't check collisions with yourself
 
     if ( !(A->flags[Object::Object_Flags::Collides]) ) return;		// This object doesn't collide with anything
     if ( !(B->flags[Object::Object_Flags::Collides]) ) return;		// This object doesn't collide with anything
 
-    if ((A->flags[Object::Object_Flags::Immobile]) && (B->flags[Object::Object_Flags::Immobile])) return;	// Two immobile objects will never collide with each other
+	// Two immobile objects will never collide with each other
+    if ( (A->flags[Object::Object_Flags::Immobile] || (A->flags[Object::Object_Flags::Dont_change_position] && A->flags[Object::Object_Flags::Dont_change_orientation]))
+		&& (B->flags[Object::Object_Flags::Immobile] || (B->flags[Object::Object_Flags::Dont_change_position] && B->flags[Object::Object_Flags::Dont_change_orientation])) )
+			return;
 
     // Make sure you're not checking a parent with it's kid or vicy-versy
     if ( reject_obj_pair_on_parent(A,B) ) {
@@ -723,9 +861,11 @@ void obj_collide_pair(object *A, object *B)
         case COLLISION_OF(OBJ_WEAPON,OBJ_SHIP):
             swapped = 1;
             check_collision = collide_ship_weapon;
+			support_mp = true;
             break;
         case COLLISION_OF(OBJ_SHIP, OBJ_WEAPON):
             check_collision = collide_ship_weapon;
+			support_mp = true;
             break;
         case COLLISION_OF(OBJ_DEBRIS, OBJ_WEAPON):
             check_collision = collide_debris_weapon;
@@ -757,6 +897,10 @@ void obj_collide_pair(object *A, object *B)
             break;
         case COLLISION_OF(OBJ_SHIP,OBJ_SHIP):
             check_collision = collide_ship_ship;
+#ifdef NDEBUG
+			//This is, due to debug prints, unfortunately only safe in release builds...
+			support_mp = true;
+#endif
             break;
 
         case COLLISION_OF(OBJ_SHIP, OBJ_BEAM):
@@ -844,7 +988,7 @@ void obj_collide_pair(object *A, object *B)
     }
 
     bool valid = false;
-    uint key = (OBJ_INDEX(A) << 12) + OBJ_INDEX(B);
+    uint key = (OBJ_INDEX(A) << collision_cache_bitshift) + OBJ_INDEX(B);
 
     collider_pair* collision_info = &Collision_cached_pairs[key];
 
@@ -873,10 +1017,8 @@ void obj_collide_pair(object *A, object *B)
         // if this signature is valid, make the necessary checks to see if we need to collide check
         if ( collision_info->next_check_time == -1 ) {
             return;
-        } else {
-            if ( !timestamp_elapsed(collision_info->next_check_time) ) {
-                return;
-            }
+        } else if ( !timestamp_elapsed(collision_info->next_check_time) ) {
+			return;
         }
     } else {
         // only check debris:weapon collisions for player
@@ -944,12 +1086,17 @@ void obj_collide_pair(object *A, object *B)
     new_pair.b = B;
     new_pair.next_check_time = collision_info->next_check_time;
 
-    if ( check_collision(&new_pair) ) {
-        // don't have to check ever again
-        collision_info->next_check_time = -1;
-    } else {
-        collision_info->next_check_time = new_pair.next_check_time;
-    }
+	if (threading::is_threading() && support_mp) {
+		queue_mp_collision(ctype, new_pair);
+	}
+	else {
+		if (check_collision(&new_pair)) {
+			// don't have to check ever again
+			collision_info->next_check_time = -1;
+		} else {
+			collision_info->next_check_time = new_pair.next_check_time;
+		}
+	}
 }
 
 void obj_find_overlap_colliders(SCP_vector<int> &overlap_list_out, SCP_vector<int> &list, int axis, bool collide)
@@ -997,7 +1144,55 @@ void obj_find_overlap_colliders(SCP_vector<int> &overlap_list_out, SCP_vector<in
         overlappers.push_back(in_index);
     }
 }
+
 } //anon namespace
+
+void collide_mp_worker_thread(size_t threadIdx) {
+	auto& thread = collision_thread_data_buffer[threadIdx];
+	thread.result_length.store(0);
+
+	while (!thread.queue_process->empty() || thread.queue_length.load(std::memory_order_acquire) > 0 || !collision_processing_done.load(std::memory_order_acquire)) {
+		if (!thread.queue_process->empty()) {
+
+			for (auto& collision_check : *thread.queue_process) {
+				collision_result (*check_collision)( obj_pair *pair ) = nullptr;
+
+				switch( collision_check.ctype )	{
+					case COLLISION_OF(OBJ_WEAPON, OBJ_SHIP):
+					case COLLISION_OF(OBJ_SHIP, OBJ_WEAPON):
+						check_collision = collide_ship_weapon_check;
+						break;
+					case COLLISION_OF(OBJ_SHIP, OBJ_SHIP):
+						check_collision = collide_ship_ship_check;
+						break;
+					default:
+						UNREACHABLE("Got non MP-compatible collision type!");
+				}
+
+				auto&& [check_again, collision_data_maybe, collision_fnc] = check_collision(&collision_check.objs);
+
+				{
+					std::scoped_lock lock{thread.result_mutex};
+					thread.queue_results->emplace_back(collision_thread_data::collision_queue_result{collision_check.objs, check_again, collision_data_maybe, collision_fnc});
+				}
+				thread.result_length.fetch_add(1, std::memory_order_release);
+				thread.queue_length.fetch_sub(1, std::memory_order_release);
+			}
+			thread.queue_process->clear();
+		}
+		else if (thread.queue_length.load(std::memory_order_acquire) > 0) {
+			//We must have data in the load queue then.
+			std::scoped_lock lock(thread.queue_mutex);
+			thread.queue_load.swap(thread.queue_process);
+			thread.queue_load->clear();
+		}
+	}
+}
+
+void collide_init() {
+	if (threading::is_threading())
+		collision_thread_data_buffer = std::make_unique<collision_thread_data[]>(threading::get_num_workers());
+}
 
 // used only in obj_sort_and_collide()
 static SCP_vector<int> sort_list_y;
@@ -1010,6 +1205,13 @@ void obj_sort_and_collide(SCP_vector<int>* Collision_list)
 
 	if ( !(Game_detail_flags & DETAIL_FLAG_COLLISION) )
 		return;
+
+	if (threading::is_threading())
+		spin_up_mp_collision();
+
+	if (!Collision_cache_stale_objects.empty()) {
+		obj_collide_retime_stale_pairs();
+	}
 
 	// the main use case is to go through the main Collision detection list, so use that if
 	// nothing is defined.
@@ -1037,4 +1239,32 @@ void obj_sort_and_collide(SCP_vector<int>* Collision_list)
 		obj_quicksort_colliders(&sort_list_z, 0, (int)(sort_list_z.size() - 1), 2);
 	}
 	obj_find_overlap_colliders(sort_list_y, sort_list_z, 2, true);
+
+	if (threading::is_threading())
+		post_process_threaded_collisions();
+}
+
+void collide_apply_gravity_flags_weapons() {
+	for (object* obj = GET_FIRST(&obj_used_list); obj != END_OF_LIST(&obj_used_list); obj = GET_NEXT(obj)) {
+		if (obj->type != OBJ_WEAPON || obj->flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
+		weapon* wp = &Weapons[obj->instance];
+		weapon_info* wip = &Weapon_info[wp->weapon_info_index];
+
+		if (!wip->is_homing() || (wp->weapon_flags[Weapon::Weapon_Flags::No_homing])) {
+			// homing weapons dont get any gravity stuff
+			if (wip->acceleration_time <= 0.0f || Missiontime - wp->creation_time >= fl2f(wip->acceleration_time)) {
+				// if the weapon doesn't accelerate, or has finished accelerating...
+				if (The_mission.gravity == vmd_zero_vector || obj->phys_info.gravity_const == 0.0f) {
+					obj->phys_info.flags |= PF_CONST_VEL;
+					obj->phys_info.flags &= ~PF_BALLISTIC;
+				}
+				else {
+					obj->phys_info.flags |= PF_BALLISTIC;
+					obj->phys_info.flags &= ~PF_CONST_VEL;
+				}
+			}
+		}
+	}
 }

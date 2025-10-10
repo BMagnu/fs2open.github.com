@@ -27,27 +27,19 @@ class polymodel;
 #define OP_TMAP2POLY	6
 #define OP_SORTNORM2	7
 
-// change header for freespace2
-//#define FREESPACE1_FORMAT
-#define FREESPACE2_FORMAT
-#if defined( FREESPACE1_FORMAT )
-#elif defined ( FREESPACE2_FORMAT )
-#else
-	#error Neither FREESPACE1_FORMAT or FREESPACE2_FORMAT defined
-#endif
-
 // endianess will be handled by cfile and others now, little-endian should be default in all cases
 
 // little-endian (Intel) IDs
 #define POF_HEADER_ID  0x4f505350	// 'OPSP' (PSPO) POF file header
-#if defined( FREESPACE1_FORMAT )
-	// FREESPACE1 FORMAT
-	#define ID_OHDR 0x5244484f			// RDHO (OHDR): POF file header
-	#define ID_SOBJ 0x4a424f53			// JBOS (SOBJ): Subobject header
-#else
-	#define ID_OHDR 0x32524448			// 2RDH (HDR2): POF file header
-	#define ID_SOBJ 0x324a424f			// 2JBO (OBJ2): Subobject header
-#endif
+
+// FREESPACE1 FORMAT
+#define ID_OHDR 0x5244484f			// RDHO (OHDR): POF file header
+#define ID_SOBJ 0x4a424f53			// JBOS (SOBJ): Subobject header
+
+// FREESPACE2 FORMAT
+#define ID_HDR2 0x32524448			// 2RDH (HDR2): POF file header
+#define ID_OBJ2 0x324a424f			// 2JBO (OBJ2): Subobject header
+
 #define ID_TXTR 0x52545854				// RTXT (TXTR): Texture filename list
 #define ID_INFO 0x464e4950				// FNIP (PINF): POF file information, like command line, etc
 #define ID_GRID 0x44495247				// DIRG (GRID): Grid information
@@ -68,6 +60,20 @@ class polymodel;
 #define ID_SLDC 0x43444c53				// CDLS (SLDC): Shield Collision Tree
 #define ID_SLC2 0x32434c53				// 2CLS (SLC2): Shield Collision Tree with ints instead of char - ShivanSpS
 
+extern const ubyte* Macro_ubyte_bounds;
+
+#ifndef NDEBUG
+#define us(p)	(AssertExpr(p < Macro_ubyte_bounds), *reinterpret_cast<ushort*>(p))
+#define cus(p)  (AssertExpr(p < Macro_ubyte_bounds), *reinterpret_cast<const ushort*>(p))
+#define uw(p)	(AssertExpr(p < Macro_ubyte_bounds), *reinterpret_cast<uint*>(p))
+#define cuw(p)  (AssertExpr(p < Macro_ubyte_bounds), *reinterpret_cast<const uint*>(p))
+#define w(p)	(AssertExpr(p < Macro_ubyte_bounds), *reinterpret_cast<int*>(p))
+#define cw(p)   (AssertExpr(p < Macro_ubyte_bounds), *reinterpret_cast<const int*>(p))
+#define wp(p)	(AssertExpr(p < Macro_ubyte_bounds), reinterpret_cast<int*>(p)
+#define vp(p)	(AssertExpr(p < Macro_ubyte_bounds), reinterpret_cast<vec3d*>(p))
+#define fl(p)	(AssertExpr(p < Macro_ubyte_bounds), *reinterpret_cast<float*>(p))
+#define cfl(p)  (AssertExpr(p < Macro_ubyte_bounds), *reinterpret_cast<const float*>(p))
+#else
 #define us(p)	(*reinterpret_cast<ushort*>(p))
 #define cus(p)  (*reinterpret_cast<const ushort*>(p))
 #define uw(p)	(*reinterpret_cast<uint*>(p))
@@ -78,14 +84,9 @@ class polymodel;
 #define vp(p)	(reinterpret_cast<vec3d*>(p))
 #define fl(p)	(*reinterpret_cast<float*>(p))
 #define cfl(p)  (*reinterpret_cast<const float*>(p))
+#endif
 
-// Creates the octants for a given polygon model
-void model_octant_create( polymodel * pm );
-
-// frees the memory the octants use for a given polygon model
-void model_octant_free( polymodel * pm );
-
-void model_calc_bound_box( vec3d *box, vec3d *big_mn, vec3d *big_mx);
+void model_calc_bound_box(vec3d *box, const vec3d *big_mn, const vec3d *big_mx);
 
 void interp_clear_instance();
 

@@ -51,6 +51,7 @@ public:
 	int		m_waves;
 	int		m_threshold;
 	int		m_formation;
+	CString	m_formation_scale;
 	int		m_arrival_location;
 	int		m_departure_location;
 	int		m_arrival_delay;
@@ -65,6 +66,7 @@ public:
 	BOOL	m_no_arrival_music;
 	int		m_departure_target;
 	BOOL	m_no_arrival_message;
+	BOOL	m_no_first_wave_message;
 	BOOL	m_no_arrival_warp;
 	BOOL	m_no_departure_warp;
 	BOOL	m_same_arrival_warp_when_docked;
@@ -110,12 +112,12 @@ protected:
 	afx_msg void OnSquadLogo();
 	afx_msg void OnRestrictArrival();
 	afx_msg void OnRestrictDeparture();
+	afx_msg void OnBnClickedCustomWarpinParams();
+	afx_msg void OnBnClickedCustomWarpoutParams();
+	afx_msg void OnWingFormationAlign();
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
 
 	// Aux functions
 	int calc_max_wave_treshold();
-public:
-	afx_msg void OnBnClickedCustomWarpinParams();
-	afx_msg void OnBnClickedCustomWarpoutParams();
 };

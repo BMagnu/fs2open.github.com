@@ -20,6 +20,7 @@
 #include "sound/dscap.h"
 #include "sound/openal.h"
 #include "sound/sound.h" // jg18 - for enhanced sound
+#include "options/Option.h"
 
 
 typedef struct sound_buffer
@@ -173,6 +174,18 @@ ALuint AL_EFX_aux_id = 0;
 static ALuint AL_EFX_effect_id = 0;
 static bool Ds_active_env = false;
 static size_t Ds_active_env_idx = 0;
+
+bool Ingame_efx = false;
+
+static auto EnableEFXOption = options::OptionBuilder<bool>("Audio.EnableEFX",
+                     std::pair<const char*, int>{"Use Audio EFX", 1832},
+                     std::pair<const char*, int>{"Toggle whether OpenAL Audio EFX are used or not", 1833})
+                     .category(std::make_pair("Audio", 1826))
+                     .level(options::ExpertLevel::Advanced)
+                     .default_val(false)
+                     .bind_to_once(&Ingame_efx)
+                     .importance(69)
+                     .finish();
 
 
 static void *al_load_function(const char *func_name)
@@ -400,6 +413,7 @@ int ds_init()
 	}
 
 	sample_rate = os_config_read_uint("Sound", "SampleRate", sample_rate);
+
 	attrList[1] = sample_rate;
 	SCP_string playback_device;
 	SCP_string capture_device;
@@ -455,7 +469,15 @@ int ds_init()
 
 	if ( alcIsExtensionPresent(ds_sound_device, (const ALchar*)"ALC_EXT_EFX") == AL_TRUE ) {
 		mprintf(("  Found extension \"ALC_EXT_EFX\".\n"));
-		Ds_use_eax = os_config_read_uint("Sound", "EnableEFX", Fred_running);
+		if (Using_in_game_options) {
+			if (Fred_running) {
+				Ds_use_eax = Fred_running;
+			} else {
+				Ds_use_eax = EnableEFXOption->getValue();
+			}
+		} else {
+			Ds_use_eax = os_config_read_uint("Sound", "EnableEFX", Fred_running);
+		}
 	}
 
 	if (Ds_use_eax == 1) {
@@ -750,7 +772,7 @@ int ds_get_free_channel_retail(float new_volume, int snd_id, int priority)
 			continue;
 		}
 
-		OpenAL_ErrorCheck( alGetSourcei(chp->source_id, AL_SOURCE_STATE, &status), continue );
+		OpenAL_ErrorCheck( alGetSourcei(chp->source_id, AL_SOURCE_STATE, &status), goto continue_channels );
 
 		if ( (status == AL_INITIAL) || (status == AL_STOPPED) ) {
 			ds_close_channel_fast(i);
@@ -773,6 +795,7 @@ int ds_get_free_channel_retail(float new_volume, int snd_id, int priority)
 				lowest_vol = chp->vol;
 			}
 		}
+continue_channels: ;
 	}
 
 	// If we've exceeded the limit, then maybe stop the duplicate if it is lower volume
@@ -863,7 +886,7 @@ int ds_get_free_channel_enhanced(float new_volume, int snd_id, int enhanced_prio
 			continue;
 		}
 
-		OpenAL_ErrorCheck( alGetSourcei(chp->source_id, AL_SOURCE_STATE, &status), continue );
+		OpenAL_ErrorCheck( alGetSourcei(chp->source_id, AL_SOURCE_STATE, &status), goto continue_channels );
 
 		if ( (status == AL_INITIAL) || (status == AL_STOPPED) ) {
 			ds_close_channel_fast(i);
@@ -902,6 +925,7 @@ int ds_get_free_channel_enhanced(float new_volume, int snd_id, int enhanced_prio
 				least_important_priority = chp->priority;
 			}
 		}
+continue_channels: ;
 	}
 
 	// If we've exceeded the limit, then stop the least important duplicate if it is lower or equal volume
@@ -1108,7 +1132,8 @@ ds_sound_handle ds_play(int sid, int snd_id, int priority, const EnhancedSoundDa
 	OpenAL_ErrorPrint( alSourcei(Channels[ch_idx].source_id, AL_LOOPING, (looping) ? AL_TRUE : AL_FALSE) );
 
 	if (Ds_eax_inited) {
-		OpenAL_ErrorPrint( alSource3i(Channels[ch_idx].source_id, AL_AUXILIARY_SEND_FILTER, AL_EFX_aux_id, 0, AL_FILTER_NULL) );
+		OpenAL_ErrorPrint( alSource3i(Channels[ch_idx].source_id, AL_AUXILIARY_SEND_FILTER,
+								is_voice_msg ? AL_EFFECTSLOT_NULL : AL_EFX_aux_id, 0, AL_FILTER_NULL) );
 	}
 
 	OpenAL_ErrorPrint( alSourcePlay(Channels[ch_idx].source_id) );
@@ -1146,6 +1171,25 @@ int ds_get_channel(ds_sound_handle sig)
 			if ( ds_is_channel_playing(i) == TRUE ) {
 				return i;
 			}
+			if (ds_is_channel_paused(i) == TRUE) {
+				return i;
+			}
+		}
+	}
+
+	return -1;
+}
+
+/**
+ * Return the channel number that contains the sound identified by sig.
+ * This differs from ds_get_channel() in that it does not check that the sound is currently playing.
+ * @return Channel number, if not playing, return -1.
+ */
+int ds_get_channel_raw(ds_sound_handle sig)
+{
+	for (int i = 0; i < MAX_CHANNELS; i++) {
+		if (Channels[i].source_id && (Channels[i].sig == sig)) {
+			return i;
 		}
 	}
 
@@ -1169,12 +1213,52 @@ int ds_is_channel_playing(int channel_id)
 }
 
 /**
+ * Returns if a channel is paused or not.
+ * @return Channel number, if not playing, return -1.
+ * @param channel id to sound, what is returned from ds_get_channel()
+ */
+bool ds_is_channel_paused(int channel_id)
+{
+	if (Channels[channel_id].source_id != 0) {
+		ALint status;
+
+		OpenAL_ErrorPrint(alGetSourcei(Channels[channel_id].source_id, AL_SOURCE_STATE, &status));
+
+		return (status == AL_PAUSED);
+	}
+
+	return false;
+}
+
+/**
  * @todo Documentation
  */
 void ds_stop_channel(int channel_id)
 {
 	if ( Channels[channel_id].source_id != 0 ) {
 		OpenAL_ErrorPrint( alSourceStop(Channels[channel_id].source_id) );
+	}
+}
+
+/**
+ * Pauses a channel.
+ * @param channel id to sound, what is returned from ds_get_channel()
+ */
+void ds_pause_channel(int channel_id)
+{
+	if (Channels[channel_id].source_id != 0) {
+		OpenAL_ErrorPrint(alSourcePause(Channels[channel_id].source_id));
+	}
+}
+
+/**
+ * Resumes playing a channel.
+ * @param channel id to sound, what is returned from ds_get_channel()
+ */
+void ds_resume_channel(int channel_id)
+{
+	if (Channels[channel_id].source_id != 0) {
+		OpenAL_ErrorPrint(alSourcePlay(Channels[channel_id].source_id));
 	}
 }
 
@@ -1280,7 +1364,7 @@ void ds_set_pitch(int channel_id, float pitch)
  *
  * @return 0 if sound started successfully, -1 if sound could not be played
  */
-ds_sound_handle ds3d_play(int sid, int snd_id, vec3d* pos, vec3d* vel, float min, float max, int looping,
+ds_sound_handle ds3d_play(int sid, int snd_id, const vec3d* pos, const vec3d* vel, float min, float max, bool looping,
                           float max_volume, float estimated_vol, const EnhancedSoundData* enhanced_sound_data,
                           int priority, bool is_ambient)
 {
@@ -1862,15 +1946,4 @@ int ds_get_sound_id(int channel_id)
 	Assert( channel_id >= 0 );
 
 	return Channels[channel_id].snd_id;
-}
-
-/**
- * @brief Given a valid channel, returns the sound signature (typically the sound index)
- * @param channel_id
- * @return
- */
-int ds_get_sound_index(int channel_id) {
-	Assert( channel_id >= 0 );
-
-	return Channels[channel_id].sid;
 }

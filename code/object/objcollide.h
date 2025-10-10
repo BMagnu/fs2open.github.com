@@ -13,6 +13,8 @@
 #define _COLLIDESTUFF_H
 
 #include "globalincs/pstypes.h"
+#include <optional>
+#include <any>
 
 class object;
 struct CFILE;
@@ -31,10 +33,12 @@ struct collision_info_struct {
 	float		impulse;					// damage scales according to impulse
 	vec3d	light_rel_vel;			// velocity of light relative to heavy before collison
 	bool	collide_rotate;		// if collision is being detected purely from rotation (or submodel movement)
-	int		submodel_num;			// submodel of heavy object that is hit
+	int		heavy_model_num;			// model of heavy object that is hit
+	int		heavy_submodel_num;			// submodel of heavy object that is hit
 	bool	edge_hit;				// if edge is hit, need to change collision normal
 	bool	submodel_move_hit;		// if collision is against a moving submodel
 	bool	is_landing;			//SUSHI: Maybe treat current collision as a landing
+	bool 	player_involved;
 };
 
 //Collision physics constants
@@ -42,6 +46,8 @@ struct collision_info_struct {
 #define COLLISION_ROTATION_FACTOR		0.2f	//Default value if not set in ships.tbl
 #define MIN_LANDING_SOUND_VEL			2.0f
 #define LANDING_POS_OFFSET				0.05f
+
+constexpr uint32_t collision_cache_bitshift = 16;
 
 //===============================================================================
 // GENERAL COLLISION DETECTION HELPER FUNCTIONS 
@@ -54,8 +60,10 @@ struct obj_pair	{
 	object *a;
 	object *b;
 	int	next_check_time;	// a timestamp that when elapsed means to check for a collision
-	struct obj_pair *next;
 };
+
+//Never check again | data for collision post-processing | collision post-proc function
+using collision_result = std::tuple<bool, std::any, void (*)(obj_pair *, const std::any& collision_data)>;
 
 extern SCP_vector<int> Collision_sort_list;
 
@@ -68,8 +76,8 @@ void obj_remove_collider(int obj_index);
 void obj_reset_colliders();
 void obj_sort_and_collide(SCP_vector<int>* Collision_list = nullptr);
 
-// retimes all collision pairs to be checked immediately
-void obj_collide_retime_cached_pairs();
+// Retime all collision pairs, so that all object collisions will be rechecked immediately
+void obj_collide_obj_cache_stale(object* objp);
 
 // Returns TRUE if the weapon will never hit the other object.
 // If it can it predicts how long until these two objects need
@@ -83,6 +91,7 @@ int weapon_will_never_hit( object *weapon, object *other, obj_pair * current_pai
 // CODE is locatated in CollideGeneral.cpp
 int collide_subdivide(vec3d *p0, vec3d *p1, float prad, vec3d *q0, vec3d *q1, float qrad);
 
+void collide_init();
 
 //===============================================================================
 // SPECIFIC COLLISION DETECTION FUNCTIONS 
@@ -97,6 +106,9 @@ int collide_weapon_weapon( obj_pair * pair );
 // Returns 1 if all future collisions between these can be ignored
 // CODE is locatated in CollideShipWeapon.cpp
 int collide_ship_weapon( obj_pair * pair );
+
+//Same as above, but for deferred collision processing / usage in multithreading
+collision_result collide_ship_weapon_check( obj_pair * pair );
 
 // Checks debris-weapon collisions.  pair->a is debris and pair->b is weapon.
 // Returns 1 if all future collisions between these can be ignored
@@ -115,6 +127,10 @@ int collide_asteroid_weapon(obj_pair *pair);
 // Returns 1 if all future collisions between these can be ignored
 // CODE is locatated in CollideShipShip.cpp
 int collide_ship_ship( obj_pair * pair );
+//Same as above, but for deferred collision processing / usage in multithreading
+collision_result collide_ship_ship_check( obj_pair * pair );
+
+void collide_mp_worker_thread(size_t threadIdx);
 
 //	Predictive functions.
 //	Returns true if vector from curpos to goalpos with radius radius will collide with object goalobjp
@@ -131,7 +147,11 @@ void collide_ship_ship_sounds_init();
 
 int get_ship_quadrant_from_global(vec3d *global_pos, object *objp);
 
-int reject_due_collision_groups(object *A, object *B);
+bool reject_due_collision_groups(object *A, object *B);
 
 void init_collision_info_struct(collision_info_struct *cis);
+
+// goes over weapons applying gravity-relevant flags
+// VERY IMPORTANT if gravity was just turned on or off
+void collide_apply_gravity_flags_weapons();
 #endif

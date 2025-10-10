@@ -12,6 +12,7 @@
 #include "gamesnd/gamesnd.h"
 #include "globalincs/linklist.h"
 #include "io/timer.h"
+#include "math/curve.h"
 #include "model/modelrender.h"
 #include "nebula/neb.h"
 #include "object/object.h"
@@ -26,6 +27,7 @@
 // Module-wide globals
 // -----------------------------------------------------------
 
+extern int Game_skill_level;
 static const char *Default_shockwave_2D_filename = "shockwave01";
 static const char *Default_shockwave_3D_filename = "shockwave.pof";
 static int Default_2D_shockwave_index = -1;
@@ -46,21 +48,34 @@ int Shockwave_inited = 0;
 // Externals
 // -----------------------------------------------------------
 extern int Show_area_effect;
-extern int Cmdline_enable_3d_shockwave;
 
-static SCP_string shockwave_mode_display(bool mode) { return mode ? "3D" : "2D"; }
+static SCP_string shockwave_mode_display(bool mode) { return mode ? XSTR("3D", 1691) : XSTR("2D", 1692); }
 
-static bool Use_3D_shockwaves = true;
+bool Use_3D_shockwaves = true;
 
-static auto Shockwave3DMode =
-    options::OptionBuilder<bool>("Graphics.3DShockwaves", "Shockwaves", "The way shockwaves are displayed.")
-        .category("Graphics")
-        .display(shockwave_mode_display)
-        .default_val(true)
-        .bind_to_once(&Use_3D_shockwaves)
-        .level(options::ExpertLevel::Advanced)
-        .importance(66)
-        .finish();
+static void parse_shockwaves_func()
+{
+	bool enabled;
+	stuff_boolean(&enabled);
+	Use_3D_shockwaves = enabled;
+}
+
+static auto Shockwave3DMode = options::OptionBuilder<bool>("Graphics.3DShockwaves",
+                     std::pair<const char*, int>{"Shockwaves", 1722},
+                     std::pair<const char*, int>{"The way shockwaves are displayed. Changes will be reflected in the next loaded mission.", 1723})
+                     .category(std::make_pair("Graphics", 1825))
+                     .display(shockwave_mode_display)
+                     .default_func([]() { return Use_3D_shockwaves;})
+                     .bind_to(&Use_3D_shockwaves)
+                     .change_listener([](float, bool) {
+                         Default_shockwave_loaded = 0; // If we change then we have to force shockwave reload
+                         return true;
+                     })
+                     .level(options::ExpertLevel::Advanced)
+                     .importance(66)
+                     .flags({options::OptionFlags::ForceMultiValueSelection})
+                     .parser(parse_shockwaves_func)
+                     .finish();
 
 /**
  * Call to create a shockwave
@@ -74,7 +89,7 @@ static auto Shockwave3DMode =
  * @return success		object number of shockwave
  * @return failure		-1
  */
-int shockwave_create(int parent_objnum, vec3d* pos, shockwave_create_info* sci, int flag, int delay)
+int shockwave_create(int parent_objnum, const vec3d* pos, const shockwave_create_info* sci, int flag, int delay)
 {
 	int				i, objnum, real_parent;
 	int				info_index = -1, model_id = -1;
@@ -91,10 +106,10 @@ int shockwave_create(int parent_objnum, vec3d* pos, shockwave_create_info* sci, 
 
 	// try 2D shockwave first, then fall back to 3D, then fall back to default of either
 	// this should be pretty fool-proof and allow quick change between 2D and 3D effects
-	if ( strlen(sci->name) )
+	if ( VALID_FNAME(sci->name) )
 		info_index = shockwave_load(sci->name, false);
 
-	if ( (info_index < 0) && strlen(sci->pof_name) )
+	if ( (info_index < 0) && VALID_FNAME(sci->pof_name) )
 		info_index = shockwave_load(sci->pof_name, true);
 
 	if (info_index < 0) {
@@ -133,6 +148,8 @@ int shockwave_create(int parent_objnum, vec3d* pos, shockwave_create_info* sci, 
 	sw->shockwave_info_index = info_index;		// only one type for now... type could be passed is as a parameter
 	sw->current_bitmap = -1;
 
+	sw->blast_sound_id = sci->blast_sound_id;
+
 	sw->time_elapsed=0.0f;
 	sw->delay_stamp = delay;
 
@@ -156,6 +173,10 @@ int shockwave_create(int parent_objnum, vec3d* pos, shockwave_create_info* sci, 
 
 	orient = vmd_identity_matrix;
 	vm_angles_2_matrix(&orient, &sw->rot_angles);
+	if (sci->rot_parent_relative) {
+		orient = orient * Objects[parent_objnum].orient;
+	}
+
     flagset<Object::Object_Flags> tmp_flags;
 	objnum = obj_create( OBJ_SHOCKWAVE, real_parent, i, &orient, &sw->pos, sw->outer_radius, tmp_flags + Object::Object_Flags::Renders, false );
 
@@ -175,7 +196,7 @@ int shockwave_create(int parent_objnum, vec3d* pos, shockwave_create_info* sci, 
  *
  * @param objp		pointer to shockwave object
  */
-void shockwave_delete(object *objp)
+void shockwave_delete(const object *objp)
 {
 	Assertion(objp->type == OBJ_SHOCKWAVE, "shockwave_delete() called on an object with a type of %d instead of OBJ_SHOCKWAVE (%d); get a coder!\n", objp->type, OBJ_SHOCKWAVE);
 	Assertion(objp->instance >= 0 && objp->instance < MAX_SHOCKWAVES, "shockwave_delete() called on an object with an invalid instance of %d (should be 0-%d); get a coder!\n", objp->instance, MAX_SHOCKWAVES - 1);
@@ -270,10 +291,22 @@ void shockwave_move(object *shockwave_objp, float frametime)
 	sw->time_elapsed += frametime;
 
 	shockwave_set_framenum(shockwave_objp->instance);
-		
-	sw->radius += (frametime * sw->speed);
-	if ( sw->radius > sw->outer_radius ) {
-		sw->radius = sw->outer_radius;
+
+	weapon_info* wip = nullptr;
+	if (sw->weapon_info_index >= 0)
+		wip = &Weapon_info[sw->weapon_info_index];
+	
+	if (wip && wip->shockwave.radius_curve_idx >= 0) {
+		float val = Curves[wip->shockwave.radius_curve_idx].GetValue(sw->time_elapsed / sw->total_time);
+		sw->radius = val * sw->outer_radius;
+		if (sw->radius < 0.0f)
+			sw->radius = 0.0f;
+	} else {
+		sw->radius += (frametime * sw->speed);
+		CLAMP(sw->radius, 0.0f, sw->outer_radius);
+	}
+
+	if ( sw->time_elapsed > sw->total_time ) {
         shockwave_objp->flags.set(Object::Object_Flags::Should_be_dead);
 		return;
 	}
@@ -281,26 +314,26 @@ void shockwave_move(object *shockwave_objp, float frametime)
 	// blast ships and asteroids
 	// And (some) weapons
 	for ( objp = GET_FIRST(&obj_used_list); objp !=END_OF_LIST(&obj_used_list); objp = GET_NEXT(objp) ) {
+		if (objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
 		if ( (objp->type != OBJ_SHIP) && (objp->type != OBJ_ASTEROID) && (objp->type != OBJ_WEAPON)) {
 			continue;
 		}
 
 		if(objp->type == OBJ_WEAPON) {
 			// only apply to missiles with hitpoints
-			weapon_info* wip = &Weapon_info[Weapons[objp->instance].weapon_info_index];
-			if (wip->weapon_hitpoints <= 0)
+			weapon_info* target_wip = &Weapon_info[Weapons[objp->instance].weapon_info_index];
+			if (target_wip->weapon_hitpoints <= 0)
 				continue;
 
-			if (!Shockwaves_always_damage_bombs && !(wip->wi_flags[Weapon::Info_Flags::Takes_shockwave_damage] || (sw->weapon_info_index >= 0 && Weapon_info[sw->weapon_info_index].wi_flags[Weapon::Info_Flags::Ciws])))
+			if (!Shockwaves_always_damage_bombs && !(target_wip->wi_flags[Weapon::Info_Flags::Takes_shockwave_damage] || (sw->weapon_info_index >= 0 && Weapon_info[sw->weapon_info_index].wi_flags[Weapon::Info_Flags::Ciws])))
 				continue;
 		}
 
 	
-		if ( objp->type == OBJ_SHIP ) {
-			// don't blast navbuoys
-			if ( ship_get_SIF(objp->instance)[Ship::Info_Flags::Navbuoy] ) {
-				continue;
-			}
+		// don't blast no-collide or navbuoys
+		if ( !objp->flags[Object::Object_Flags::Collides] || (objp->type == OBJ_SHIP && ship_get_SIF(objp->instance)[Ship::Info_Flags::Navbuoy]) ) {
+			continue;
 		}
 
 		bool found_in_list = false;
@@ -320,8 +353,6 @@ void shockwave_move(object *shockwave_objp, float frametime)
 		if ( weapon_area_calc_damage(objp, &sw->pos, sw->inner_radius, sw->outer_radius, sw->blast, sw->damage, &blast, &damage, sw->radius) == -1 ){
 			continue;
 		}
-
-		weapon_info* wip = NULL;
 		
 		// okay, we have damage applied, record the object signature so we don't repeatedly apply damage 
 		// but only add non-ships to the list if the Game_settings flag is set
@@ -330,21 +361,54 @@ void shockwave_move(object *shockwave_objp, float frametime)
 		}
 
 		switch(objp->type) {
-		case OBJ_SHIP:
+		case OBJ_SHIP: {
 			// If we're doing an AoE Electronics shockwave, do the electronics stuff. -MageKing17
-			if ( (sw->weapon_info_index >= 0) && (Weapon_info[sw->weapon_info_index].wi_flags[Weapon::Info_Flags::Aoe_Electronics]) && !(objp->flags[Object::Object_Flags::Invulnerable]) ) {
+			if (wip && (wip->wi_flags[Weapon::Info_Flags::Aoe_Electronics]) &&
+				!(objp->flags[Object::Object_Flags::Invulnerable])) {
 				weapon_do_electronics_effect(objp, &sw->pos, sw->weapon_info_index);
 			}
-			ship_apply_global_damage(objp, shockwave_objp, &sw->pos, damage, sw->damage_type_idx );
-			weapon_area_apply_blast(NULL, objp, &sw->pos, blast, 1);
+
+			ship* shipp = &Ships[objp->instance];
+
+			// we make sure that this shockwave was spawned by a weapon that ultimately came from a ship, and then check
+			// to see if it's friendly fire
+			if (shockwave_objp->parent >= 0
+				&& sw->weapon_info_index >= 0
+				&& Objects[shockwave_objp->parent].type == OBJ_SHIP
+				&& Ships[Objects[shockwave_objp->parent].instance].team == shipp->team) {
+				if (&Objects[shockwave_objp->parent] == objp
+					&& The_mission.ai_profile->weapon_self_damage_cap[Game_skill_level] >= 0.f) {
+					// if this is a ship shooting itself, we use the self damage cap
+					damage = MIN(damage, The_mission.ai_profile->weapon_self_damage_cap[Game_skill_level]);
+				} else if (The_mission.ai_profile->weapon_friendly_damage_cap[Game_skill_level] >= 0.f) {
+					// otherwise we use the friendly damage cap
+					damage = MIN(damage, The_mission.ai_profile->weapon_friendly_damage_cap[Game_skill_level]);
+				}
+			}
+
+			ship_apply_global_damage(objp, shockwave_objp, &sw->pos, damage, sw->damage_type_idx);
+			weapon_area_apply_blast(nullptr, objp, &sw->pos, blast, true);
 			break;
+			}
 		case OBJ_ASTEROID:
-			asteroid_hit(objp, NULL, NULL, damage);
+			weapon_area_apply_blast(nullptr, objp, &sw->pos, blast, true);
+			asteroid_hit(objp, nullptr, nullptr, damage, nullptr);
 			break;
 		case OBJ_WEAPON:
-			wip = &Weapon_info[Weapons[objp->instance].weapon_info_index];
-			if (wip->armor_type_idx >= 0)
-				damage = Armor_types[wip->armor_type_idx].GetDamage(damage, shockwave_get_damage_type_idx(shockwave_objp->instance),1.0f);
+			if (wip && wip->armor_type_idx >= 0) {
+				damage = Armor_types[wip->armor_type_idx].GetDamage(damage,
+					shockwave_get_damage_type_idx(shockwave_objp->instance),
+					1.0f,
+					false);
+			}
+
+			// friendly fire check
+			if (shockwave_objp->parent >= 0 && sw->weapon_info_index >= 0 &&
+				Objects[shockwave_objp->parent].type == OBJ_SHIP &&
+				Ships[Objects[shockwave_objp->parent].instance].team == Weapons[objp->instance].team &&
+				The_mission.ai_profile->weapon_friendly_damage_cap[Game_skill_level] >= 0.f) {
+				damage = MIN(damage, The_mission.ai_profile->weapon_friendly_damage_cap[Game_skill_level]);
+			}
 
 			objp->hull_strength -= damage;
 			if (objp->hull_strength < 0.0f) {
@@ -371,7 +435,9 @@ void shockwave_move(object *shockwave_objp, float frametime)
 			} else {
 				vol_scale = 1.0f;
 			}
-			snd_play( gamesnd_get_game_sound(GameSounds::SHOCKWAVE_IMPACT), 0.0f, vol_scale );
+			if (sw->blast_sound_id.isValid()) {
+				snd_play(gamesnd_get_game_sound(sw->blast_sound_id), 0.0f, vol_scale);
+			}
 		}
 
 	}	// end for
@@ -383,7 +449,7 @@ void shockwave_move(object *shockwave_objp, float frametime)
 * @param objp	pointer to shockwave object
 * @param scene	the scene's draw list we're adding this to
 */
-void shockwave_render(object *objp, model_draw_list *scene)
+void shockwave_render(const object *objp, model_draw_list *scene)
 {
 	shockwave		*sw;
 	vertex			p;
@@ -402,8 +468,8 @@ void shockwave_render(object *objp, model_draw_list *scene)
 
 
 	float alpha = 1.0f;
-	if (The_mission.flags[Mission::Mission_Flags::Fullneb] && Neb_affects_weapons)
-		alpha *= neb2_get_fog_visibility(&objp->pos, Neb2_fog_visibility_shockwave);
+	if (Neb_affects_weapons)
+		nebula_handle_alpha(alpha, &objp->pos, Neb2_fog_visibility_shockwave);
 
 	if (sw->model_id > -1) {
 		vec3d scale;
@@ -477,7 +543,7 @@ int shockwave_load(const char *s_name, bool shock_3D)
 		return s_index;
 
 	if (shock_3D) {
-		si->model_id = model_load( si->filename, 0, NULL );
+		si->model_id = model_load( si->filename );
 
 		if ( si->model_id < 0 ) {
 			Shockwave_info.pop_back();
@@ -502,10 +568,7 @@ void shockwave_level_init()
 {
 	int i;
 
-	if (!Using_in_game_options) {
-		// If the new option system is not in use then use the command line
-		Use_3D_shockwaves = Cmdline_enable_3d_shockwave != 0;
-	}
+	bool shockwaveStyle3d = Shockwave3DMode->getValue();
 
 	if ( !Default_shockwave_loaded ) {
 		i = -1;
@@ -515,7 +578,7 @@ void shockwave_level_init()
 		// chief1983 - Spicious added this check for the command line option.  I've modified the hardcoded "shockwave.pof" that existed in the check 
 		// 	to use the static name instead, and added a check to override the command line if a 2d default filename is not found
 		//  Note - The 3d shockwave flag is forced on by TBP's flag as of rev 4983
-		if ( Use_3D_shockwaves && cf_exists_full(Default_shockwave_3D_filename, CF_TYPE_MODELS) ) {
+		if (shockwaveStyle3d && cf_exists_full(Default_shockwave_3D_filename, CF_TYPE_MODELS)) {
 			mprintf(("SHOCKWAVE =>  Loading default shockwave model... \n"));
 
 			i = shockwave_load( Default_shockwave_3D_filename, true );
@@ -545,7 +608,7 @@ void shockwave_level_init()
 		// chief1983 - The first patch broke mods that don't provide a 2d shockwave or define a specific shockwave for each model/weapon (shame on them)
 		// The next patch involved a direct copy of the attempt above, with an i < 0 check in place of the command line check.  I've taken that and modified it to 
 		// spit out a more meaningful message.  Might as well not bother trying again if the command line option was checked as it should have tried the first time through
-		if ( i < 0 && !Use_3D_shockwaves && cf_exists_full(Default_shockwave_3D_filename, CF_TYPE_MODELS) ) {
+		if (i < 0 && !shockwaveStyle3d && cf_exists_full(Default_shockwave_3D_filename, CF_TYPE_MODELS)) {
 			mprintf(("SHOCKWAVE =>  Loading default shockwave model as last resort... \n"));
 
 			i = shockwave_load( Default_shockwave_3D_filename, true );
@@ -566,7 +629,7 @@ void shockwave_level_init()
 		// the 2D shockwave shouldn't need anything like this
 		if (Shockwave_info[0].model_id >= 0) {
 			Assertion(!strcmp(Shockwave_info[0].filename, Default_shockwave_3D_filename), "Shockwave_info[0] should be the default shockwave, but somehow isn't.\nShockwave_info[0].filename = \"%s\"\nDefault_shockwave_3D_filename = \"%s\"\nGet a coder!\n", Shockwave_info[0].filename, Default_shockwave_3D_filename);
-			Shockwave_info[0].model_id = model_load( Default_shockwave_3D_filename, 0, NULL );
+			Shockwave_info[0].model_id = model_load( Default_shockwave_3D_filename );
 		}
 	}
 
@@ -704,7 +767,7 @@ void shockwave_page_in()
 		} else if (it->model_id >= 0) {
 			// for a model we have to run model_load() on it again to make sure
 			// that it's ref_count is sane for this mission
-			int idx __UNUSED = model_load( it->filename, 0, NULL );
+			int idx __UNUSED = model_load( it->filename );
 			Assertion( idx == it->model_id , "Shockwave_info[" SIZE_T_ARG "] got two different model_ids: %d and %d. Filename is \"%s\". Get a coder!\n", std::distance(Shockwave_info.begin(), it), idx, it->model_id, it->filename);
 
 			model_page_in_textures( it->model_id );
@@ -719,26 +782,30 @@ void shockwave_create_info_init(shockwave_create_info *sci)
 
 	sci->inner_rad = sci->outer_rad = sci->damage = sci->blast = sci->speed = 0.0f;
 
+	sci->radius_curve_idx = -1;
+
 	sci->rot_angles.p = sci->rot_angles.b = sci->rot_angles.h = 0.0f;
 	sci->rot_defined = false;
 	sci->damage_type_idx = sci->damage_type_idx_sav = -1;
-	sci->damage_overidden = false;
+	sci->damage_overridden = false;
+
+	sci->blast_sound_id = GameSounds::SHOCKWAVE_IMPACT;
 }
 
 /**
  * Loads a shockwave in preparation for a mission
  */
-void shockwave_create_info_load(shockwave_create_info *sci)
+void shockwave_create_info_load(const shockwave_create_info *sci)
 {
 	int i = -1;
 
-	// shockwave_load() will return -1 if the filename is "none" or "<none>"
+	// shockwave_load() will return -1 if the filename is "" or "none" or "<none>"
 	// checking for that case lets us handle a situation where a 2D shockwave
 	// of "none" was specified and a valid 3D shockwave was specified
 
-	if ( strlen(sci->name) )
+	if ( VALID_FNAME(sci->name) )
 		i = shockwave_load(sci->name, false);
 
-	if ( (i < 0) && strlen(sci->pof_name) )
+	if ( (i < 0) && VALID_FNAME(sci->pof_name) )
 		shockwave_load(sci->pof_name, true);
 }

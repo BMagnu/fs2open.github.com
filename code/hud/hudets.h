@@ -21,7 +21,7 @@ class object;
 #define INTIAL_ENGINE_RECHARGE_INDEX	4		// default engine charge rate (index in Energy_levels[])
 
 #define NUM_ENERGY_LEVELS	13
-#define MAX_ENERGY_INDEX	(NUM_ENERGY_LEVELS - 1)
+inline constexpr int MAX_ENERGY_INDEX = (NUM_ENERGY_LEVELS - 1);
 
 #define AI_MODIFY_ETS_INTERVAL 500	// time between ets modifications for ai's (in milliseconds)
 
@@ -42,16 +42,20 @@ enum SYSTEM_TYPE {WEAPONS, SHIELDS, ENGINES};
 
 void update_ets(object* obj, float fl_frametime);
 void ets_init_ship(object* obj);
+int ets_properties(object* objp);
+float ets_power_factor(object* objp, bool include_power_output = true);
 void ai_manage_ets(object* obj);
 
 void increase_recharge_rate(object* obj, SYSTEM_TYPE enum_value);
 void decrease_recharge_rate(object* obj, SYSTEM_TYPE enum_value);
 void set_default_recharge_rates(object* obj);
+void set_recharge_rates(object* obj, int shields, int weapons, int engines);
 
 void transfer_energy_to_shields(object* obj);
 void transfer_energy_to_weapons(object* obj);
 
 float ets_get_max_speed(object* objp, float engine_energy);
+void ets_update_max_speed(object* ship_objp);
 void sanity_check_ets_inputs(int (&ets_indexes)[num_retail_ets_gauges]);
 bool validate_ship_ets_indxes(const int &ship_idx, int (&ets_indexes)[num_retail_ets_gauges]);
 void zero_one_ets (int *reduce, int *add1, int *add2);
@@ -77,8 +81,8 @@ public:
 	void initLetter(char _letter);	// obligatory PC Load Letter joke. (Swifty)
 	void initBarHeight(int _ets_bar_h);
 	void initBitmaps(char *fname);
-	void blitGauge(int index);
-	void render(float frametime) override;
+	void blitGauge(int index, int ix, int iy, float scale, bool config);
+	void render(float frametime, bool config = false) override;
 	void pageIn() override;
 };
 
@@ -86,21 +90,21 @@ class HudGaugeEtsWeapons: public HudGaugeEts
 {
 public:
 	HudGaugeEtsWeapons();
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 };
 
 class HudGaugeEtsShields: public HudGaugeEts
 {
 public:
 	HudGaugeEtsShields();
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 };
 
 class HudGaugeEtsEngines: public HudGaugeEts
 {
 public:
 	HudGaugeEtsEngines();
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 };
 
 class HudGaugeEtsRetail: public HudGaugeEts
@@ -110,7 +114,7 @@ protected:
 	int Gauge_positions[num_retail_ets_gauges];
 public:
 	HudGaugeEtsRetail();
-	void render(float frametime) override;
+	void render(float frametime, bool config = false) override;
 	void initLetters(char *_letters);
 	void initGaugePositions(int *_gauge_positions);
 };

@@ -39,6 +39,9 @@
 #include "render/3d.h"
 #include "weapon/trails.h"
 
+#define MODEL_SDR_FLAG_MODE_CPP
+#include "def_files/data/effects/model_shader_flags.h"
+
 extern int GLOWMAP;
 extern int SPECMAP;
 extern int SPECGLOSSMAP;
@@ -49,11 +52,7 @@ extern int G3_user_clip;
 extern vec3d G3_user_clip_normal;
 extern vec3d G3_user_clip_point;
 
-extern bool Basemap_override;
 extern bool Envmap_override;
-extern bool Specmap_override;
-extern bool Normalmap_override;
-extern bool Heightmap_override;
 extern bool Shadow_override;
 
 size_t GL_vertex_data_in = 0;
@@ -76,16 +75,17 @@ static opengl_vertex_bind GL_array_binding_data[] =
 		{ vertex_format_data::POSITION3,	3, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::POSITION	},
 		{ vertex_format_data::POSITION2,	2, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::POSITION	},
 		{ vertex_format_data::SCREEN_POS,	2, GL_INT,				GL_FALSE, opengl_vert_attrib::POSITION	},
-		{ vertex_format_data::COLOR3,		3, GL_UNSIGNED_BYTE,	GL_TRUE,opengl_vert_attrib::COLOR		},
+		{ vertex_format_data::COLOR3,		3, GL_UNSIGNED_BYTE,	GL_TRUE, opengl_vert_attrib::COLOR		},
 		{ vertex_format_data::COLOR4,		4, GL_UNSIGNED_BYTE,	GL_TRUE, opengl_vert_attrib::COLOR		},
 		{ vertex_format_data::COLOR4F,		4, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::COLOR		},
 		{ vertex_format_data::TEX_COORD2,	2, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::TEXCOORD	},
-		{ vertex_format_data::TEX_COORD3,	3, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::TEXCOORD	},
+		{ vertex_format_data::TEX_COORD4,	4, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::TEXCOORD	},
 		{ vertex_format_data::NORMAL,		3, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::NORMAL	},
 		{ vertex_format_data::TANGENT,		4, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::TANGENT	},
 		{ vertex_format_data::MODEL_ID,		1, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::MODEL_ID	},
 		{ vertex_format_data::RADIUS,		1, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::RADIUS	},
 		{ vertex_format_data::UVEC,			3, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::UVEC		},
+		{ vertex_format_data::MATRIX4,		16, GL_FLOAT,			GL_FALSE, opengl_vert_attrib::MODEL_MATRIX },
 	};
 
 struct opengl_buffer_object {
@@ -831,89 +831,134 @@ void opengl_tnl_set_model_material(model_material *material_info)
 
 	GL_state.Texture.SetShaderMode(GL_TRUE);
 
-	if (Current_shader->flags & SDR_FLAG_MODEL_CLIP) {
+	if (material_info->is_clipped()) {
 		GL_state.ClipDistance(0, true);
 	} else {
 		GL_state.ClipDistance(0, false);
 	}
 
 	uint32_t array_index;
-	if ( Current_shader->flags & SDR_FLAG_MODEL_DIFFUSE_MAP ) {
-		Current_shader->program->Uniforms.setTextureUniform("sBasemap", 0);
+	if (!material_info->is_shadow_casting()) {
+		// An observant reader might, upon seeing this, ask themselves "Hang on, why are we setting these uniforms
+		// without putting anything in them". This is an entirely fair question.
+		// The answer, dear reader, is divergent behaviour in GL implementations. Nvidia, at time of writing (04.01.2023)
+		// doesn't care; AMD will report conflicting bindings and basically give up.
+		// While this technically invites undefined behaviour (texture reads from unbound texture units can do anything),
+		// it is uncritical at this time as texture reads are gated behind feature flags in the shader.
+		// This will be fixed in future cleanups, where we plan to introduce engine-generated default textures to substitute
+		// if the material doesn't provide anything.
+		const bool setAllUniforms = gr_is_capable(gr_capability::CAPABILITY_LARGE_SHADER);
+		const int flags = material_info->get_shader_runtime_early_flags() | material_info->get_shader_runtime_flags();
 
-		gr_opengl_tcache_set(material_info->get_texture_map(TM_BASE_TYPE), TCACHE_TYPE_NORMAL, &u_scale, &v_scale, &array_index, 0);
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_GLOW_MAP ) {
-		Current_shader->program->Uniforms.setTextureUniform("sGlowmap", 1);
-
-		gr_opengl_tcache_set(material_info->get_texture_map(TM_GLOW_TYPE), TCACHE_TYPE_NORMAL, &u_scale, &v_scale, &array_index, 1);
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_SPEC_MAP ) {
-		Current_shader->program->Uniforms.setTextureUniform("sSpecmap", 2);
-
-		if ( material_info->get_texture_map(TM_SPEC_GLOSS_TYPE) > 0 ) {
-			gr_opengl_tcache_set(material_info->get_texture_map(TM_SPEC_GLOSS_TYPE), TCACHE_TYPE_NORMAL, &u_scale, &v_scale, &array_index, 2);
-		} else {
-			gr_opengl_tcache_set(material_info->get_texture_map(TM_SPECULAR_TYPE), TCACHE_TYPE_NORMAL, &u_scale, &v_scale, &array_index, 2);
-		}
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_ENV_MAP ) {
-		Current_shader->program->Uniforms.setTextureUniform("sEnvmap", 3);
-
-		gr_opengl_tcache_set(ENVMAP, TCACHE_TYPE_CUBEMAP, &u_scale, &v_scale, &array_index, 3);
-
-		Current_shader->program->Uniforms.setTextureUniform("sIrrmap", 11);
-
-		gr_opengl_tcache_set(IRRMAP, TCACHE_TYPE_CUBEMAP, &u_scale, &v_scale, &array_index, 11);
-		Assertion(array_index == 0, "Cube map arrays are not supported yet!");
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_NORMAL_MAP ) {
-		Current_shader->program->Uniforms.setTextureUniform("sNormalmap", 4);
-
-		gr_opengl_tcache_set(material_info->get_texture_map(TM_NORMAL_TYPE), TCACHE_TYPE_NORMAL, &u_scale, &v_scale, &array_index, 4);
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_HEIGHT_MAP ) {
-		Current_shader->program->Uniforms.setTextureUniform("sHeightmap", 5);
-
-		gr_opengl_tcache_set(material_info->get_texture_map(TM_HEIGHT_TYPE), TCACHE_TYPE_NORMAL, &u_scale, &v_scale, &array_index, 5);
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_AMBIENT_MAP ) {
-		Current_shader->program->Uniforms.setTextureUniform("sAmbientmap", 6);
-
-		gr_opengl_tcache_set(material_info->get_texture_map(TM_AMBIENT_TYPE), TCACHE_TYPE_NORMAL, &u_scale, &v_scale, &array_index, 6);
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_MISC_MAP ) {
-		Current_shader->program->Uniforms.setTextureUniform("sMiscmap", 7);
-
-		gr_opengl_tcache_set(material_info->get_texture_map(TM_MISC_TYPE), TCACHE_TYPE_NORMAL, &u_scale, &v_scale, &array_index, 7);
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_SHADOWS ) {
-		Current_shader->program->Uniforms.setTextureUniform("shadow_map", 8);
-
-		GL_state.Texture.Enable(8, GL_TEXTURE_2D_ARRAY, Shadow_map_texture);
-	}
-
-	if ( Current_shader->flags & SDR_FLAG_MODEL_ANIMATED ) {
+		if (setAllUniforms || (flags & MODEL_SDR_FLAG_DIFFUSE))
+			Current_shader->program->Uniforms.setTextureUniform("sBasemap", 0);
+		if (setAllUniforms || (flags & MODEL_SDR_FLAG_GLOW))
+			Current_shader->program->Uniforms.setTextureUniform("sGlowmap", 1);
+		if (setAllUniforms || (flags & MODEL_SDR_FLAG_SPEC))
+			Current_shader->program->Uniforms.setTextureUniform("sSpecmap", 2);
+		if (setAllUniforms || (flags & MODEL_SDR_FLAG_NORMAL))
+			Current_shader->program->Uniforms.setTextureUniform("sNormalmap", 4);
+		if (setAllUniforms || (flags & MODEL_SDR_FLAG_AMBIENT))
+			Current_shader->program->Uniforms.setTextureUniform("sAmbientmap", 6);
+		if (setAllUniforms || (flags & MODEL_SDR_FLAG_MISC))
+			Current_shader->program->Uniforms.setTextureUniform("sMiscmap", 7);
+		if (setAllUniforms || (flags & MODEL_SDR_FLAG_SHADOWS))
+			Current_shader->program->Uniforms.setTextureUniform("shadow_map", 8);
 		Current_shader->program->Uniforms.setTextureUniform("sFramebuffer", 9);
+		if (setAllUniforms || (flags & MODEL_SDR_FLAG_TRANSFORM))
+			Current_shader->program->Uniforms.setTextureUniform("transform_tex", 10);
 
-		if ( Scene_framebuffer_in_frame ) {
-			GL_state.Texture.Enable(9, GL_TEXTURE_2D, Scene_effect_texture);
-			glDrawBuffer(GL_COLOR_ATTACHMENT0);
-		} else {
-			GL_state.Texture.Enable(9, GL_TEXTURE_2D, Framebuffer_fallback_texture_id);
+		//No shader ever defines this, so don't push it.
+		//Current_shader->program->Uniforms.setTextureUniform("sHeightmap", 5);
+
+		if (material_info->get_texture_map(TM_BASE_TYPE) > 0) {
+			gr_opengl_tcache_set(material_info->get_texture_map(TM_BASE_TYPE),
+				TCACHE_TYPE_NORMAL,
+				&u_scale,
+				&v_scale,
+				&array_index,
+				0);
+		}
+
+		if (material_info->get_texture_map(TM_GLOW_TYPE) > 0) {
+			gr_opengl_tcache_set(material_info->get_texture_map(TM_GLOW_TYPE),
+				TCACHE_TYPE_NORMAL,
+				&u_scale,
+				&v_scale,
+				&array_index,
+				1);
+		}
+
+		if (material_info->get_texture_map(TM_SPECULAR_TYPE) > 0 ||
+			material_info->get_texture_map(TM_SPEC_GLOSS_TYPE) > 0) {
+			if (material_info->get_texture_map(TM_SPEC_GLOSS_TYPE) > 0) {
+				gr_opengl_tcache_set(material_info->get_texture_map(TM_SPEC_GLOSS_TYPE),
+					TCACHE_TYPE_NORMAL,
+					&u_scale,
+					&v_scale,
+					&array_index,
+					2);
+			} else {
+				gr_opengl_tcache_set(material_info->get_texture_map(TM_SPECULAR_TYPE),
+					TCACHE_TYPE_NORMAL,
+					&u_scale,
+					&v_scale,
+					&array_index,
+					2);
+			}
+		}
+
+		if (material_info->get_texture_map(TM_NORMAL_TYPE) > 0) {
+			gr_opengl_tcache_set(material_info->get_texture_map(TM_NORMAL_TYPE),
+				TCACHE_TYPE_NORMAL,
+				&u_scale,
+				&v_scale,
+				&array_index,
+				4);
+		}
+
+		if (material_info->get_texture_map(TM_HEIGHT_TYPE) > 0) {
+			gr_opengl_tcache_set(material_info->get_texture_map(TM_HEIGHT_TYPE),
+				TCACHE_TYPE_NORMAL,
+				&u_scale,
+				&v_scale,
+				&array_index,
+				5);
+		}
+
+		if (material_info->get_texture_map(TM_AMBIENT_TYPE) > 0) {
+			gr_opengl_tcache_set(material_info->get_texture_map(TM_AMBIENT_TYPE),
+				TCACHE_TYPE_NORMAL,
+				&u_scale,
+				&v_scale,
+				&array_index,
+				6);
+		}
+
+		if (material_info->get_texture_map(TM_MISC_TYPE) > 0) {
+			gr_opengl_tcache_set(material_info->get_texture_map(TM_MISC_TYPE),
+				TCACHE_TYPE_NORMAL,
+				&u_scale,
+				&v_scale,
+				&array_index,
+				7);
+		}
+
+		if (material_info->is_shadow_receiving()) {
+			GL_state.Texture.Enable(8, GL_TEXTURE_2D_ARRAY, Shadow_map_texture);
+		}
+
+		if (material_info->get_animated_effect() > 0) {
+			if (Scene_framebuffer_in_frame) {
+				GL_state.Texture.Enable(9, GL_TEXTURE_2D, Scene_composite_texture);
+				glDrawBuffer(GL_COLOR_ATTACHMENT0);
+			} else {
+				GL_state.Texture.Enable(9, GL_TEXTURE_2D, Framebuffer_fallback_texture_id);
+			}
 		}
 	}
 
-	if ( Current_shader->flags & SDR_FLAG_MODEL_TRANSFORM ) {
-		Current_shader->program->Uniforms.setTextureUniform("transform_tex", 10);
+	if ( material_info->is_batched() ) {
 		GL_state.Texture.Enable(10, GL_TEXTURE_BUFFER, opengl_get_transform_buffer_texture());
 	}
 
@@ -938,7 +983,7 @@ void opengl_tnl_set_material_particle(particle_material * material_info)
 			data->srgb          = High_dynamic_range ? 1 : 0;
 			data->blend_alpha   = material_info->get_blend_mode() != ALPHA_BLEND_ADDITIVE;
 
-			if (Cmdline_no_deferred_lighting) {
+			if (!light_deferred_enabled()) {
 				data->linear_depth = 0;
 			} else {
 				data->linear_depth = 1;
@@ -948,7 +993,7 @@ void opengl_tnl_set_material_particle(particle_material * material_info)
 	Current_shader->program->Uniforms.setTextureUniform("baseMap", 0);
 	Current_shader->program->Uniforms.setTextureUniform("depthMap", 1);
 
-	if (!Cmdline_no_deferred_lighting) {
+	if (light_deferred_enabled()) {
 		Assert(Scene_position_texture != 0);
 
 		GL_state.Texture.Enable(1, GL_TEXTURE_2D, Scene_position_texture);
@@ -996,7 +1041,7 @@ void opengl_tnl_set_material_distortion(distortion_material* material_info)
 		});
 
 	Current_shader->program->Uniforms.setTextureUniform("frameBuffer", 2);
-	GL_state.Texture.Enable(2, GL_TEXTURE_2D, Scene_effect_texture);
+	GL_state.Texture.Enable(2, GL_TEXTURE_2D, Scene_composite_texture);
 
 	Current_shader->program->Uniforms.setTextureUniform("distMap", 3);
 	if (material_info->get_thruster_rendering()) {
@@ -1135,7 +1180,7 @@ void opengl_bind_vertex_component(const vertex_format_data &vert_component, size
 
 	if ( Current_shader != NULL ) {
 		// grabbing a vertex attribute is dependent on what current shader has been set. i hope no one calls opengl_bind_vertex_layout before opengl_set_current_shader
-		GLint index = opengl_shader_get_attribute(attrib_info.attribute_id);
+		GLint index = attrib_info.attribute_id;
 
 		if ( index >= 0 ) {
 			GL_state.Array.EnableVertexAttrib(index);
@@ -1179,15 +1224,23 @@ void opengl_bind_vertex_array(const vertex_layout& layout) {
 
 		auto attribIndex = attrib_info.attribute_id;
 
-		glEnableVertexAttribArray(attribIndex);
-		glVertexAttribFormat(attribIndex,
-							 bind_info.size,
-							 bind_info.data_type,
-							 bind_info.normalized,
-							 static_cast<GLuint>(component->offset));
+		GLuint add_val_index = 0;
+		for (GLint size = bind_info.size; size > 0; size -=4) {
+			glEnableVertexAttribArray(attribIndex + add_val_index);
+			glVertexAttribFormat(attribIndex + add_val_index,
+				std::min(size, 4),
+				bind_info.data_type,
+				bind_info.normalized,
+				static_cast<GLuint>(component->offset) + add_val_index * 16);
 
-		// Currently, all vertex data comes from one buffer.
-		glVertexAttribBinding(attribIndex, 0);
+			glVertexAttribBinding(attribIndex + add_val_index, static_cast<GLuint>(component->buffer_number));
+
+			add_val_index++;
+		}
+
+		if (component->divisor != 0) {
+			glVertexBindingDivisor(static_cast<GLuint>(component->buffer_number), static_cast<GLuint>(component->divisor));
+		}
 	}
 
 	Stored_vertex_arrays.insert(std::make_pair(layout, vao));
@@ -1211,5 +1264,30 @@ void opengl_bind_vertex_layout(vertex_layout &layout, GLuint vertexBuffer, GLuin
 									vertexBuffer,
 									static_cast<GLintptr>(base_offset),
 									static_cast<GLsizei>(layout.get_vertex_stride()));
+	GL_state.Array.BindElementBuffer(indexBuffer);
+}
+
+void opengl_bind_vertex_layout_multiple(vertex_layout &layout, const SCP_vector<GLuint>& vertexBuffer, GLuint indexBuffer, size_t base_offset) {
+	GR_DEBUG_SCOPE("Bind vertex layout");
+	if (!GLAD_GL_ARB_vertex_attrib_binding) {
+		/*
+		 * This will mean that decals don't render.
+		 * It's possible, but way too much effort to support non-instanced fallback rendering here.
+		 * By my estimation, every GPU you might still run FSO run supports this.
+		 * per mesamatrix.net, even the least-extension supporting mesa drivers all support this extension
+		 * */
+		return;
+	}
+
+	opengl_bind_vertex_array(layout);
+
+	GLuint i = 0;
+	for(const auto& buffer : vertexBuffer) {
+		GL_state.Array.BindVertexBuffer(i,
+			buffer,
+			static_cast<GLintptr>(base_offset),
+			static_cast<GLsizei>(layout.get_vertex_stride(i)));
+		i++;
+	}
 	GL_state.Array.BindElementBuffer(indexBuffer);
 }

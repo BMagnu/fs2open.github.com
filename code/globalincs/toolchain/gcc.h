@@ -16,8 +16,10 @@
  * include toolchain.h which will pull in the file appropriate to
  * the detected toolchain.
  */
+#pragma once
 
-#if defined(__GNUC__)
+// per toolchain.h, clang takes precedence over gcc if they are both defined
+#if defined(__GNUC__) && !defined(__clang__)
 
 #define SCP_FORMAT_STRING
 #define SCP_FORMAT_STRING_ARGS(x,y)  __attribute__((format(printf, x, y)))
@@ -34,7 +36,7 @@
 #define ASSUME(x)
 
 #if defined(NDEBUG)
-#	define Assertion(expr, msg, ...)  do {} while (false)
+#	define Assertion(expr, msg, ...)  do { (void)sizeof(expr); } while (false)
 #else
 /*
  * NOTE: Assertion() can only use its proper functionality in compilers
@@ -61,6 +63,9 @@
 
 #define SIZE_T_ARG    "%zu"
 #define PTRDIFF_T_ARG "%zd"
+
+#define UINT64_T_ARG  "%" PRIu64
+#define  INT64_T_ARG  "%" PRId64
 
 #define likely(x)    __builtin_expect((long) !!(x), 1L)
 #define unlikely(x)  __builtin_expect((long) !!(x), 0L)

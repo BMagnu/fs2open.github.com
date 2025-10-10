@@ -1,4 +1,3 @@
-
 IF(NOT CMAKE_CROSSCOMPILING)
 	SET(EMBEDFILE_SOURCES embedfile.cpp)
 
@@ -10,6 +9,14 @@ IF(NOT CMAKE_CROSSCOMPILING)
 		PROPERTIES
 			FOLDER "Tools"
 	)
+
+	if (PLATFORM_MAC)
+		# we build for two archs on mac, but this needs to always match the host system
+		set_target_properties(embedfile
+			PROPERTIES
+			OSX_ARCHITECTURES ${CMAKE_HOST_SYSTEM_PROCESSOR}
+		)
+	endif()
 
 	enable_clang_tidy(embedfile)
 

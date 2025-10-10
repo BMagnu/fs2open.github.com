@@ -15,6 +15,7 @@
 #include "gamesnd/eventmusic.h"
 #include "hud/hudescort.h"
 #include "hud/hudmessage.h"
+#include "hud/hudsquadmsg.h"
 #include "iff_defs/iff_defs.h"
 #include "mission/missioncampaign.h"
 #include "mission/missiongoals.h"
@@ -26,6 +27,7 @@
 #include "missionui/missioncmdbrief.h"
 #include "missionui/redalert.h"
 #include "nebula/neb.h"
+#include "nebula/neblightning.h"
 #include "object/objcollide.h"
 #include "parse/parselo.h"
 #include "parse/sexp.h"
@@ -35,17 +37,23 @@
 #include "parse/sexp/sexp_lookup.h"
 #include "playerman/player.h"
 #include "scripting/api/LuaPromise.h"
+#include "scripting/api/objs/LuaEnum.h"
 #include "scripting/api/objs/LuaSEXP.h"
 #include "scripting/api/objs/luaaisexp.h"
 #include "scripting/api/objs/asteroid.h"
+#include "scripting/api/objs/animation_handle.h"
 #include "scripting/api/objs/background_element.h"
 #include "scripting/api/objs/beam.h"
+#include "scripting/api/objs/comm_order.h"
 #include "scripting/api/objs/debris.h"
 #include "scripting/api/objs/enums.h"
 #include "scripting/api/objs/event.h"
 #include "scripting/api/objs/fireball.h"
 #include "scripting/api/objs/fireballclass.h"
+#include "scripting/api/objs/goal.h"
 #include "scripting/api/objs/message.h"
+#include "scripting/api/objs/model.h"
+#include "scripting/api/objs/modelinstance.h"
 #include "scripting/api/objs/object.h"
 #include "scripting/api/objs/parse_object.h"
 #include "scripting/api/objs/promise.h"
@@ -60,8 +68,10 @@
 #include "scripting/api/objs/weapon.h"
 #include "scripting/api/objs/weaponclass.h"
 #include "scripting/api/objs/wing.h"
+#include "scripting/lua/LuaConvert.h"
 #include "scripting/lua/LuaFunction.h"
 #include "scripting/lua/LuaTable.h"
+#include "scripting/global_hooks.h"
 #include "scripting/scripting.h"
 #include "ship/ship.h"
 #include "ship/shipfx.h"
@@ -79,9 +89,46 @@ extern TIMESTAMP Game_shudder_time;
 extern int Game_shudder_total;
 extern float Game_shudder_intensity;
 
+constexpr int COUNT_OBJECTS = -1000;
+
+// Returns the indexth object subclass
+template <typename A>
+int object_subclass_at_index(A& object_subclass_array, size_t array_size, int index)
+{
+	int count = 0;
+
+	for (size_t i = 0; i < array_size; ++i)
+	{
+		int objnum = object_subclass_array[i].objnum;
+		if (objnum < 0 || objnum >= MAX_OBJECTS)
+			continue;
+		if (Objects[objnum].flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
+		++count;
+
+		if (count == index)
+		{
+			return object_subclass_array[i].objnum;
+		}
+	}
+
+	if (index == COUNT_OBJECTS)
+		return count;
+	else
+		return -1;
+}
+
+// Counts the number of indexable objects
+template <typename A>
+int object_subclass_count(A& object_subclass_array, size_t array_size)
+{
+	return object_subclass_at_index(object_subclass_array, array_size, COUNT_OBJECTS);
+}
+
+
 namespace scripting {
 namespace api {
-
 
 //**********LIBRARY: Mission
 ADE_LIB(l_Mission, "Mission", "mn", "Mission library");
@@ -140,7 +187,7 @@ ADE_FUNC(runSEXP, l_Mission, "string", "Runs the defined SEXP script within a `w
 {
 	const char* s;
 	int r_val;
-	char buf[8192];
+	SCP_string buf;
 
 	if(!ade_get_args(L, "s", &s))
 		return ADE_RETURN_FALSE;
@@ -153,18 +200,18 @@ ADE_FUNC(runSEXP, l_Mission, "string", "Runs the defined SEXP script within a `w
 		if (!Warned_about_runSEXP_parentheses)
 		{
 			Warned_about_runSEXP_parentheses = true;
-			Warning(LOCATION, "Invalid SEXP syntax: SEXPs must be surrounded by parentheses.  For backwards compatibility, the string has been enclosed in parentheses.  This may not be correct in all use cases.");
+			Warning(LOCATION, "Invalid SEXP syntax: SEXPs must be surrounded by parentheses.  For backwards compatibility, the string has been enclosed in parentheses.  This may not be correct in all use cases.\n\nrunSEXP string:\n%s\n", s);
 		}
 		// this is the old sexp handling method, which is incorrect
-		snprintf(buf, 8191, "( when ( true ) ( %s ) )", s);
+		sprintf(buf, "( when ( true ) ( %s ) )", s);
 	}
 	else
 	{
 		// this is correct usage
-		snprintf(buf, 8191, "( when ( true ) %s )", s);
+		sprintf(buf, "( when ( true ) %s )", s);
 	}
 
-	r_val = run_sexp(buf);
+	r_val = run_sexp(buf.c_str());
 
 	if (r_val == SEXP_TRUE)
 		return ADE_RETURN_TRUE;
@@ -181,12 +228,12 @@ ADE_INDEXER(l_Mission_Asteroids, "number Index", "Gets asteroid", "asteroid", "A
 	if( !ade_get_args(L, "*i", &idx) ) {
 		return ade_set_error( L, "o", l_Asteroid.Set( object_h() ) );
 	}
-	if( idx > -1 && idx < asteroid_count() ) {
-		idx--; //Convert from Lua to C, as lua indices start from 1, not 0
-		return ade_set_args(L, "o", l_Asteroid.Set(object_h(&Objects[Asteroids[idx].objnum])));
-	}
 
-	return ade_set_error(L, "o", l_Asteroid.Set( object_h() ) );
+	int objnum = -1;
+	if (idx > 0)
+		objnum = object_subclass_at_index(Asteroids, MAX_ASTEROIDS, idx);
+
+	return ade_set_args(L, "o", l_Asteroid.Set( object_h(objnum) ) );
 }
 
 ADE_FUNC(__len, l_Mission_Asteroids, NULL,
@@ -195,9 +242,41 @@ ADE_FUNC(__len, l_Mission_Asteroids, NULL,
 		 "Number of asteroids in the mission, or 0 if asteroids are not enabled")
 {
 	if(Asteroids_enabled) {
-		return ade_set_args(L, "i", asteroid_count());
+		return ade_set_args(L, "i", object_subclass_count(Asteroids, MAX_ASTEROIDS));
 	}
 	return ade_set_args(L, "i", 0);
+}
+
+//****SUBLIBRARY: Mission/Comm Items
+ADE_LIB_DERIV(l_Mission_Comm_Items, "CommItems", nullptr, "Comm Items in the mission", l_Mission);
+
+ADE_INDEXER(l_Mission_Comm_Items,
+	"number Index",
+	"Gets comm items",
+	"comm_item",
+	"Comm Item handle, or invalid handle if invalid index specified")
+{
+	int idx;
+	if (!ade_get_args(L, "*i", &idx))
+		return ade_set_error(L, "s", "");
+
+	// convert from lua index
+	idx--;
+
+	if ((idx < 0) || idx >= MAX_MENU_ITEMS)
+		return ade_set_args(L, "o", l_Comm_Item.Set(-1));
+
+	return ade_set_args(L, "o", l_Comm_Item.Set(idx));
+}
+
+ADE_FUNC(__len,
+	l_Mission_Comm_Items,
+	nullptr,
+	"Number of comm orders in mission currently. Note that the value will change when an order is selected or the open/closed state of the comm menu is changed.",
+	"number",
+	"Number of comm orders in the mission. 0 if comm menu is closed")
+{
+	return ade_set_args(L, "i", Num_menu_items);
 }
 
 //****SUBLIBRARY: Mission/Debris
@@ -259,35 +338,62 @@ ADE_FUNC(__len, l_Mission_EscortShips, NULL, "Current number of escort ships", "
 }
 
 //****SUBLIBRARY: Mission/Events
-ADE_LIB_DERIV(l_Mission_Events, "Events", NULL, "Events", l_Mission);
+ADE_LIB_DERIV(l_Mission_Events, "Events", nullptr, "Events", l_Mission);
 
-ADE_INDEXER(l_Mission_Events, "number/string IndexOrName", "Indexes events list", "event", "Event handle, or invalid event handle if index was invalid")
+ADE_INDEXER(l_Mission_Events, "number/string IndexOrName", "Indexes mission events list", "mission_event", "Event handle, or invalid event handle if index was invalid")
 {
 	const char* s;
 	if(!ade_get_args(L, "*s", &s))
 		return ade_set_error(L, "o", l_Event.Set(-1));
 
-	int i;
-	for(i = 0; i < Num_mission_events; i++)
-	{
-		if(!stricmp(Mission_events[i].name, s))
-			return ade_set_args(L, "o", l_Event.Set(i));
-	}
+	int i = mission_event_lookup(s);
+	if (i >= 0)
+		return ade_set_args(L, "o", l_Event.Set(i));
 
 	//Now try as a number
 	i = atoi(s);
-	if(i < 1 || i > Num_mission_events)
-		return ade_set_error(L, "o", l_Event.Set(-1));
-
 	//Lua-->FS2
 	i--;
+
+	if(!SCP_vector_inbounds(Mission_events, i))
+		return ade_set_error(L, "o", l_Event.Set(-1));
 
 	return ade_set_args(L, "o", l_Event.Set(i));
 }
 
-ADE_FUNC(__len, l_Mission_Events, NULL, "Number of events in mission", "number", "Number of events in mission")
+ADE_FUNC(__len, l_Mission_Events, nullptr, "Number of events in mission", "number", "Number of events in mission")
 {
-	return ade_set_args(L, "i", Num_mission_events);
+	return ade_set_args(L, "i", static_cast<int>(Mission_events.size()));
+}
+
+//****SUBLIBRARY: Mission/Goals
+ADE_LIB_DERIV(l_Mission_Goals, "Goals", nullptr, "Goals", l_Mission);
+
+ADE_INDEXER(l_Mission_Goals, "number/string IndexOrName", "Indexes mission goals list", "mission_goal", "Goal handle, or invalid goal handle if index was invalid")
+{
+	const char* s;
+	if(!ade_get_args(L, "*s", &s))
+		return ade_set_error(L, "o", l_Goal.Set(-1));
+
+	int i = mission_goal_lookup(s);
+	if (i >= 0)
+		return ade_set_args(L, "o", l_Goal.Set(i));
+
+	//Now try as a number
+	i = atoi(s);
+	//Lua-->FS2
+	i--;
+
+	if(!SCP_vector_inbounds(Mission_goals, i))
+		return ade_set_error(L, "o", l_Goal.Set(-1));
+
+
+	return ade_set_args(L, "o", l_Goal.Set(i));
+}
+
+ADE_FUNC(__len, l_Mission_Goals, nullptr, "Number of goals in mission", "number", "Number of goals in mission")
+{
+	return ade_set_args(L, "i", static_cast<int>(Mission_goals.size()));
 }
 
 //****SUBLIBRARY: Mission/SEXPVariables
@@ -378,32 +484,20 @@ ADE_INDEXER(l_Mission_Ships, "number/string IndexOrName", "Gets ship", "ship", "
 
 	int idx = ship_name_lookup(name);
 
-	if(idx > -1)
+	if (idx >= 0)
 	{
 		return ade_set_args(L, "o", l_Ship.Set(object_h(&Objects[Ships[idx].objnum])));
 	}
 	else
 	{
 		idx = atoi(name);
-		if(idx > 0)
-		{
-			int count=1;
 
-			for(int i = 0; i < MAX_SHIPS; i++)
-			{
-				if (Ships[i].objnum < 0 || Objects[Ships[i].objnum].type != OBJ_SHIP)
-					continue;
+		int objnum = -1;
+		if (idx > 0)
+			objnum = object_subclass_at_index(Ships, MAX_SHIPS, idx);
 
-				if(count == idx) {
-					return ade_set_args(L, "o", l_Ship.Set(object_h(&Objects[Ships[i].objnum])));
-				}
-
-				count++;
-			}
-		}
+		return ade_set_args(L, "o", l_Ship.Set(object_h(objnum)));
 	}
-
-	return ade_set_error(L, "o", l_Ship.Set(object_h()));
 }
 
 ADE_FUNC(__len, l_Mission_Ships, NULL,
@@ -413,10 +507,7 @@ ADE_FUNC(__len, l_Mission_Ships, NULL,
 		 "number",
 		 "Number of ships in the mission, or 0 if ships haven't been initialized yet")
 {
-	if(Ships_inited)
-		return ade_set_args(L, "i", ship_get_num_ships());
-	else
-		return ade_set_args(L, "i", 0);
+	return ade_set_args(L, "i", object_subclass_count(Ships, MAX_SHIPS));
 }
 
 //****SUBLIBRARY: Mission/ParsedShips
@@ -428,11 +519,10 @@ ADE_INDEXER(l_Mission_ParsedShips, "number/string IndexOrName", "Gets parsed shi
 	if (!ade_get_args(L, "*s", &name))
 		return ade_set_error(L, "o", l_ParseObject.Set(parse_object_h(nullptr)));
 
-	auto pobjp = mission_parse_get_parse_object(name);
-
-	if (pobjp)
+	auto ship_entry = ship_registry_get(name);
+	if (ship_entry)
 	{
-		return ade_set_args(L, "o", l_ParseObject.Set(parse_object_h(pobjp)));
+		return ade_set_args(L, "o", l_ParseObject.Set(parse_object_h(ship_entry->p_objp_or_null())));
 	}
 	else
 	{
@@ -474,7 +564,7 @@ ADE_INDEXER(l_Mission_Waypoints, "number Index", "Array of waypoints in the curr
 	object *ptr = GET_FIRST(&obj_used_list);
 	while (ptr != END_OF_LIST(&obj_used_list))
 	{
-		if (ptr->type == OBJ_WAYPOINT)
+		if (ptr->type == OBJ_WAYPOINT && !ptr->flags[Object::Object_Flags::Should_be_dead])
 			count++;
 
 		if(count == idx) {
@@ -489,11 +579,15 @@ ADE_INDEXER(l_Mission_Waypoints, "number Index", "Array of waypoints in the curr
 
 ADE_FUNC(__len, l_Mission_Waypoints, NULL, "Gets number of waypoints in mission. Note that this is only accurate for one frame.", "number", "Number of waypoints in the mission")
 {
-	uint count=0;
-	for(uint i = 0; i < MAX_OBJECTS; i++)
+	int count=0;
+
+	object *ptr = GET_FIRST(&obj_used_list);
+	while (ptr != END_OF_LIST(&obj_used_list))
 	{
-		if (Objects[i].type == OBJ_WAYPOINT)
+		if (ptr->type == OBJ_WAYPOINT && !ptr->flags[Object::Object_Flags::Should_be_dead])
 			count++;
+
+		ptr = GET_NEXT(ptr);
 	}
 
 	return ade_set_args(L, "i", count);
@@ -511,7 +605,7 @@ ADE_INDEXER(l_Mission_WaypointLists, "number/string IndexOrWaypointListName", "A
 
 	wpl = waypointlist_h(name);
 
-	if (!wpl.IsValid()) {
+	if (!wpl.isValid()) {
 		char* end_ptr;
 		auto idx = (int)strtol(name, &end_ptr, 10);
 		if (end_ptr != name && idx >= 1) {
@@ -520,7 +614,7 @@ ADE_INDEXER(l_Mission_WaypointLists, "number/string IndexOrWaypointListName", "A
 		}
 	}
 
-	if (wpl.IsValid()) {
+	if (wpl.isValid()) {
 		return ade_set_args(L, "o", l_WaypointList.Set(wpl));
 	}
 
@@ -541,26 +635,15 @@ ADE_INDEXER(l_Mission_Weapons, "number Index", "Gets handle to a weapon object i
 	if(!ade_get_args(L, "*i", &idx))
 		return ade_set_error(L, "o", l_Weapon.Set(object_h()));
 
-	//Remember, Lua indices start at 0.
-	int count=1;
+	int objnum = -1;
+	if (idx > 0)
+		objnum = object_subclass_at_index(Weapons, MAX_WEAPONS, idx);
 
-	for(int i = 0; i < MAX_WEAPONS; i++)
-	{
-		if (Weapons[i].weapon_info_index < 0 || Weapons[i].objnum < 0 || Objects[Weapons[i].objnum].type != OBJ_WEAPON)
-			continue;
-
-		if(count == idx) {
-			return ade_set_args(L, "o", l_Weapon.Set(object_h(&Objects[Weapons[i].objnum])));
-		}
-
-		count++;
-	}
-
-	return ade_set_error(L, "o", l_Weapon.Set(object_h()));
+	return ade_set_args(L, "o", l_Weapon.Set(object_h(objnum)));
 }
 ADE_FUNC(__len, l_Mission_Weapons, NULL, "Number of weapon objects in mission. Note that this is only accurate for one frame.", "number", "Number of weapon objects in mission")
 {
-	return ade_set_args(L, "i", Num_weapons);
+	return ade_set_args(L, "i", object_subclass_count(Weapons, MAX_WEAPONS));
 }
 
 //****SUBLIBRARY: Mission/Beams
@@ -572,26 +655,15 @@ ADE_INDEXER(l_Mission_Beams, "number Index", "Gets handle to a beam object in th
 	if(!ade_get_args(L, "*i", &idx))
 		return ade_set_error(L, "o", l_Beam.Set(object_h()));
 
-	//Remember, Lua indices start at 0.
-	int count=1;
+	int objnum = -1;
+	if (idx > 0)
+		objnum = object_subclass_at_index(Beams, MAX_BEAMS, idx);
 
-	for(int i = 0; i < MAX_BEAMS; i++)
-	{
-		if (Beams[i].weapon_info_index < 0 || Beams[i].objnum < 0 || Objects[Beams[i].objnum].type != OBJ_BEAM)
-			continue;
-
-		if(count == idx) {
-			return ade_set_args(L, "o", l_Beam.Set(object_h(&Objects[Beams[i].objnum])));
-		}
-
-		count++;
-	}
-
-	return ade_set_error(L, "o", l_Beam.Set(object_h()));
+	return ade_set_args(L, "o", l_Beam.Set(object_h(objnum)));
 }
 ADE_FUNC(__len, l_Mission_Beams, NULL, "Number of beam objects in mission. Note that this is only accurate for one frame.", "number", "Number of beam objects in mission")
 {
-	return ade_set_args(L, "i", Beam_count);
+	return ade_set_args(L, "i", object_subclass_count(Beams, MAX_BEAMS));
 }
 
 //****SUBLIBRARY: Mission/Wings
@@ -771,7 +843,7 @@ ADE_INDEXER(l_Mission_Personas, "number/string IndexOrName", "Personas of the mi
 		idx = message_persona_name_lookup(name);
 	}
 
-	if (idx < 0 || idx >= Num_personas)
+	if (idx < 0 || idx >= (int)Personas.size())
 		return ade_set_args(L, "o", l_Persona.Set(-1));
 	else
 		return ade_set_args(L, "o", l_Persona.Set(idx));
@@ -779,7 +851,7 @@ ADE_INDEXER(l_Mission_Personas, "number/string IndexOrName", "Personas of the mi
 
 ADE_FUNC(__len, l_Mission_Personas, NULL, "Number of personas in the mission", "number", "Number of messages in mission")
 {
-	return ade_set_args(L, "i", Num_personas);
+	return ade_set_args(L, "i", (int)Personas.size());
 }
 
 //****SUBLIBRARY: Mission/Fireballs
@@ -791,27 +863,15 @@ ADE_INDEXER(l_Mission_Fireballs, "number Index", "Gets handle to a fireball obje
 	if (!ade_get_args(L, "*i", &idx))
 		return ade_set_error(L, "o", l_Fireball.Set(object_h()));
 
-	//Remember, Lua indices start at 1.
-	int count = 1;
+	int objnum = -1;
+	if (idx > 0)
+		objnum = object_subclass_at_index(Fireballs, Fireballs.size(), idx);
 
-	for (auto& current_fireball : Fireballs) {
-		if (current_fireball.fireball_info_index < 0 || current_fireball.objnum < 0 || Objects[current_fireball.objnum].type != OBJ_FIREBALL)
-			continue;
-
-		if (count == idx) {
-			return ade_set_args(L, "o", l_Fireball.Set(object_h(&Objects[current_fireball.objnum])));
-		}
-
-		count++;
-
-	}
-
-	return ade_set_error(L, "o", l_Fireball.Set(object_h()));
+	return ade_set_args(L, "o", l_Fireball.Set(object_h(objnum)));
 }
 ADE_FUNC(__len, l_Mission_Fireballs, NULL, "Number of fireball objects in mission. Note that this is only accurate for one frame.", "number", "Number of fireball objects in mission")
 {
-	int count = fireball_get_count();
-	return ade_set_args(L, "i", count);
+	return ade_set_args(L, "i", object_subclass_count(Fireballs, Fireballs.size()));
 }
 
 ADE_FUNC(addMessage, l_Mission, "string name, string text, [persona persona]", "Adds a message", "message", "The new message or invalid handle on error")
@@ -826,7 +886,7 @@ ADE_FUNC(addMessage, l_Mission, "string name, string text, [persona persona]", "
 	if (name == NULL || text == NULL)
 		return ade_set_error(L, "o", l_Message.Set(-1));
 
-	if (personaIdx < 0 || personaIdx >= Num_personas)
+	if (personaIdx < 0 || personaIdx >= (int)Personas.size())
 		personaIdx = -1;
 
 	add_message(name, text, personaIdx, 0);
@@ -834,47 +894,9 @@ ADE_FUNC(addMessage, l_Mission, "string name, string text, [persona persona]", "
 	return ade_set_error(L, "o", l_Message.Set((int) Messages.size() - 1));
 }
 
-ADE_FUNC(sendMessage,
-	l_Mission,
-	"string sender, message message, [number delay=0.0, enumeration priority = MESSAGE_PRIORITY_NORMAL, boolean "
-	"fromCommand = false]",
-	"Sends a message from the given source (not from a ship!) with the given priority or optionally sends it from the "
-	"missions command source.<br>"
-	"If delay is specified the message will be delayed by the specified time in seconds<br>"
-	"If you pass <i>nil</i> as the sender then the message will not have a sender.",
-	"boolean",
-	"true if successfull, false otherwise")
+int sendMessage_sub(lua_State* L, const void* sender, int messageSource, int messageIdx, float delay, enum_h* ehp)
 {
-	const char* sender = nullptr;
-	int messageIdx = -1;
-	int priority = MESSAGE_PRIORITY_NORMAL;
-	bool fromCommand = false;
-	int messageSource = MESSAGE_SOURCE_SPECIAL;
-	float delay = 0.0f;
-
-	enum_h* ehp = NULL;
-
-	// if first is nil then use no source
-	if (lua_isnil(L, 1))
-	{
-		if (!ade_get_args(L, "*o|fob", l_Message.Get(&messageIdx), &delay, l_Enum.GetPtr(&ehp), &fromCommand))
-			return ADE_RETURN_FALSE;
-
-		messageSource = MESSAGE_SOURCE_NONE;
-	}
-	else
-	{
-		if (!ade_get_args(L, "so|fob", &sender, l_Message.Get(&messageIdx), &delay, l_Enum.GetPtr(&ehp), &fromCommand))
-			return ADE_RETURN_FALSE;
-
-		if (sender == NULL)
-			return ADE_RETURN_FALSE;
-	}
-
-	if (fromCommand)
-		messageSource = MESSAGE_SOURCE_COMMAND;
-
-	if (messageIdx < 0 || messageIdx >= (int) Messages.size())
+	if (messageIdx < 0 || messageIdx >= (int)Messages.size())
 		return ADE_RETURN_FALSE;
 
 	if (messageIdx < Num_builtin_messages)
@@ -889,9 +911,11 @@ ADE_FUNC(sendMessage,
 		return ADE_RETURN_FALSE;
 	}
 
-	if (ehp != NULL)
+	int priority = MESSAGE_PRIORITY_NORMAL;
+
+	if (ehp != nullptr)
 	{
-		switch(ehp->index)
+		switch (ehp->index)
 		{
 			case LE_MESSAGE_PRIORITY_HIGH:
 				priority = MESSAGE_PRIORITY_HIGH;
@@ -908,17 +932,76 @@ ADE_FUNC(sendMessage,
 		}
 	}
 
-	if (messageSource == MESSAGE_SOURCE_NONE)
-		message_send_unique_to_player(Messages[messageIdx].name, NULL, MESSAGE_SOURCE_NONE, priority, 0, fl2i(delay * 1000.0f));
-	else
-		message_send_unique_to_player(Messages[messageIdx].name, (void*) sender, messageSource, priority, 0, fl2i(delay * 1000.0f));
+	message_send_unique(Messages[messageIdx].name, sender, messageSource, priority, 0, fl2i(delay * MILLISECONDS_PER_SECOND));
 
 	return ADE_RETURN_TRUE;
 }
 
+ADE_FUNC(sendMessage,
+	l_Mission,
+	"string|ship sender, message message, [number delay=0.0, enumeration priority = MESSAGE_PRIORITY_NORMAL, boolean "
+	"fromCommand = false]",
+	"Sends a message from the given source or ship with the given priority, or optionally sends it from the "
+	"mission's command source.<br>"
+	"If delay is specified, the message will be delayed by the specified time in seconds.<br>"
+	"If sender is <i>nil</i> the message will not have a sender.  If sender is a ship object the message will be sent from the ship; "
+	"if sender is a string the message will have a non-ship source even if the string is a ship name.",
+	"boolean",
+	"true if successful, false otherwise")
+{
+	const void* sender = nullptr;
+	int messageIdx = -1;
+	bool fromCommand = false;
+	int messageSource = MESSAGE_SOURCE_SPECIAL;
+	float delay = 0.0f;
+
+	enum_h* ehp = nullptr;
+
+	// if first is nil then use no source
+	if (lua_isnil(L, 1))
+	{
+		if (!ade_get_args(L, "*o|fob", l_Message.Get(&messageIdx), &delay, l_Enum.GetPtr(&ehp), &fromCommand))
+			return ADE_RETURN_FALSE;
+
+		messageSource = MESSAGE_SOURCE_NONE;
+	}
+	// if first is a string then treat it as such
+	else if (lua_isstring(L, 1))
+	{
+		const char* sender_string = nullptr;
+
+		if (!ade_get_args(L, "so|fob", &sender_string, l_Message.Get(&messageIdx), &delay, l_Enum.GetPtr(&ehp), &fromCommand))
+			return ADE_RETURN_FALSE;
+
+		if (sender_string == nullptr)
+			return ADE_RETURN_FALSE;
+
+		sender = sender_string;
+	}
+	// assume it's a ship
+	else
+	{
+		object_h* ship_h = nullptr;
+
+		if (!ade_get_args(L, "oo|fob", l_Ship.GetPtr(&ship_h), l_Message.Get(&messageIdx), &delay, l_Enum.GetPtr(&ehp), &fromCommand))
+			return ADE_RETURN_FALSE;
+
+		if (ship_h == nullptr || !ship_h->isValid())
+			return ADE_RETURN_FALSE;
+
+		sender = &Ships[ship_h->objp()->instance];
+		messageSource = MESSAGE_SOURCE_SHIP;
+	}
+
+	if (fromCommand)
+		messageSource = MESSAGE_SOURCE_COMMAND;
+
+	return sendMessage_sub(L, sender, messageSource, messageIdx, delay, ehp);
+}
+
 ADE_FUNC(sendTrainingMessage, l_Mission, "message message, number time, [number delay=0.0]",
 		 "Sends a training message to the player. <i>time</i> is the amount in seconds to display the message, only whole seconds are used!",
-		 "boolean", "true if successfull, false otherwise")
+		 "boolean", "true if successful, false otherwise")
 {
 	int messageIdx = -1;
 	float delay = 0.0f;
@@ -941,7 +1024,7 @@ ADE_FUNC(sendTrainingMessage, l_Mission, "message message, number time, [number 
 		return ADE_RETURN_FALSE;
 	}
 
-	message_training_queue(Messages[messageIdx].name, timestamp(fl2i(delay * 1000.0f)), time);
+	message_training_queue(Messages[messageIdx].name, _timestamp(fl2i(delay * MILLISECONDS_PER_SECOND)), time);
 
 	return ADE_RETURN_TRUE;
 }
@@ -962,6 +1045,231 @@ ADE_FUNC(sendPlainMessage,
 		return ADE_RETURN_FALSE;
 
 	HUD_sourced_printf(HUD_SOURCE_HIDDEN, "%s", message);
+
+	return ADE_RETURN_TRUE;
+}
+
+// Map from the Lua enums to the message type enums
+int getBuiltinMessageType(const enum_h* enumValue)
+{
+	switch (enumValue->index) {
+	case LE_BUILTIN_MESSAGE_ATTACK_TARGET:
+		return MESSAGE_ATTACK_TARGET;
+	case LE_BUILTIN_MESSAGE_DISABLE_TARGET:
+		return MESSAGE_DISABLE_TARGET;
+	case LE_BUILTIN_MESSAGE_DISARM_TARGET:
+		return MESSAGE_DISARM_TARGET;
+	case LE_BUILTIN_MESSAGE_ATTACK_SUBSYSTEM:
+		return MESSAGE_ATTACK_SUBSYSTEM;
+	case LE_BUILTIN_MESSAGE_PROTECT_TARGET:
+		return MESSAGE_PROTECT_TARGET;
+	case LE_BUILTIN_MESSAGE_FORM_ON_MY_WING:
+		return MESSAGE_FORM_ON_MY_WING;
+	case LE_BUILTIN_MESSAGE_COVER_ME:
+		return MESSAGE_COVER_ME;
+	case LE_BUILTIN_MESSAGE_IGNORE:
+		return MESSAGE_IGNORE;
+	case LE_BUILTIN_MESSAGE_ENGAGE:
+		return MESSAGE_ENGAGE;
+	case LE_BUILTIN_MESSAGE_WARP_OUT:
+		return MESSAGE_WARP_OUT;
+	case LE_BUILTIN_MESSAGE_DOCK_YES:
+		return MESSAGE_DOCK_YES;
+	case LE_BUILTIN_MESSAGE_YESSIR:
+		return MESSAGE_YESSIR;
+	case LE_BUILTIN_MESSAGE_NOSIR:
+		return MESSAGE_NOSIR;
+	case LE_BUILTIN_MESSAGE_NO_TARGET:
+		return MESSAGE_NO_TARGET;
+	case LE_BUILTIN_MESSAGE_CHECK_6:
+		return MESSAGE_CHECK_6;
+	case LE_BUILTIN_MESSAGE_PLAYER_DIED:
+		return MESSAGE_PLAYER_DIED;
+	case LE_BUILTIN_MESSAGE_PRAISE:
+		return MESSAGE_PRAISE;
+	case LE_BUILTIN_MESSAGE_HIGH_PRAISE:
+		return MESSAGE_HIGH_PRAISE;
+	case LE_BUILTIN_MESSAGE_BACKUP:
+		return MESSAGE_BACKUP;
+	case LE_BUILTIN_MESSAGE_HELP:
+		return MESSAGE_HELP;
+	case LE_BUILTIN_MESSAGE_WINGMAN_SCREAM:
+		return MESSAGE_WINGMAN_SCREAM;
+	case LE_BUILTIN_MESSAGE_PRAISE_SELF:
+		return MESSAGE_PRAISE_SELF;
+	case LE_BUILTIN_MESSAGE_REARM_REQUEST:
+		return MESSAGE_REARM_REQUEST;
+	case LE_BUILTIN_MESSAGE_REPAIR_REQUEST:
+		return MESSAGE_REPAIR_REQUEST;
+	case LE_BUILTIN_MESSAGE_PRIMARIES_LOW:
+		return MESSAGE_PRIMARIES_LOW;
+	case LE_BUILTIN_MESSAGE_REARM_PRIMARIES:
+		return MESSAGE_REARM_PRIMARIES;
+	case LE_BUILTIN_MESSAGE_REARM_WARP:
+		return MESSAGE_REARM_WARP;
+	case LE_BUILTIN_MESSAGE_ON_WAY:
+		return MESSAGE_ON_WAY;
+	case LE_BUILTIN_MESSAGE_ALREADY_ON_WAY:
+		return MESSAGE_ALREADY_ON_WAY;
+	case LE_BUILTIN_MESSAGE_REPAIR_DONE:
+		return MESSAGE_REPAIR_DONE;
+	case LE_BUILTIN_MESSAGE_REPAIR_ABORTED:
+		return MESSAGE_REPAIR_ABORTED;
+	case LE_BUILTIN_MESSAGE_SUPPORT_KILLED:
+		return MESSAGE_SUPPORT_KILLED;
+	case LE_BUILTIN_MESSAGE_ALL_ALONE:
+		return MESSAGE_ALL_ALONE;
+	case LE_BUILTIN_MESSAGE_ARRIVE_ENEMY:
+		return MESSAGE_ARRIVE_ENEMY;
+	case LE_BUILTIN_MESSAGE_OOPS:
+		return MESSAGE_OOPS;
+	case LE_BUILTIN_MESSAGE_HAMMER_SWINE:
+		return MESSAGE_HAMMER_SWINE;
+	case LE_BUILTIN_MESSAGE_AWACS_75:
+		return MESSAGE_AWACS_75;
+	case LE_BUILTIN_MESSAGE_AWACS_25:
+		return MESSAGE_AWACS_25;
+	case LE_BUILTIN_MESSAGE_STRAY_WARNING:
+		return MESSAGE_STRAY_WARNING;
+	case LE_BUILTIN_MESSAGE_STRAY_WARNING_FINAL:
+		return MESSAGE_STRAY_WARNING_FINAL;
+	case LE_BUILTIN_MESSAGE_INSTRUCTOR_HIT:
+		return MESSAGE_INSTRUCTOR_HIT;
+	case LE_BUILTIN_MESSAGE_INSTRUCTOR_ATTACK:
+		return MESSAGE_INSTRUCTOR_ATTACK;
+	case LE_BUILTIN_MESSAGE_ALL_CLEAR:
+		return MESSAGE_ALL_CLEAR;
+	case LE_BUILTIN_MESSAGE_PERMISSION:
+		return MESSAGE_PERMISSION;
+	case LE_BUILTIN_MESSAGE_STRAY:
+		return MESSAGE_STRAY;
+	default:
+		return -1;
+	}
+}
+
+ADE_FUNC(sendBuiltinMessage,
+	l_Mission,
+	"ship sender, ship subject, enumeration|string type_or_type_name",
+	"Sends one of the builtin messages from the given source or ship, taking the message subject into account."
+	"The subject can be nil or it can be the target of the message like a response to a destroy order."
+	"The type must be one of the BUILTIN_MESSAGE enumerations or a string matching a custom built-in message defined in messages.tbl.",
+	"boolean",
+	"true if successful, false otherwise")
+{
+	ship* sender = nullptr;
+	ship* subject = nullptr;
+	int messageType = -1;
+
+	enum_h* ehp = nullptr;
+
+	object_h* sender_ship_h = nullptr;
+	object_h* subject_ship_h = nullptr;
+
+	if (lua_isstring(L, 3)) {
+		// If the type is a string, it could be a custom message type defined in messages.tbl.
+		const char* type_str = nullptr;
+		if (!ade_get_args(L, "oos", l_Ship.GetPtr(&sender_ship_h), l_Ship.GetPtr(&subject_ship_h), &type_str))
+			return ADE_RETURN_FALSE;
+		
+		// Get the builtin message type from the string.
+		messageType = get_builtin_message_type(type_str);
+	} else {
+		if (!ade_get_args(L, "ooo", l_Ship.GetPtr(&sender_ship_h), l_Ship.GetPtr(&subject_ship_h), l_Enum.GetPtr(&ehp)))
+			return ADE_RETURN_FALSE;
+
+		// I don't love this method of error checking the enums becuase if someone inserts an enum accidentally in this
+		// range it could fail but the way we do all our LUA Enums is prone to that kind of mess at a foundational
+		// level...
+		if (ehp == nullptr || ehp->index < LE_BUILTIN_MESSAGE_ATTACK_TARGET || ehp->index > LE_BUILTIN_MESSAGE_STRAY) {
+			Warning(LOCATION, "Invalid message type %d passed to sendBuiltinMessage!\n", (ehp != nullptr) ? ehp->index : -1);
+			return ADE_RETURN_FALSE;
+		}
+
+		messageType = getBuiltinMessageType(ehp);
+	}
+
+	if (sender_ship_h == nullptr || !sender_ship_h->isValid())
+		return ADE_RETURN_FALSE;
+
+	sender = &Ships[sender_ship_h->objp()->instance];
+
+	if (subject_ship_h != nullptr && subject_ship_h->isValid())
+		subject = &Ships[subject_ship_h->objp()->instance];
+
+	if (messageType < 0 || messageType >= static_cast<int>(Builtin_messages.size())) {
+		LuaError(L, "Message type is invalid!");
+		return ADE_RETURN_FALSE;
+	}
+
+	return message_send_builtin(messageType, sender, subject);
+}
+
+ADE_FUNC(addMessageToScrollback,
+	l_Mission,
+	"string message, [team|enumeration source=HUD_SOURCE_COMPUTER]",
+	"Adds a string to the message log scrollback without sending it as a message first. Source should be either the team handle "
+	"or one of the SCROLLBACK_SOURCE enumerations.",
+	"boolean",
+	"true if successful, false otherwise")
+{
+	const char* message = nullptr;
+	int team = -1;
+	enum_h* esp = nullptr;
+
+	int source = HUD_SOURCE_COMPUTER;
+	if (luacpp::convert::ade_odata_is_userdata_type(L, 2, l_Team)) {
+		if (!ade_get_args(L, "s|o", &message, l_Team.Get(&team))) {
+			return ADE_RETURN_FALSE;
+		} else {
+			source = HUD_team_get_source(team);
+			if (source < HUD_SOURCE_TEAM_OFFSET) {
+				LuaError(L, "Got team index %i. Team source may be invalid!", source);
+				return ADE_RETURN_FALSE;
+			}
+		}
+	} else {
+		if (!ade_get_args(L, "s|o", &message, l_Enum.GetPtr(&esp))) {
+			return ADE_RETURN_FALSE;
+		} else {
+			if (esp != nullptr) {
+				switch (esp->index) {
+				case LE_SCROLLBACK_SOURCE_COMPUTER:
+					source = HUD_SOURCE_COMPUTER;
+					break;
+				case LE_SCROLLBACK_SOURCE_TRAINING:
+					source = HUD_SOURCE_TRAINING;
+					break;
+				case LE_SCROLLBACK_SOURCE_HIDDEN:
+					source = HUD_SOURCE_HIDDEN;
+					break;
+				case LE_SCROLLBACK_SOURCE_IMPORTANT:
+					source = HUD_SOURCE_IMPORTANT;
+					break;
+				case LE_SCROLLBACK_SOURCE_FAILED:
+					source = HUD_SOURCE_FAILED;
+					break;
+				case LE_SCROLLBACK_SOURCE_SATISFIED:
+					source = HUD_SOURCE_SATISFIED;
+					break;
+				case LE_SCROLLBACK_SOURCE_COMMAND:
+					source = HUD_SOURCE_TERRAN_CMD;
+					break;
+				case LE_SCROLLBACK_SOURCE_NETPLAYER:
+					source = HUD_SOURCE_NETPLAYER;
+					break;
+				default:
+					LuaError(L, "Invalid enumeration used! Must be one of SCROLLBACK_SOURCE_*.");
+					return ADE_RETURN_FALSE;
+				}
+			}
+		}
+	}
+
+	if (message == nullptr)
+		return ADE_RETURN_FALSE;
+
+	HUD_add_to_scrollback(message, source);
 
 	return ADE_RETURN_TRUE;
 }
@@ -1020,10 +1328,11 @@ ADE_FUNC(createShip,
 
 		mission_log_add_entry(LOG_SHIP_ARRIVED, shipp->ship_name, nullptr, -1, show_in_log ? 0 : MLF_HIDDEN);
 
-		if (Script_system.IsActiveAction(CHA_ONSHIPARRIVE)) {
-			Script_system.SetHookObjects(2, "Ship", &Objects[obj_idx], "Parent", NULL);
-			Script_system.RunCondition(CHA_ONSHIPARRIVE, &Objects[obj_idx]);
-			Script_system.RemHookVars({"Ship", "Parent"});
+		if (scripting::hooks::OnShipArrive->isActive()) {
+			scripting::hooks::OnShipArrive->run(scripting::hooks::ShipArriveConditions{ shipp, ArrivalLocation::AT_LOCATION, nullptr },
+				scripting::hook_param_list(
+					scripting::hook_param("Ship", 'o', &Objects[obj_idx])
+				));
 		}
 
 		return ade_set_args(L, "o", l_Ship.Set(object_h(&Objects[obj_idx])));
@@ -1031,28 +1340,206 @@ ADE_FUNC(createShip,
 		return ade_set_error(L, "o", l_Ship.Set(object_h()));
 }
 
+ADE_FUNC(createDebris,
+	l_Mission,
+	"[ship | shipclass | model | submodel | nil source, string | nil submodel_index_or_name, vector position, orientation, enumeration create_flags, "
+	"number hitpoints, number spark_timeout_seconds, team, vector explosion_center, number explosion_force_multiplier]",
+	"Creates a chunk or shard of debris with the specified parameters.  Vectors are in world coordinates.  Any parameter can be nil or negative to specify defaults.  "
+	"A nil source will create generic or vaporized debris; submodel_index_or_name will be disregarded if source is submodel and can be nil to spawn random generic or "
+	"vaporized debris; position defaults to 0,0,0; orientation defaults to the source orientation or a random orientation for non-ship sources or for generic/vaporized "
+	"debris; create_flags can be any combination of DC_IS_HULL, DC_VAPORIZE, DC_SET_VELOCITY, or DC_FIRE_HOOK; hitpoints defaults to 1/8 source ship hitpoints or 10 "
+	"hitpoints if there is no source ship; explosion_center and explosion_force_multiplier are only applicable for DC_SET_VELOCITY",
+	"debris",
+	"Debris handle, or invalid handle if the debris couldn't be created")
+{
+	model_h *mh = nullptr;
+	submodel_h *smh = nullptr;
+	vec3d *pos = nullptr, *explosion_center = nullptr;
+	matrix_h *orient_h = nullptr;
+	enum_h *create_flags = nullptr;
+	float hitpoints = -1.0f, spark_timeout = -1.0f, explosion_force_multiplier = 1.0f;
+	int team = -1, source_class = -1;
+	object_h *source_ship = nullptr;
+	ship *source_shipp = nullptr;
+	bool is_hull = false;
+	bool vaporize = false;
+	bool set_velocity = false;
+	bool fire_hook = false;
+
+	int source_objnum = -1, model_num = -1, submodel_num = -1;
+
+	// get first variant parameter
+	if (luacpp::convert::ade_odata_is_userdata_type(L, 1, l_Ship))
+	{
+		ade_get_args(L, "|o", l_Ship.GetPtr(&source_ship));
+
+		if (source_ship == nullptr || !source_ship->isValid())
+			return ade_set_args(L, "o", l_Debris.Set(object_h()));
+
+		source_shipp = &Ships[source_ship->objp()->instance];
+		source_objnum = source_shipp->objnum;
+		source_class = source_shipp->ship_info_index;
+		model_num = Ship_info[source_class].model_num;
+	}
+	else if (luacpp::convert::ade_odata_is_userdata_type(L, 1, l_Shipclass))
+	{
+		ade_get_args(L, "|o", l_Shipclass.Get(&source_class));
+
+		if (source_class < 0 || source_class >= ship_info_size())
+			return ade_set_args(L, "o", l_Debris.Set(object_h()));
+
+		model_num = Ship_info[source_class].model_num;
+	}
+	else if (luacpp::convert::ade_odata_is_userdata_type(L, 1, l_Model))
+	{
+		ade_get_args(L, "|o", l_Model.GetPtr(&mh));
+
+		if (mh == nullptr || !mh->isValid())
+			return ade_set_args(L, "o", l_Debris.Set(object_h()));
+
+		model_num = mh->GetID();
+	}
+	else if (luacpp::convert::ade_odata_is_userdata_type(L, 1, l_Submodel))
+	{
+		ade_get_args(L, "|o", l_Submodel.GetPtr(&smh));
+
+		if (smh == nullptr || !smh->isValid())
+			return ade_set_args(L, "o", l_Debris.Set(object_h()));
+
+		model_num = smh->GetModelID();
+		submodel_num = smh->GetSubmodelIndex();
+	}
+
+	// get second variant parameter
+	if (submodel_num < 0 && model_num >= 0)
+	{
+		if (lua_isnumber(L, 2))
+		{
+			ade_get_args(L, "|*i", &submodel_num);
+			submodel_num--; // Lua --> C/C++
+		}
+		else if (lua_isstring(L, 2))
+		{
+			const char *name = nullptr;
+			ade_get_args(L, "|*s", &name);
+			submodel_num = model_find_submodel_index(model_num, name);
+		}
+	}
+
+	ade_get_args(L, "|**oooffoof",
+		l_Vector.GetPtr(&pos),
+		l_Matrix.GetPtr(&orient_h),
+		l_Enum.GetPtr(&create_flags),
+		&hitpoints,
+		&spark_timeout,
+		l_Team.Get(&team),
+		l_Vector.GetPtr(&explosion_center),
+		&explosion_force_multiplier);
+
+	// validate some arguments
+
+	matrix *orient = orient_h == nullptr ? nullptr : orient_h->GetMatrix();
+
+	if (create_flags != nullptr)
+	{
+		if (!create_flags->isValid() || !create_flags->value)
+			return ade_set_args(L, "o", l_Debris.Set(object_h()));
+
+		is_hull = (*create_flags->value & LE_DC_IS_HULL);
+		vaporize = (*create_flags->value & LE_DC_VAPORIZE);
+		set_velocity = (*create_flags->value & LE_DC_SET_VELOCITY);
+		fire_hook = (*create_flags->value & LE_DC_FIRE_HOOK);
+	}
+
+	int spark_timeout_millis = spark_timeout < 0.0f ? -1 : fl2i(spark_timeout * MILLISECONDS_PER_SECOND);
+
+	// a submodel and a ship class imply hull debris
+	if (submodel_num >= 0 && source_class >= 0)
+		is_hull = true;
+
+	// now call the relevant functions
+
+	auto obj = debris_create_only(source_objnum, source_class, -1, team, hitpoints, spark_timeout_millis, model_num, submodel_num, pos, orient, is_hull, vaporize, -1);
+	if (obj == nullptr)
+		return ade_set_args(L, "o", l_Debris.Set(object_h()));
+
+	if (set_velocity)
+		debris_create_set_velocity(&Debris[obj->instance], source_shipp, explosion_center, explosion_force_multiplier);
+
+	if (fire_hook)
+		debris_create_fire_hook(obj, source_objnum < 0 ? nullptr : &Objects[source_objnum]);
+
+	return ade_set_args(L, "o", l_Debris.Set(object_h(obj)));
+}
+
+ADE_FUNC(createWaypointList, l_Mission, "[string name]",
+	"Creates a waypoint list.  If a name is not specified, the list will have a default name.  Be sure to populate the list with at least one waypoint before using it!",
+	"waypointlist",
+	"Waypoint list handle, or invalid handle if waypoint list couldn't be created")
+{
+	char buf[NAME_LENGTH];
+	const char* name = nullptr;
+	if (!ade_get_args(L, "|s", &name))
+		return ade_set_error(L, "o", l_WaypointList.Set(waypointlist_h()));
+
+	// use either a specified name...
+	if (name)
+	{
+		auto list = find_matching_waypoint_list(name);
+		if (list)
+		{
+			Warning(LOCATION, "Waypoint list '%s' already exists!", name);
+			return ade_set_error(L, "o", l_WaypointList.Set(waypointlist_h()));
+		}
+		if (strlen(name) > NAME_LENGTH - 1)
+		{
+			Warning(LOCATION, "Waypoint list name '%s' must be at most %d characters!", name, NAME_LENGTH - 1);
+			return ade_set_error(L, "o", l_WaypointList.Set(waypointlist_h()));
+		}
+		strcpy_s(buf, name);
+	}
+	// ...or a generated name
+	else
+	{
+		waypoint_find_unique_name(buf, static_cast<int>(Waypoint_lists.size()) + 1);
+	}
+
+	// add new list with that name
+	Waypoint_lists.emplace_back(buf);
+	return ade_set_args(L, "o", l_WaypointList.Set(waypointlist_h(static_cast<int>(Waypoint_lists.size()) - 1)));
+}
+
 ADE_FUNC(createWaypoint, l_Mission, "[vector Position, waypointlist List]",
-		 "Creates a waypoint",
+		 "Creates a waypoint.  If Position is not specified, the waypoint will be at (0,0,0).  If List is not specified, a new list will be created and the waypoint will be added to it.",
 		 "waypoint",
 		 "Waypoint handle, or invalid waypoint handle if waypoint couldn't be created")
 {
-	vec3d *v3 = NULL;
-	waypointlist_h *wlh = NULL;
+	vec3d *v3 = nullptr;
+	waypointlist_h *wlh = nullptr;
 	if(!ade_get_args(L, "|oo", l_Vector.GetPtr(&v3), l_WaypointList.GetPtr(&wlh)))
 		return ade_set_error(L, "o", l_Waypoint.Set(object_h()));
 
-	// determine where we need to create it - it looks like we were given a waypoint list but not a waypoint itself
+	// determine where we need to create it - if we were given a waypoint list, put it at the end
+	// (unless the list is empty, in which case put it at the beginning)
 	int waypoint_instance = -1;
-	if (wlh && wlh->IsValid())
+	bool first_waypoint_in_list = false;
+	if (wlh && wlh->isValid())
 	{
-		int wp_list_index = find_index_of_waypoint_list(wlh->wlp);
-		int wp_index = (int) wlh->wlp->get_waypoints().size() - 1;
+		int wp_list_index = wlh->wl_index;
+		int wp_index;
+		if (wlh->getList()->get_waypoints().empty())
+		{
+			wp_index = 0;
+			first_waypoint_in_list = true;
+		}
+		else
+			wp_index = static_cast<int>(wlh->getList()->get_waypoints().size()) - 1;
 		waypoint_instance = calc_waypoint_instance(wp_list_index, wp_index);
 	}
-	int obj_idx = waypoint_add(v3 != NULL ? v3 : &vmd_zero_vector, waypoint_instance);
+	int obj_idx = waypoint_add(v3 != nullptr ? v3 : &vmd_zero_vector, waypoint_instance, first_waypoint_in_list);
 
 	if(obj_idx >= 0)
-		return ade_set_args(L, "o", l_Waypoint.Set(object_h(&Objects[obj_idx])));
+		return ade_set_args(L, "o", l_Waypoint.Set(object_h(obj_idx)));
 	else
 		return ade_set_args(L, "o", l_Waypoint.Set(object_h()));
 }
@@ -1061,9 +1548,9 @@ ADE_FUNC(createWeapon,
 	l_Mission,
 	"[weaponclass Class /* first weapon in table by default*/, orientation Orientation=identity, vector "
 	"WorldPosition/* null vector by default */, object Parent = "
-	"nil, number Group = -1]",
+	"nil, number GroupId = -1]",
 	"Creates a weapon and returns a handle to it. 'Group' is used for lighting grouping purposes;"
-	" for example, quad lasers would only need to act as one light source.",
+	" for example, quad lasers would only need to act as one light source.  Use generateWeaponGroupId() if you need a group.",
 	"weapon",
 	"Weapon handle, or invalid weapon handle if weapon couldn't be created.")
 {
@@ -1080,7 +1567,7 @@ ADE_FUNC(createWeapon,
 		real_orient = orient->GetMatrix();
 	}
 
-	int parent_idx = (parent && parent->IsValid()) ? OBJ_INDEX(parent->objp) : -1;
+	int parent_idx = (parent && parent->isValid()) ? parent->objnum : -1;
 
 	int obj_idx = weapon_create(&pos, real_orient, wclass, parent_idx, group);
 
@@ -1088,6 +1575,16 @@ ADE_FUNC(createWeapon,
 		return ade_set_args(L, "o", l_Weapon.Set(object_h(&Objects[obj_idx])));
 	else
 		return ade_set_error(L, "o", l_Weapon.Set(object_h()));
+}
+
+ADE_FUNC(generateWeaponGroupId,
+	l_Mission,
+	nullptr,
+	"Generates a weapon group ID to be used with createWeapon.  This is only needed for weapons that should share a light source, such as quad lasers.  Group IDs may be reused by the engine.",
+	"number",
+	"the group ID")
+{
+	return ade_set_args(L, "i", weapon_create_group_id());
 }
 
 ADE_FUNC(createWarpeffect,
@@ -1178,7 +1675,7 @@ ADE_FUNC(createExplosion,
 
 	int type = big ? FIREBALL_LARGE_EXPLOSION : FIREBALL_MEDIUM_EXPLOSION;
 
-	int parent_idx = (parent && parent->IsValid()) ? OBJ_INDEX(parent->objp) : -1;
+	int parent_idx = (parent && parent->isValid()) ? parent->objnum : -1;
 
 	int obj_idx = fireball_create(&pos, fireballclass, type, parent_idx, radius, false, &velocity);
 
@@ -1186,6 +1683,50 @@ ADE_FUNC(createExplosion,
 		return ade_set_args(L, "o", l_Fireball.Set(object_h(&Objects[obj_idx])));
 	else
 		return ade_set_error(L, "o", l_Fireball.Set(object_h()));
+}
+
+ADE_FUNC(createBolt,
+	l_Mission,
+	"string BoltName, vector Origin, vector Target, [boolean PlaySound = true]",
+	"Creates a lightning bolt between the origin and target vectors. BoltName is name of a bolt from lightning.tbl",
+	"boolean",
+	"True if successful, false if the bolt couldn't be created.")
+{
+	const char* boltname;
+	vec3d origin = vmd_zero_vector;
+	vec3d dest = vmd_zero_vector;
+	bool playSound = true;
+
+	if (!ade_get_args(L, "soo|b", &boltname, l_Vector.Get(&origin), l_Vector.Get(&dest), &playSound)) {
+		return ADE_RETURN_FALSE;
+	}
+	
+	int boltclass = get_bolt_type_by_name(boltname);
+
+	if (boltclass < 0) {
+		return ADE_RETURN_FALSE;
+	}
+
+	return ade_set_args(L, "b", nebl_bolt(boltclass, &origin, &dest, playSound));
+}
+
+ADE_FUNC(getSupportAllowed,
+	l_Mission,
+	"[boolean SimpleCheck = true]",
+	"Get whether or not the player's call for support will be successful. If simple check is false, the code will do a much more "
+	"expensive, but accurate check.",
+	"boolean",
+	"true if support can be called, false if not or not in a mission")
+{
+	bool simple_check = true;
+	ade_get_args(L, "|b", &simple_check);
+
+	// we should be in a mission and the player object must exist
+	if (((Game_mode & GM_IN_MISSION) == 0) && (Player_obj != nullptr)) {
+		return ade_set_args(L, "b", (bool)is_support_allowed(Player_obj, simple_check));
+	}
+
+	return ADE_RETURN_FALSE;
 }
 
 ADE_FUNC(getMissionFilename, l_Mission, NULL, "Gets mission filename", "string", "Mission filename, or empty string if game is not in a mission")
@@ -1279,6 +1820,22 @@ ADE_FUNC(getMissionTime, l_Mission, nullptr, "Game time in seconds since the mis
 	return ade_set_args(L, "x", Missiontime);
 }
 
+ADE_VIRTVAR(MissionHUDTimerPadding,
+	l_Mission,
+	"number",
+	"Gets or sets padding currently applied to the HUD mission timer.",
+	"number",
+	"the padding in seconds")
+{
+	int pad;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*i", &pad)) {
+		The_mission.HUD_timer_padding = pad;
+	}
+
+	return ade_set_args(L, "i", The_mission.HUD_timer_padding);
+}
+
 //WMC - These are in freespace.cpp
 ADE_FUNC(loadMission, l_Mission, "string missionName", "Loads a mission", "boolean", "True if mission was loaded, otherwise false")
 {
@@ -1290,7 +1847,9 @@ ADE_FUNC(loadMission, l_Mission, "string missionName", "Loads a mission", "boole
 	gr_post_process_set_defaults();
 
 	//NOW do the loading stuff
-	get_mission_info(s, &The_mission, false);
+	if (get_mission_info(s, &The_mission, false))
+		return ADE_RETURN_FALSE;
+
 	game_level_init();
 
 	if(!mission_load(s))
@@ -1303,11 +1862,13 @@ ADE_FUNC(loadMission, l_Mission, "string missionName", "Loads a mission", "boole
 	return ADE_RETURN_TRUE;
 }
 
-ADE_FUNC(unloadMission, l_Mission, NULL, "Stops the current mission and unloads it", NULL, NULL)
+ADE_FUNC(unloadMission, l_Mission, "[boolean forceUnload]", "Stops the current mission and unloads it. If forceUnload is true "
+	"then the mission unload logic will run regardless of if a mission is loaded or not. Use with caution.", nullptr, nullptr)
 {
-	SCP_UNUSED(L); // unused parameter
+	bool forceUnload = false;
+	ade_get_args(L, "|b", &forceUnload);
 
-	if(Game_mode & GM_IN_MISSION)
+	if(forceUnload || Game_mode & GM_IN_MISSION)
 	{
 		game_level_close();
 		Game_mode &= ~GM_IN_MISSION;
@@ -1437,9 +1998,122 @@ ADE_VIRTVAR(ShudderIntensity, l_Mission, "number", "Gets or sets the shudder int
 	return ade_set_args(L, "f", intensity);
 }
 
+ADE_VIRTVAR(Gravity, l_Mission, "vector", "Gravity acceleration vector in meters / second^2", "vector", "gravity vector")
+{
+	vec3d* gravity_vec = &The_mission.gravity;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*o", l_Vector.GetPtr(&gravity_vec)))
+	{
+		vec3d old_gravity = The_mission.gravity;
+		The_mission.gravity = *gravity_vec;
+
+		if ((IS_VEC_NULL(&old_gravity) && !IS_VEC_NULL(&The_mission.gravity)) || 
+			(!IS_VEC_NULL(&old_gravity) && IS_VEC_NULL(&The_mission.gravity))) {
+			// gravity was turned on or turned off
+			collide_apply_gravity_flags_weapons();
+		}
+	}
+
+	return ade_set_args(L, "o", l_Vector.Set(The_mission.gravity));
+}
+
+ADE_VIRTVAR(CustomData, l_Mission, nullptr, "Gets the custom data table for this mission", "table", "The mission's custom data table") 
+{
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Custom Data is not supported");
+	}
+
+	auto table = luacpp::LuaTable::create(L);
+
+	for (const auto& pair : The_mission.custom_data)
+	{
+		table.addValue(pair.first, pair.second);
+	}
+
+	return ade_set_args(L, "t", &table);	
+}
+
+ADE_FUNC(hasCustomData, l_Mission, nullptr, "Detects whether the mission has any custom data", "boolean", "true if the mission's custom_data is not empty, false otherwise") 
+{
+
+	bool result = !The_mission.custom_data.empty();
+	return ade_set_args(L, "b", result);
+}
+
+ADE_FUNC(addDefaultCustomData,
+	l_Mission,
+	"string key, string value, string description",
+	"Adds a custom data pair with the given key if it's unique. Only works in FRED! The description will be displayed in the FRED custom data editor.",
+	"boolean",
+	"returns true if sucessful, false otherwise. Returns nil if not running in FRED.")
+{
+	const char* key;
+	const char* value;
+	const char* desc;
+	if (!ade_get_args(L, "sss", &key, &value, &desc))
+		return ade_set_error(L, "o", l_LuaEnum.Set(lua_enum_h()));
+
+	// defaults are not ever used in gameplay, but only as a convenience for FREDers
+	// so if we're not in FRED we can skip all of this.
+	if (!Fred_running) {
+		return ADE_RETURN_NIL;
+	}
+
+	for (const auto& pair : Default_custom_data) {
+		if (key == pair.key) {
+			return ADE_RETURN_FALSE;
+		}
+	}
+
+	mission_default_custom_data data = {key, value, desc};
+
+	Default_custom_data.push_back(data);
+
+	return ADE_RETURN_TRUE;
+}
+
+ADE_VIRTVAR(CustomStrings, l_Mission, nullptr, "Gets the indexed custom data table for this mission. Each item in the table is a table with the following values: "
+	"Name - the name of the custom string, Value - the value associated with the custom string, String - the custom string itself.", "table", "The mission's custom data table") 
+{
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Custom Data is not supported");
+	}
+
+	auto table = luacpp::LuaTable::create(L);
+
+	int cnt = 0;
+
+	for (const auto& cs : The_mission.custom_strings)
+	{
+		cnt++;
+		auto item = luacpp::LuaTable::create(L);
+
+		item.addValue("Name", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs.name));
+		item.addValue("Value", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs.value));
+		item.addValue("String", luacpp::LuaValue::createValue(Script_system.GetLuaSession(), cs.text));
+
+
+		table.addValue(cnt, item);
+	}
+
+	return ade_set_args(L, "t", &table);	
+}
+
+ADE_FUNC(hasCustomStrings, l_Mission, nullptr, "Detects whether the mission has any custom strings", "boolean", "true if the mission's custom_strings is not empty, false otherwise") 
+{
+
+	bool result = !The_mission.custom_strings.empty();
+	return ade_set_args(L, "b", result);
+}
+
 ADE_FUNC(isInMission, l_Mission, nullptr, "get whether or not a mission is currently being played", "boolean", "true if in mission, false otherwise")
 {
 	return ade_set_args(L, "b", (Game_mode & GM_IN_MISSION) != 0);
+}
+
+ADE_FUNC(isPrePlayerEntry, l_Mission, nullptr, "get whether the mission is currently in the pre-player-entry state", "boolean", "true if in pre-player-entry, false otherwise")
+{
+	return ade_set_args(L, "b", Pre_player_entry);
 }
 
 ADE_FUNC(isInCampaign, l_Mission, NULL, "Get whether or not the current mission being played in a campaign (as opposed to the tech room's simulator)", "boolean", "true if in campaign, false if not")
@@ -1483,6 +2157,11 @@ ADE_FUNC(isNebula, l_Mission, nullptr, "Get whether or not the current mission b
 	return ade_set_args(L, "b", The_mission.flags[Mission::Mission_Flags::Fullneb]);
 }
 
+ADE_FUNC(hasVolumetricNebula, l_Mission, nullptr, "Get whether or not the current mission being played contains a volumetric nebula", "boolean", "true if has a volumetric nebula, false if not")
+{
+	return ade_set_args(L, "b", static_cast<bool>(The_mission.volumetrics));
+}
+
 ADE_VIRTVAR(NebulaSensorRange, l_Mission, "number", "Gets or sets the Neb2_awacs variable.  This is multiplied by a species-specific factor to get the \"scan range\".  Within the scan range, a ship is at least partially targetable (fuzzy blip); within half the scan range, a ship is fully targetable.  Beyond the scan range, a ship is not targetable.", "number", "the Neb2_awacs variable")
 {
 	float range = -1.0f;
@@ -1491,6 +2170,26 @@ ADE_VIRTVAR(NebulaSensorRange, l_Mission, "number", "Gets or sets the Neb2_awacs
 		Neb2_awacs = range;
 
 	return ade_set_args(L, "f", Neb2_awacs);
+}
+
+ADE_VIRTVAR(NebulaNearMult, l_Mission, "number", "Gets or sets the multiplier of the near plane of the current nebula.", "number", "The multiplier of the near plane.")
+{
+	float fog_near = 0.0f;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*f", &fog_near))
+		Neb2_fog_near_mult = fog_near;
+
+	return ade_set_args(L, "f", Neb2_fog_near_mult);
+}
+
+ADE_VIRTVAR(NebulaFarMult, l_Mission, "number", "Gets or sets the multiplier of the far plane of the current nebula.", "number", "The multiplier of the far plane.")
+{
+	float fog_far = 0.0f;
+
+	if (ADE_SETTING_VAR && ade_get_args(L, "*f", &fog_far))
+		Neb2_fog_far_mult = fog_far;
+
+	return ade_set_args(L, "f", Neb2_fog_far_mult);
 }
 
 ADE_FUNC(isSubspace, l_Mission, nullptr, "Get whether or not the current mission being played is set in subspace", "boolean", "true if in subspace, false if not")
@@ -1504,6 +2203,52 @@ ADE_FUNC(getMissionTitle, l_Mission, NULL, "Get the title of the current mission
 
 ADE_FUNC(getMissionModifiedDate, l_Mission, NULL, "Get the modified date of the current mission", "string", "The mission modified date or an empty string if currently not in mission") {
 	return ade_set_args(L, "s", The_mission.modified);
+}
+
+//****SUBLIBRARY: Mission/BackgroundSuns
+ADE_LIB_DERIV(l_Mission_BackgroundSuns, "BackgroundSuns", nullptr, "Suns in the current background", l_Mission);
+
+ADE_INDEXER(l_Mission_BackgroundSuns, "number Index", "Gets background sun at specified index in current background", "background_element", "Specified background element, or invalid handle if invalid index")
+{
+	int idx;
+	if (!ade_get_args(L, "*i", &idx))
+		return ade_set_error(L, "o", l_BackgroundElement.Set(background_el_h()));
+
+	if (idx < 1 || idx > stars_get_num_suns())
+		return ade_set_error(L, "o", l_BackgroundElement.Set(background_el_h()));
+
+	//Lua->FS2
+	idx--;
+
+	return ade_set_args(L, "o", l_BackgroundElement.Set(background_el_h(BackgroundType::Sun, idx)));
+}
+
+ADE_FUNC(__len, l_Mission_BackgroundSuns, nullptr, "Number of suns in the current background", "number", "Number of suns")
+{
+	return ade_set_args(L, "i", stars_get_num_suns());
+}
+
+//****SUBLIBRARY: Mission/BackgroundBitmaps
+ADE_LIB_DERIV(l_Mission_BackgroundBitmaps, "BackgroundBitmaps", nullptr, "Bitmaps in the current background", l_Mission);
+
+ADE_INDEXER(l_Mission_BackgroundBitmaps, "number Index", "Gets background bitmap at specified index in current background", "background_element", "Specified background element, or invalid handle if invalid index")
+{
+	int idx;
+	if (!ade_get_args(L, "*i", &idx))
+		return ade_set_error(L, "o", l_BackgroundElement.Set(background_el_h()));
+
+	if (idx < 1 || idx > stars_get_num_bitmaps())
+		return ade_set_error(L, "o", l_BackgroundElement.Set(background_el_h()));
+
+	//Lua->FS2
+	idx--;
+
+	return ade_set_args(L, "o", l_BackgroundElement.Set(background_el_h(BackgroundType::Bitmap, idx)));
+}
+
+ADE_FUNC(__len, l_Mission_BackgroundBitmaps, nullptr, "Number of bitmaps in the current background", "number", "Number of bitmaps")
+{
+	return ade_set_args(L, "i", stars_get_num_bitmaps());
 }
 
 static int addBackgroundBitmap_sub(bool uses_correct_angles, lua_State* L)
@@ -1685,6 +2430,42 @@ ADE_FUNC(removeBackgroundElement, l_Mission, "background_element el",
 	}
 }
 
+ADE_VIRTVAR(SkyboxOrientation, l_Mission, "orientation", "Sets or returns the current skybox orientation", "orientation", "the orientation")
+{
+	matrix_h* orient_h = nullptr;
+	if (ADE_SETTING_VAR && ade_get_args(L, "*|o", l_Matrix.GetPtr(&orient_h)))
+		stars_set_background_orientation(orient_h->GetMatrix());
+
+	return ade_set_args(L, "o", l_Matrix.Set(matrix_h(&Nmodel_orient)));
+}
+
+ADE_VIRTVAR(SkyboxAlpha, l_Mission, "number", "Sets or returns the current skybox alpha", "number", "the alpha")
+{
+	float alpha = 1.0f;
+	if (ADE_SETTING_VAR && ade_get_args(L, "*|f", &alpha))
+		stars_set_background_alpha(alpha);
+
+	return ade_set_args(L, "f", Nmodel_alpha);
+}
+
+ADE_VIRTVAR(Skybox, l_Mission, "model", "Sets or returns the current skybox model", "model", "The skybox model")
+{
+	model_h* model = nullptr;
+	if (!ade_get_args(L, "*|o", l_Model.GetPtr(&model)))
+		return ade_set_error(L, "o", l_Model.Set(model_h()));
+
+	if (ADE_SETTING_VAR && model && model->isValid()) {
+		stars_set_background_model(model->GetID(), -1, Nmodel_flags, Nmodel_alpha);
+	}
+
+	return ade_set_args(L, "o", l_Model.Set(model_h(Nmodel_num)));
+}
+
+ADE_FUNC(getSkyboxInstance, l_Mission, nullptr, "Returns the current skybox model instance", "model_instance", "The skybox model instance")
+{
+	return ade_set_args(L, "o", l_ModelInstance.Set(modelinstance_h(Nmodel_instance_num)));
+}
+
 ADE_FUNC(isRedAlertMission,
 	l_Mission,
 	nullptr,
@@ -1733,7 +2514,7 @@ ADE_FUNC(getMusicScore, l_Mission, "enumeration score", "Returns the music.tbl e
 	if (!ade_get_args(L, "o", l_Enum.Get(&score)))
 		return ADE_RETURN_NIL;
 
-	if (!score.IsValid() || score.index < LE_SCORE_BRIEFING || score.index > LE_SCORE_FICTION_VIEWER)
+	if (!score.isValid() || score.index < LE_SCORE_BRIEFING || score.index > LE_SCORE_FICTION_VIEWER)
 	{
 		Warning(LOCATION, "Invalid music score index %d", score.index);
 		return ADE_RETURN_NIL;
@@ -1755,7 +2536,7 @@ ADE_FUNC(setMusicScore, l_Mission, "enumeration score, string name", "Sets the m
 	if (!ade_get_args(L, "os", l_Enum.Get(&score), &name))
 		return ADE_RETURN_NIL;
 
-	if (!score.IsValid() || score.index < LE_SCORE_BRIEFING || score.index > LE_SCORE_FICTION_VIEWER)
+	if (!score.isValid() || score.index < LE_SCORE_BRIEFING || score.index > LE_SCORE_FICTION_VIEWER)
 	{
 		Warning(LOCATION, "Invalid music score index %d", score.index);
 		return ADE_RETURN_NIL;
@@ -1785,7 +2566,7 @@ int testLineOfSight_internal(lua_State* L, bool returnDist_and_Obj) {
 		return ADE_RETURN_TRUE;
 	}
 
-	std::unordered_set<const object*> excludedObjectIDs;
+	SCP_unordered_set<int> excludedObjectIDs;
 
 	if (excludedObjects.isValid()) {
 		for (const auto& object : excludedObjects) {
@@ -1794,7 +2575,7 @@ int testLineOfSight_internal(lua_State* L, bool returnDist_and_Obj) {
 				try {
 					object_h obj;
 					object.second.getValue(l_Object.Get(&obj));
-					excludedObjectIDs.emplace(obj.objp);
+					excludedObjectIDs.emplace(obj.objnum);
 				}
 				catch (const luacpp::LuaException& /*e*/) {
 					// We were likely fed a userdata that was not an object. 
@@ -1813,7 +2594,7 @@ int testLineOfSight_internal(lua_State* L, bool returnDist_and_Obj) {
 	bool hasLoS = test_line_of_sight(&from, &to, std::move(excludedObjectIDs), threshold, testForShields, testForHull, dist, &intersecting_obj);
 
 	if (returnDist_and_Obj)
-		return ade_set_args(L, "bfo", hasLoS, *dist, l_Object.Set(object_h(intersecting_obj)));
+		return ade_set_args(L, "bfo", hasLoS, *dist, ade_object_to_odata(OBJ_INDEX(intersecting_obj)));
 	else
 		return ade_set_args(L, "b", hasLoS);
 }
@@ -1826,6 +2607,175 @@ ADE_FUNC(hasLineOfSight, l_Mission, "vector from, vector to, [table excludedObje
 ADE_FUNC(getLineOfSightFirstIntersect, l_Mission, "vector from, vector to, [table excludedObjects /* expects list of objects, empty by default */, boolean testForShields = false, boolean testForHull = true, number threshold = 10.0]", "Checks whether the to-position is in line of sight from the from-position and returns the distance and intersecting object to the first interruption of the line of sight, disregarding specific excluded objects and objects with a radius of less then threshold.", "boolean, number, object", "true and zero and nil if there is line of sight, false and the distance and intersecting object otherwise.")
 {
 	return testLineOfSight_internal(L, true);
+}
+
+ADE_FUNC(getSpecialSubmodelAnimation, l_Mission, "string target, string type, string triggeredBy",
+	"Gets an animation handle. Target is the object that should be animated (one of \"cockpit\", \"skybox\"), type is the string name of the animation type, "
+	"triggeredBy is a closer specification which animation should trigger. See *-anim.tbm specifications. ",
+	"animation_handle",
+	"The animation handle for the specified animation, nil if invalid arguments.")
+{
+	const char* target = nullptr;
+	const char* type = nullptr;
+	const char* trigger = nullptr;
+
+	if (!ade_get_args(L, "sss", &target, &type, &trigger))
+		return ADE_RETURN_NIL;
+
+	polymodel_instance* pmi;
+	animation::ModelAnimationSet* set;
+
+	if (stricmp(target, "cockpit") == 0) {
+		if (Player_ship == nullptr || Player_ship->cockpit_model_instance < 0)
+			return ade_set_args(L, "o", l_AnimationHandle.Set(animation::ModelAnimationSet::AnimationList{}));
+		pmi = model_get_instance(Player_ship->cockpit_model_instance);
+		set = &Ship_info[Player_ship->ship_info_index].cockpit_animations;
+	}
+	else if (stricmp(target, "skybox") == 0) {
+		if(Nmodel_instance_num < 0)
+			return ade_set_args(L, "o", l_AnimationHandle.Set(animation::ModelAnimationSet::AnimationList{}));
+		pmi = model_get_instance(Nmodel_instance_num);
+		set = &The_mission.skybox_model_animations;
+	}
+	else {
+		return ADE_RETURN_NIL;
+	}
+
+	auto animtype = animation::anim_match_type(type);
+	if (animtype == animation::ModelAnimationTriggerType::None)
+		return ade_set_args(L, "o", l_AnimationHandle.Set(animation::ModelAnimationSet::AnimationList{}));
+
+	return ade_set_args(L, "o", l_AnimationHandle.Set(set->parseScripted(pmi, animtype, trigger)));
+}
+
+ADE_FUNC(updateSpecialSubmodelMoveable, l_Mission, "string target, string name, table values",
+	"Updates a moveable animation. Name is the name of the moveable. For what values needs to contain, please refer to the table below, depending on the type of the moveable:"
+	"Orientation:\r\n"
+	"\tThree numbers, x, y, z rotation respectively, in degrees\r\n"
+	"Rotation:\r\n"
+	"\tThree numbers, x, y, z rotation respectively, in degrees\r\n"
+	"Axis Rotation:\r\n"
+	"\tOne number, rotation angle in degrees\r\n"
+	"Inverse Kinematics:\r\n"
+	"\tThree required numbers: x, y, z position target relative to base, in 1/100th meters\r\n"
+	"\tThree optional numbers: x, y, z rotation target relative to base, in degrees\r\n",
+	"boolean",
+	"True if successful, false or nil otherwise")
+{
+	const char* target = nullptr;
+	const char* name = nullptr;
+	luacpp::LuaTable values;
+
+	if (!ade_get_args(L, "sst", &target, &name, &values))
+		return ADE_RETURN_NIL;
+
+	polymodel_instance* pmi;
+	animation::ModelAnimationSet* set;
+
+	if (stricmp(target, "cockpit") == 0) {
+		if (Player_ship == nullptr || Player_ship->cockpit_model_instance < 0)
+			return ADE_RETURN_NIL;
+		pmi = model_get_instance(Player_ship->cockpit_model_instance);
+		set = &Ship_info[Player_ship->ship_info_index].cockpit_animations;
+	}
+	else if (stricmp(target, "skybox") == 0) {
+		if (Nmodel_instance_num < 0)
+			return ADE_RETURN_NIL;
+		pmi = model_get_instance(Nmodel_instance_num);
+		set = &The_mission.skybox_model_animations;
+	}
+	else {
+		return ADE_RETURN_NIL;
+	}
+
+	SCP_vector<std::any> valuesMoveable;
+
+	if (values.isValid()) {
+		for (const auto& object : values) {
+			if (object.second.is(luacpp::ValueType::NUMBER)) {
+				// This'll lua-error internally if it's not fed only objects. Additionally, catch the lua exception and then carry on
+				try {
+					valuesMoveable.emplace_back(object.second.getValue<int>());
+				}
+				catch (const luacpp::LuaException& /*e*/) {
+					// We were likely fed a float. 
+					// Since we can't actually tell whether that's the case before we try to get the value, and the attempt to get the value is printing a LuaError itself, just eat the exception here and return
+					return ADE_RETURN_FALSE;
+				}
+			}
+			else {
+				//This happens on a non-userdata value, i.e. a number
+				LuaError(L, "Value table contained non-numbers! Aborting...");
+				return ADE_RETURN_FALSE;
+			}
+		}
+	}
+
+	return set->updateMoveable(pmi, name, valuesMoveable) ? ADE_RETURN_TRUE : ADE_RETURN_FALSE;
+}
+
+ADE_LIB_DERIV(l_Mission_LuaEnums, "LuaEnums", nullptr, "Lua Enums", l_Mission);
+
+ADE_INDEXER(l_Mission_LuaEnums,
+	"string/number NameOrIndex",
+	"Gets a handle of a Lua Enum",
+	"LuaEnum",
+	"Lua Enum handle or invalid handle on error")
+{
+	const char* name = nullptr;
+	if (!ade_get_args(L, "*s", &name)) {
+		return ade_set_error(L, "o", l_LuaEnum.Set(lua_enum_h()));
+	}
+
+	if (name == nullptr) {
+		return ade_set_error(L, "o", l_LuaEnum.Set(lua_enum_h()));
+	}
+
+	int idx = get_dynamic_enum_position(name);
+
+	if (idx > -1) {
+		return ade_set_args(L, "o", l_LuaEnum.Set(lua_enum_h(idx)));
+	} else {
+		idx = atoi(name);
+
+		if ((idx > 0) && (idx < (int)Dynamic_enums.size())) {
+			return ade_set_args(L, "o", l_LuaEnum.Set(lua_enum_h(idx)));
+		}
+	}
+
+	return ade_set_args(L, "o", l_LuaEnum.Set(lua_enum_h()));
+}
+
+ADE_FUNC(__len, l_Mission_LuaEnums, nullptr, "The number of Lua enums", "number", "The number of Lua enums.")
+{
+	return ade_set_args(L, "i", (int)Dynamic_enums.size());
+}
+
+ADE_FUNC(addLuaEnum,
+	l_Mission,
+	"string name",
+	"Adds an enum with the given name if it's unique.",
+	"LuaEnum",
+	"Returns the enum handle or an invalid handle if the name was not unique.")
+{
+	const char* enum_name;
+	if (!ade_get_args(L, "s", &enum_name))
+		return ade_set_error(L, "o", l_LuaEnum.Set(lua_enum_h()));
+
+	int idx = get_dynamic_enum_position(enum_name);
+
+	if (idx > -1) {
+		return ade_set_error(L, "o", l_LuaEnum.Set(lua_enum_h()));
+	} else {
+		dynamic_sexp_enum_list this_list;
+		this_list.name = enum_name;
+
+		Dynamic_enums.push_back(this_list);
+
+		idx = get_dynamic_enum_position(enum_name);
+
+		return ade_set_args(L, "o", l_LuaEnum.Set(lua_enum_h(idx)));
+	}
 }
 
 ADE_LIB_DERIV(l_Mission_LuaSEXPs, "LuaSEXPs", nullptr, "Lua SEXPs", l_Mission);
@@ -1945,6 +2895,16 @@ ADE_FUNC(getShipList,
 		//Similarly, an empty list is defined by the head's next element being itself, hence an empty list will immediately return nil just fine
 		so = GET_NEXT(so);
 
+		// skip should-be-dead ships
+		if (so != nullptr) {
+			while (so != END_OF_LIST(&Ship_obj_list)) {
+				if (!Objects[so->objnum].flags[Object::Object_Flags::Should_be_dead]) {
+					break;
+				}
+				so = GET_NEXT(so);
+			}
+		}
+
 		if (so == END_OF_LIST(&Ship_obj_list) || so == nullptr) {
 			return luacpp::LuaValueList{ luacpp::LuaValue::createNil(LInner) };
 		}
@@ -1966,6 +2926,16 @@ ADE_FUNC(getMissileList,
 		//Since the first element of a list is the next element from the head, and we start this function with the the captured "mo" object being the head, this GET_NEXT will return the first element on first call of this lambda.
 		//Similarly, an empty list is defined by the head's next element being itself, hence an empty list will immediately return nil just fine
 		mo = GET_NEXT(mo);
+
+		// skip should-be-dead missiles
+		if (mo != nullptr) {
+			while (mo != END_OF_LIST(&Missile_obj_list)) {
+				if (!Objects[mo->objnum].flags[Object::Object_Flags::Should_be_dead]) {
+					break;
+				}
+				mo = GET_NEXT(mo);
+			}
+		}
 
 		if (mo == END_OF_LIST(&Missile_obj_list) || mo == nullptr) {
 			return luacpp::LuaValueList{ luacpp::LuaValue::createNil(LInner) };
@@ -2054,16 +3024,38 @@ ADE_FUNC(getPrevMissionFilename, l_Campaign, NULL, "Gets previous mission filena
 }
 
 // DahBlount - This jumps to a mission, the reason it accepts a boolean value is so that players can return to campaign maps
-ADE_FUNC(jumpToMission, l_Campaign, "string filename, [boolean hub]", "Jumps to a mission based on the filename. Optionally, the player can be sent to a hub mission without setting missions to skipped.", "boolean", "Jumps to a mission, or returns nil.")
+ADE_FUNC(jumpToMission, l_Campaign, "string filename, [boolean hub]", "Jumps to a mission based on the filename. Optionally, the player can be sent to a hub mission without setting missions to skipped.", "boolean", "Jumps to a mission, returning true if successful, false if unsuccessful (e.g. the mission could not be found in the campaign), or nil if no mission was specified.")
 {
 	const char* filename = nullptr;
 	bool hub = false;
 	if (!ade_get_args(L, "s|b", &filename, &hub))
 		return ADE_RETURN_NIL;
 
-	mission_campaign_jump_to_mission(filename, hub);
+	bool success = mission_campaign_jump_to_mission(filename, hub);
+	return ade_set_args(L, "b", success);
+}
 
-	return ADE_RETURN_TRUE;
+ADE_VIRTVAR(CustomData, l_Campaign, nullptr, "Gets the custom data table for this campaign", "table", "The campaign's custom data table") 
+{
+	if (ADE_SETTING_VAR) {
+		LuaError(L, "Setting Custom Data is not supported");
+	}
+
+	auto table = luacpp::LuaTable::create(L);
+
+	for (const auto& pair : Campaign.custom_data)
+	{
+		table.addValue(pair.first, pair.second);
+	}
+
+	return ade_set_args(L, "t", &table);	
+}
+
+ADE_FUNC(hasCustomData, l_Campaign, nullptr, "Detects whether the campaign has any custom data", "boolean", "true if the campaign's custom_data is not empty, false otherwise") 
+{
+
+	bool result = !Campaign.custom_data.empty();
+	return ade_set_args(L, "b", result);
 }
 
 // TODO: add a proper indexer type that returns a handle

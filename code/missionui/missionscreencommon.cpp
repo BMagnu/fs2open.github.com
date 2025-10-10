@@ -14,7 +14,6 @@
 #include <type_traits>
 
 #include "anim/animplay.h"
-#include "cmdline/cmdline.h"
 #include "cutscene/cutscenes.h"
 #include "cutscene/movie.h"
 #include "gamehelp/contexthelp.h"
@@ -38,6 +37,7 @@
 #include "missionui/missionscreencommon.h"
 #include "missionui/missionshipchoice.h"
 #include "missionui/missionweaponchoice.h"
+#include "mod_table/mod_table.h"
 #include "network/multi.h"
 #include "network/multi_endgame.h"
 #include "network/multimsgs.h"
@@ -47,6 +47,7 @@
 #include "popup/popup.h"
 #include "render/3d.h"
 #include "render/batching.h"
+#include "scripting/global_hooks.h"
 #include "scripting/scripting.h"
 #include "ship/ship.h"
 #include "ui/uidefs.h"
@@ -282,6 +283,9 @@ void common_buttons_init(UI_WINDOW *ui_window)
 	if ( brief_only_allow_briefing() ) {
 		Common_buttons[Current_screen-1][gr_screen.res][COMMON_SS_REGION].button.disable();
 		Common_buttons[Current_screen-1][gr_screen.res][COMMON_WEAPON_REGION].button.disable();
+		if (Show_locked_status_scramble_missions) {
+			ui_window->add_XSTR("Ships/Weapons Are Locked For This Mission", 1882, Common_buttons[Current_screen-1][gr_screen.res][COMMON_WEAPON_BUTTON].xt, Common_buttons[Current_screen-1][gr_screen.res][COMMON_WEAPON_BUTTON].yt + 30, &Common_buttons[Current_screen-1][gr_screen.res][COMMON_WEAPON_BUTTON].button, UI_XSTR_COLOR_GREEN);
+		}
 	}
 }
 
@@ -315,10 +319,10 @@ void set_active_ui(UI_WINDOW *ui_window)
 	Active_ui_window = ui_window;
 }
 
-SCP_string common_music_get_filename(int score_index)
+const char *common_music_get_filename(int score_index)
 {
 	if (Cmdline_freespace_no_music) {
-		return SCP_string();
+		return "";
 	}
 
 	Assertion(score_index >= 0 && score_index < NUM_SCORES, "Invalid score index %d.", score_index);
@@ -330,7 +334,7 @@ SCP_string common_music_get_filename(int score_index)
 				"No briefing music is selected, so play first briefing track: %s\n",
 				Spooled_music[Mission_music[score_index]].name));
 		} else {
-			return SCP_string();
+			return "";
 		}
 	}
 
@@ -341,11 +345,11 @@ void common_music_init(int score_index)
 {
 	const auto file_name = common_music_get_filename(score_index);
 
-	if (file_name.empty()) {
+	if (file_name[0] == '\0') {
 		return;
 	}
 
-	briefing_load_music(file_name.c_str());
+	briefing_load_music(file_name);
 	// Use this id to trigger the start of music playing on the briefing screen
 	Briefing_music_begin_timestamp = ui_timestamp(BRIEFING_MUSIC_DELAY);
 }
@@ -406,7 +410,6 @@ void common_maybe_play_cutscene(int movie_type, bool restart_music, int music)
 				common_music_close(); 
 				music_off = true;
 				movie::play(The_mission.cutscenes[i].filename);	//Play the movie!
-				cutscene_mark_viewable( The_mission.cutscenes[i].filename );
 			}
 		}
 	}
@@ -522,7 +525,7 @@ void common_reset_team_pointers()
 // is called.  This prevents multiple loadings of animations/bitmaps.
 //
 // This function also sets the palette based on the file palette01.pcx
-void common_select_init()
+void common_select_init(bool API_Access)
 {
 	if ( Common_select_inited ) {
 		nprintf(("Alan","common_select_init() returning without doing anything\n"));
@@ -560,9 +563,11 @@ void common_select_init()
 
 	common_set_team_pointers(Common_team);
 
-	ship_select_common_init();	
-	weapon_select_common_init();
-	common_flash_button_init();
+	ship_select_common_init(API_Access);	
+	weapon_select_common_init(API_Access);
+	if (!API_Access) {
+		common_flash_button_init();
+	}
 
 	if ( Game_mode & GM_MULTIPLAYER ) {
 		multi_ts_common_init();
@@ -577,19 +582,21 @@ void common_select_init()
 		}
 	}
 	
-	ss_reset_selected_ship();
+	if (!API_Access) {
+		ss_reset_selected_ship();
 
-	Drop_icon_mflag = 0;
-	Drop_on_wing_mflag = 0;
+		Drop_icon_mflag = 0;
+		Drop_on_wing_mflag = 0;
+	}
 
-	//init colors
+	// init colors
 	gr_init_alphacolor(&Icon_colors[ICON_FRAME_NORMAL], 32, 128, 128, 255);
 	gr_init_alphacolor(&Icon_colors[ICON_FRAME_HOT], 48, 160, 160, 255);
 	gr_init_alphacolor(&Icon_colors[ICON_FRAME_SELECTED], 64, 192, 192, 255);
 	gr_init_alphacolor(&Icon_colors[ICON_FRAME_PLAYER], 192, 128, 64, 255);
 	gr_init_alphacolor(&Icon_colors[ICON_FRAME_DISABLED], 175, 175, 175, 255);
 	gr_init_alphacolor(&Icon_colors[ICON_FRAME_DISABLED_HIGH], 100, 100, 100, 255);
-	//init shaders
+	// init shaders
 	gr_create_shader(&Icon_shaders[ICON_FRAME_NORMAL], 32, 128, 128, 255);
 	gr_create_shader(&Icon_shaders[ICON_FRAME_HOT], 48, 160, 160, 255);
 	gr_create_shader(&Icon_shaders[ICON_FRAME_SELECTED], 64, 192, 192, 255);
@@ -1065,15 +1072,15 @@ int common_scroll_down_pressed(int *start, int size, int max_show)
 
 void common_fire_stage_script_hook(int old_stage, int new_stage)
 {
-	if (!Script_system.IsActiveAction(CHA_ONBRIEFSTAGE)) {
-		return;
+	if (scripting::hooks::OnBriefStage->isActive()) {
+		// call a scripting hook for switching stages
+		// note that we add 1 because Lua arrays are 1-based
+		scripting::hooks::OnBriefStage->run(
+			scripting::hook_param_list(
+				scripting::hook_param("OldStage", 'i', old_stage + 1),
+				scripting::hook_param("NewStage", 'i', new_stage + 1)
+			));
 	}
-	// call a scripting hook for switching stages
-	// note that we add 1 because Lua arrays are 1-based
-	Script_system.SetHookVar("OldStage", 'i', old_stage + 1);
-	Script_system.SetHookVar("NewStage", 'i', new_stage + 1);
-	Script_system.RunCondition(CHA_ONBRIEFSTAGE);
-	Script_system.RemHookVars({"OldStage", "NewStage"});
 }
 
 // NEWSTUFF BEGIN
@@ -1113,6 +1120,10 @@ void wss_maybe_restore_loadout()
 	wss_unit	*slot;
 
 	Assert( (Ss_pool != NULL) && (Wl_pool != NULL) && (Wss_slots != NULL) );
+
+	if (Disable_internal_loadout_restoration_system) {
+		return;
+	}
 
 	// only restore if mission hasn't changed
 	if ( stricmp(Player_loadout.last_modified, The_mission.modified) != 0 ) {
@@ -1540,7 +1551,7 @@ int restore_wss_data(ubyte *data)
 	return offset;
 }
 
-void draw_model_icon(int model_id, int flags, float closeup_zoom, int x, int y, int w, int h, ship_info *sip, int resize_mode, const vec3d *closeup_pos)
+void draw_model_icon(int model_id, uint64_t flags, float closeup_zoom, int x, int y, int w, int h, ship_info *sip, int resize_mode, const vec3d *closeup_pos)
 {
 	matrix	object_orient	= IDENTITY_MATRIX;
 	angles rot_angles = vmd_zero_angles;
@@ -1578,7 +1589,7 @@ void draw_model_icon(int model_id, int flags, float closeup_zoom, int x, int y, 
 	{
 		g3_set_view_matrix( &sip->closeup_pos, &vmd_identity_matrix, zoom);
 
-		gr_set_proj_matrix(0.5f*Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
+		gr_set_proj_matrix(Proj_fov * 0.5f, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
 	}
 	else
 	{
@@ -1619,7 +1630,7 @@ void draw_model_icon(int model_id, int flags, float closeup_zoom, int x, int y, 
 		}
 		g3_set_view_matrix( &weap_closeup, &vmd_identity_matrix, tm_zoom);
 
-		gr_set_proj_matrix(0.5f*Proj_fov, gr_screen.clip_aspect, 0.05f, 1000.0f);
+		gr_set_proj_matrix(Proj_fov * 0.5f, gr_screen.clip_aspect, 0.05f, 1000.0f);
 	}
 
 	model_render_params render_info;
@@ -1652,8 +1663,7 @@ void draw_model_icon(int model_id, int flags, float closeup_zoom, int x, int y, 
 	gr_reset_clip();
 }
 
-void light_set_all_relevent();
-void draw_model_rotating(model_render_params *render_info, int model_id, int x1, int y1, int x2, int y2, float *rotation_buffer, vec3d *closeup_pos, float closeup_zoom, float rev_rate, int flags, int resize_mode, int effect)
+void draw_model_rotating(model_render_params *render_info, int model_id, int x1, int y1, int x2, int y2, float *rotation_buffer, const vec3d *closeup_pos, float closeup_zoom, float rev_rate, uint64_t flags, int resize_mode, select_effect_params effect_params)
 {
 	//WMC - Can't draw a non-model
 	if (model_id < 0)
@@ -1663,9 +1673,14 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 	angles rot_angles, view_angles;
 	matrix model_orient;
 
+	auto pm = model_get(model_id);
+	vec3d closeup_pos_default = { { { 0.0f, 0.0f, -(pm->rad * 1.5f) } } };
+	if (!closeup_pos || IS_VEC_NULL(closeup_pos))
+		closeup_pos = &closeup_pos_default;
+
 	const bool& shadow_disable_override = flags & MR_IS_MISSILE ? Shadow_disable_overrides.disable_mission_select_weapons : Shadow_disable_overrides.disable_mission_select_ships;
 
-	if (effect == 2) {  // FS2 Effect; Phase 0 Expand scanline, Phase 1 scan the grid and wireframe, Phase 2 scan up and reveal the ship, Phase 3 tilt the camera, Phase 4 start rotating the ship
+	if (effect_params.effect == 2) {  // FS2 Effect; Phase 0 Expand scanline, Phase 1 scan the grid and wireframe, Phase 2 scan up and reveal the ship, Phase 3 tilt the camera, Phase 4 start rotating the ship
 		// rotate the ship as much as required for this frame
 		if (time >= 3.6f) // Phase 4
 			*rotation_buffer += PI2 * flFrametime / rev_rate;
@@ -1704,7 +1719,6 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 		ship_normal.xyz.x = 0.0f;
 		ship_normal.xyz.y = -1.0f;
 		ship_normal.xyz.z = 0.0f;
-		polymodel *pm = model_get(model_id);
 
 		//Make the clipping plane
 		float clip = -pm->rad*0.7f;
@@ -1717,13 +1731,7 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 		vm_vec_scale_sub(&plane_point,&vmd_zero_vector,&wire_normal,clip);
 
 		g3_start_frame(1);
-		if ( (closeup_pos != NULL) && (vm_vec_mag(closeup_pos) > 0.0f) ) {
-			g3_set_view_matrix(closeup_pos, &vmd_identity_matrix, closeup_zoom);
-		} else {
-			vec3d pos = { { { 0.0f, 0.0f, -(pm->rad * 1.5f) } } };
-			g3_set_view_matrix(&pos, &vmd_identity_matrix, closeup_zoom);
-		}
-
+		g3_set_view_matrix(closeup_pos, &vmd_identity_matrix, closeup_zoom);
 		gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
 		gr_set_view_matrix(&Eye_position, &Eye_matrix);
 
@@ -1735,7 +1743,7 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 		g3_start_instance_angles(&vmd_zero_vector,&view_angles);
 
 		if (time < 0.5f) { // Do the expanding scanline in phase 0
-			gr_set_color(0,255,0);
+			gr_set_color(effect_params.fs2_scanline_color.red, effect_params.fs2_scanline_color.green, effect_params.fs2_scanline_color.blue);
 			start.xyz.x = size*start_scale;
 			start.xyz.y = 0.0f;
 			start.xyz.z = -clip;
@@ -1750,32 +1758,38 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 		gr_zbuffer_set(GR_ZBUFF_NONE); // Turn off Depthbuffer so we don't get gridlines over the ship or a disappearing scanline 
 		Glowpoint_use_depth_buffer = false; // Since we don't have one
 		if (time >= 0.5f) { // Phase 1 onward draw the grid
-			int i;
 			start.xyz.y = -offset;
 			start.xyz.z = size+offset*0.5f;
 			stop.xyz.y = -offset;
 			stop.xyz.z = -size+offset*0.5f;
-			gr_set_color(0,200,0);
+			gr_set_color(effect_params.fs2_grid_color.red, effect_params.fs2_grid_color.green, effect_params.fs2_grid_color.blue);
 			g3_start_instance_angles(&vmd_zero_vector,&view_angles);
 
 			if (time < 1.5f) {
 				stop.xyz.z = -clip;
 			}
 
-			for (i = -3; i < 4; i++) {
-				start.xyz.x = stop.xyz.x = size*0.333f*i;
-				//g3_draw_htl_line(&start,&stop);
+			int num_lines = std::max(3, effect_params.fs2_grid_density);
+			float x_step = (size * 2.0f) / (num_lines - 1);
+			float x_start = -size;
+
+			for (int i = 0; i < num_lines; ++i) {
+				start.xyz.x = stop.xyz.x = x_start + i * x_step;
 				g3_render_line_3d(false, &start, &stop);
 			}
 
 			start.xyz.x = size;
 			stop.xyz.x = -size;
 
-			for (i = 3; i > -4; i--) {
-				start.xyz.z = stop.xyz.z = size*0.333f*i+offset*0.5f;
-				if ((time < 1.5f) && (start.xyz.z <= -clip))
+			float z_step = (size * 2.0f) / (num_lines - 1);
+			float z_start = size + offset * 0.5f;
+
+			for (int i = 0; i < num_lines; ++i) {
+				float z = z_start - i * z_step;
+				if ((time < 1.5f) && (z <= -clip))
 					break;
-				//g3_draw_htl_line(&start,&stop);
+
+				start.xyz.z = stop.xyz.z = z;
 				g3_render_line_3d(false, &start, &stop);
 			}
 
@@ -1817,8 +1831,8 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 				gr_set_view_matrix(&Eye_position, &Eye_matrix);
             }
 			gr_zbuffer_set(false);
-			gr_set_color(80,49,160);
-			render_info->set_color(80, 49, 160);
+			gr_set_color(effect_params.fs2_wireframe_color.red, effect_params.fs2_wireframe_color.green, effect_params.fs2_wireframe_color.blue);
+			render_info->set_color(effect_params.fs2_wireframe_color.red, effect_params.fs2_wireframe_color.green, effect_params.fs2_wireframe_color.blue);
 
 			render_info->set_animated_effect(ANIMATED_SHADER_LOADOUTSELECT_FS2, -clip);
 
@@ -1839,7 +1853,7 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 			}
 
 			if (time < 2.5f) { // Render the scanline in Phase 1 and 2
-				gr_set_color(0,255,0);
+				gr_set_color(effect_params.fs2_scanline_color.red, effect_params.fs2_scanline_color.green, effect_params.fs2_scanline_color.blue);
 				start.xyz.x = size*1.25f;
 				start.xyz.y = 0.0f;
 				start.xyz.z = -clip;
@@ -1882,15 +1896,8 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 
 		g3_start_frame(1);
 
-		polymodel *pm = model_get(model_id);
-
 		// render the wodel
-		if ( (closeup_pos != NULL) && (vm_vec_mag(closeup_pos) > 0.0f) ) {
-			g3_set_view_matrix(closeup_pos, &vmd_identity_matrix, closeup_zoom);
-		} else {
-			vec3d pos = { { { 0.0f, 0.0f, -(pm->rad * 1.5f) } } };
-			g3_set_view_matrix(&pos, &vmd_identity_matrix, closeup_zoom);
-		}
+		g3_set_view_matrix(closeup_pos, &vmd_identity_matrix, closeup_zoom);
 
 		//setup lights
 		common_setup_room_lights();
@@ -1923,7 +1930,7 @@ void draw_model_rotating(model_render_params *render_info, int model_id, int x1,
 
 		gr_set_color(0,128,0);
 
-		if (effect == 1) { // FS1 effect
+		if (effect_params.effect == 1) { // FS1 effect
 			render_info->set_animated_effect(ANIMATED_SHADER_LOADOUTSELECT_FS1, MIN(time*0.5f,2.0f));
 			render_info->set_flags(flags);
 		} else {
@@ -1951,13 +1958,13 @@ void common_setup_room_lights()
 	light_reset();
 	auto tempv = vm_vec_new(-1.0f,0.3f,-1.0f);
 	auto tempc = hdr_color(1.0f,0.95f,0.9f, 0.0f, 1.5f);
-	light_add_directional(&tempv,&tempc);
+	light_add_directional(&tempv,-1,false,&tempc);
 	tempv.xyz={-0.4f,0.4f,1.1f};
 	tempc = hdr_color(0.788f,0.886f,1.0f,0.0f,1.5f);
-	light_add_directional(&tempv,&tempc);
+	light_add_directional(&tempv,-1,false,&tempc);
 	tempv.xyz={0.4f,0.1f,0.4f};
 	tempc = hdr_color(1.0f,1.0f,1.0f,0.0f,0.4f);
-	light_add_directional(&tempv,&tempc);
+	light_add_directional(&tempv,-1,false,&tempc);
 	gr_set_ambient_light(53, 53, 53);
 	light_rotate_all();
 }

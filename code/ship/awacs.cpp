@@ -26,8 +26,8 @@
 //
 
 // timestamp for updating AWACS stuff
-#define AWACS_STAMP_TIME			1000
-static int Awacs_stamp = -1;
+constexpr int AWACS_STAMP_TIME = 1 * MILLISECONDS_PER_SECOND;
+static TIMESTAMP Awacs_stamp;
 
 // total awacs levels for all teams
 static SCP_vector<float> Awacs_team;	// total AWACS capabilities for each team				// Awacs_friendly - Awacs_hostile
@@ -68,8 +68,8 @@ void awacs_level_init()
 {
 	static bool arrays_initted = false;
 
-	// set the update timestamp to -1 
-	Awacs_stamp = -1;
+	// when the mission starts, update immediately before we update on intervals
+	Awacs_stamp = TIMESTAMP::immediate();
 
 	if ( !arrays_initted ) {
 		Awacs_team.reserve(Iff_info.size());
@@ -88,10 +88,10 @@ void awacs_level_init()
 void awacs_process()
 {
 	// if we need to update total AWACS levels, do so now
-	if ((Awacs_stamp == -1) || timestamp_elapsed(Awacs_stamp))
+	if (timestamp_elapsed(Awacs_stamp))
 	{
 		// reset the timestamp
-		Awacs_stamp = timestamp(AWACS_STAMP_TIME);
+		Awacs_stamp = _timestamp(AWACS_STAMP_TIME);
 
 		// recalculate everything
 		awacs_update_all_levels();
@@ -119,6 +119,9 @@ void awacs_update_all_levels()
 	// we need to traverse all subsystems on all ships	
 	for (moveup = GET_FIRST(&Ship_obj_list); moveup != END_OF_LIST(&Ship_obj_list); moveup = GET_NEXT(moveup))
 	{
+		if (Objects[moveup->objnum].flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
 		// make sure its a valid ship
 		if ((Objects[moveup->objnum].type != OBJ_SHIP) || (Objects[moveup->objnum].instance < 0))
 			continue;
@@ -174,7 +177,7 @@ void awacs_update_all_levels()
 // < 0.0f		: untargetable
 // 0.0 - 1.0f	: marginally targetable
 // >= 1.0f			: fully targetable as normal
-float awacs_get_level(object *target, ship *viewer, int use_awacs)
+float awacs_get_level(const object *target, const ship *viewer, bool use_awacs)
 {
 	Assert(target);	// Goober5000
 	Assert(viewer);	// Goober5000
@@ -184,8 +187,8 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 	float test;
 	int closest_index = -1;
 	int idx, stealth_ship = 0, check_huge_ship = 0, friendly_stealth_invisible = 0;
-	ship *shipp = NULL;
-	ship_info *sip = NULL;
+	ship *shipp = nullptr;
+	ship_info *sip = nullptr;
 
 	int viewer_has_primitive_sensors = (viewer->flags[Ship::Ship_Flags::Primitive_sensors]);
 
@@ -194,19 +197,14 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 	int distance = (int) vm_vec_mag_quick(&dist_vec);
 
 // redone by Goober5000
-#define ALWAYS_TARGETABLE		1.5f
-#define MARGINALLY_TARGETABLE	0.5f
-#define UNTARGETABLE			-1.0f
-#define FULLY_TARGETABLE		(viewer_has_primitive_sensors ? ((distance < viewer->primitive_sensor_range) ? MARGINALLY_TARGETABLE : UNTARGETABLE) : ALWAYS_TARGETABLE)
+constexpr float ALWAYS_TARGETABLE       = 1.5f;
+constexpr float MARGINALLY_TARGETABLE   = 0.5f;
+constexpr float UNTARGETABLE            = -1.0f;
+const     float FULLY_TARGETABLE        = (viewer_has_primitive_sensors ? ((distance < viewer->primitive_sensor_range) ? MARGINALLY_TARGETABLE : UNTARGETABLE) : ALWAYS_TARGETABLE);
 
 	// if the viewer is me, and I'm a multiplayer observer, its always viewable
 	if ((viewer == Player_ship) && (Game_mode & GM_MULTIPLAYER) && (Net_player != NULL) && MULTI_OBSERVER(Net_players[MY_NET_PLAYER_NUM]))
 		return ALWAYS_TARGETABLE;
-
-	// check the targeting threshold
-	if ((Hud_max_targeting_range > 0) && (distance > Hud_max_targeting_range)) {
-		return UNTARGETABLE;
-	}
 
 	if (target->type == OBJ_SHIP) {
 		// if no valid target then bail as never viewable
@@ -220,6 +218,19 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 		friendly_stealth_invisible = (shipp->flags[Ship::Ship_Flags::Friendly_stealth_invis]);
 
 		check_huge_ship = (sip->is_huge_ship());
+	}
+
+	// check for an exempt ship. Exempt ships are _always_ visible
+	if (target->type == OBJ_SHIP) {
+		Assert(shipp != nullptr);
+		int target_is_exempt = (shipp->flags[Ship::Ship_Flags::No_targeting_limits]);
+		if (target_is_exempt)
+			return FULLY_TARGETABLE;
+	}
+
+	// check the targeting threshold
+	if ((Hud_max_targeting_range > 0) && (distance > Hud_max_targeting_range)) {
+		return UNTARGETABLE;
 	}
 	
 	int nebula_enabled = (The_mission.flags[Mission::Mission_Flags::Fullneb]);
@@ -235,7 +246,7 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 	// check for a tagged ship. TAG'd ships are _always_ visible
 	if (target->type == OBJ_SHIP)
 	{
-		Assert( shipp != NULL );
+		Assert( shipp != nullptr );
 		if (shipp->tag_left > 0.0f || shipp->level2_tag_left > 0.0f)
 			return FULLY_TARGETABLE;
 	}
@@ -279,6 +290,7 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 				if (test > Awacs[idx].subsys->awacs_radius)
 					continue;
 
+				// coverity[dead_error_line:FALSE] - closest_index will be a value other than -1 on future loop iterations
 				if ((closest_index == -1) || (test < closest))
 				{
 					closest = test;
@@ -308,14 +320,14 @@ float awacs_get_level(object *target, ship *viewer, int use_awacs)
 			return UNTARGETABLE;
 		}
 	}
-	// all other ships
+	// all other objects
 	else
 	{
-		// if this is not a nebula mission, its always targetable
+		// if this is not a nebula mission, it's always targetable
 		if (!nebula_enabled)
 			return FULLY_TARGETABLE;
 
-		// if the ship is within range of an awacs, its fully targetable
+		// if the object is within range of an awacs, it's fully targetable
 		if (closest_index >= 0)
 			return FULLY_TARGETABLE;
 
@@ -369,6 +381,9 @@ void team_visibility_update()
 	// Go through list of ships and mark those visible for their own team
 	for (moveup = GET_FIRST(&Ship_obj_list); moveup != END_OF_LIST(&Ship_obj_list); moveup = GET_NEXT(moveup))
 	{
+		if (Objects[moveup->objnum].flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
 		// make sure its a valid ship
 		if ((Objects[moveup->objnum].type != OBJ_SHIP) || (Objects[moveup->objnum].instance < 0))
 			continue;
@@ -447,7 +462,7 @@ void team_visibility_update()
 
 // Determine is ship is visible by team
 // Goober5000 - now accounts for primitive sensors
-int ship_is_visible_by_team(object *target, ship *viewer)
+int ship_is_visible_by_team(const object *target, const ship *viewer)
 {
 	Assert(target);
 	Assert(viewer);
@@ -466,7 +481,7 @@ int ship_is_visible_by_team(object *target, ship *viewer)
 	int team = viewer->team;
 
 	// this can happen in multi, where networking is processed before first frame sim
-	if (Awacs_stamp == -1) {
+	if (Awacs_stamp.isImmediate()) {
 		awacs_process();
 	}
 

@@ -12,8 +12,49 @@ option(GCC_USE_GOLD "Use the gold linker instead of the standard linker" OFF)
 option(GCC_GENERATE_GDB_INDEX "Adds linker option to generate the gdb index for debug builds" OFF)
 
 # These are the default values
-set(C_BASE_FLAGS "-march=native -pipe")
-set(CXX_BASE_FLAGS "-march=native -pipe")
+set(C_BASE_FLAGS "-pipe")
+set(CXX_BASE_FLAGS "-pipe")
+
+if(IS_X86)
+	if(FORCED_NATIVE_SIMD_INSTRUCTIONS)
+		set(GCC_EXTENSIONS "-march=native")
+	elseif (FSO_INSTRUCTION_SET STREQUAL "")
+		set(GCC_EXTENSIONS "-march=x86-64")
+	elseif (FSO_INSTRUCTION_SET STREQUAL "SSE")
+		set(GCC_EXTENSIONS "-march=x86-64 -msse -mfpmath=sse")
+	elseif (FSO_INSTRUCTION_SET STREQUAL "SSE2")
+		set(GCC_EXTENSIONS "-march=x86-64 -msse -msse2 -mfpmath=sse")
+	elseif (FSO_INSTRUCTION_SET STREQUAL "AVX")
+		set(GCC_EXTENSIONS "-march=x86-64-v2 -msse -msse2 -mavx -mfpmath=sse")
+	elseif (FSO_INSTRUCTION_SET STREQUAL "AVX2")
+		set(GCC_EXTENSIONS "-march=x86-64-v3 -msse -msse2 -mavx -mavx2 -mfpmath=sse")
+	else ()
+		message( FATAL_ERROR "Unknown instruction set encountered for GCC. Update toolchain-gcc.cmake!" )
+	endif()
+
+	set(C_BASE_FLAGS "${C_BASE_FLAGS} ${GCC_EXTENSIONS}")
+	set(CXX_BASE_FLAGS "${CXX_BASE_FLAGS} ${GCC_EXTENSIONS}")
+
+	if (IS_64BIT)
+		set(C_BASE_FLAGS "${C_BASE_FLAGS} -m64")
+		set(CXX_BASE_FLAGS "${CXX_BASE_FLAGS} -m64")
+	endif()
+elseif(IS_ARM)
+	if(FORCED_NATIVE_SIMD_INSTRUCTIONS)
+		set(C_BASE_FLAGS "${C_BASE_FLAGS} -march=native")
+		set(CXX_BASE_FLAGS "${CXX_BASE_FLAGS} -march=native")
+    endif ()
+elseif(IS_RISCV)
+    # You do not need to pass a -march, passing nothing will make gcc to choose itself.
+    # If you want a specific set of instructions like vectors, set -march in CFLAGS and CXXFLAGS env variables
+    # Example for vectors: -march=rv64gcv
+    # https://gcc.gnu.org/onlinedocs/gcc/RISC-V-Options.html
+    # As such, default C/CXX_BASE_FLAGS are sufficient.
+endif()
+
+if (USE_STATIC_LIBCXX)
+	set(CXX_BASE_FLAGS "${CXX_BASE_FLAGS} -static-libstdc++")
+endif()
 
 # For C and C++, the values can be overwritten independently
 if(DEFINED ENV{CFLAGS})
@@ -45,7 +86,7 @@ endif()
 _enable_extra_compiler_warnings_flags()
 set(COMPILER_FLAGS "${COMPILER_FLAGS} ${_flags}")
 
-set(COMPILER_FLAGS "${COMPILER_FLAGS} -funroll-loops -fsigned-char -Wno-unknown-pragmas")
+set(COMPILER_FLAGS "${COMPILER_FLAGS} -fsigned-char -Wno-unknown-pragmas")
 
 if (NOT GCC_INCREMENTAL_LINKING)
 	# Place each function and data in its own section so the linker can
@@ -113,19 +154,41 @@ if(SUPPORTS_STRINGOP_TRUNCATION)
 	set(COMPILER_FLAGS "${COMPILER_FLAGS} -Wno-stringop-overflow")
 endif()
 
-set(COMPILER_FLAGS_RELEASE "-O2 -Wno-unused-variable -Wno-unused-but-set-variable -Wno-array-bounds -Wno-empty-body -Wno-clobbered  -Wno-unused-parameter")
+# Check if there is a user-set optimisation flag
+string(REGEX MATCH "-O[a-zA-Z|0-9]+" CXX_OPT_FLAG ${CXX_BASE_FLAGS})
+string(REGEX MATCH "-O[a-zA-Z|0-9]+" C_OPT_FLAG ${C_BASE_FLAGS})
 
-set(COMPILER_FLAGS_DEBUG "-O0 -g -Wshadow")
+# If no user-set opt flag, set -O3 and -Og
+if ("${CXX_OPT_FLAG}" STREQUAL "")
+	set(CXX_OPT_FLAG_RELEASE "-O3")
+	set(CXX_OPT_FLAG_DEBUG "-O0")
+else()
+	set(CXX_OPT_FLAG_RELEASE "${CXX_OPT_FLAG}")
+	set(CXX_OPT_FLAG_DEBUG "${CXX_OPT_FLAG}")
+endif()
+if ("${C_OPT_FLAG}" STREQUAL "")
+	set(C_OPT_FLAG_RELEASE "-O3")
+	set(C_OPT_FLAG_DEBUG "-O0")
+else()
+	set(C_OPT_FLAG_RELEASE "${C_OPT_FLAG}")
+	set(C_OPT_FLAG_DEBUG "${C_OPT_FLAG}")
+endif()
+
+set(CXX_FLAGS_RELEASE "${CXX_OPT_FLAG_RELEASE} -Wno-unused-variable -Wno-unused-but-set-variable -Wno-array-bounds -Wno-empty-body -Wno-clobbered -Wno-unused-parameter")
+set(C_FLAGS_RELEASE "${C_OPT_FLAG_RELEASE} -Wno-unused-variable -Wno-unused-but-set-variable -Wno-array-bounds -Wno-empty-body -Wno-clobbered -Wno-unused-parameter")
+
+set(CXX_FLAGS_DEBUG "${CXX_OPT_FLAG_DEBUG} -g -Wshadow")
+set(C_FLAGS_DEBUG "${C_OPT_FLAG_DEBUG} -g -Wshadow")
 
 # Always use the base flags and add our compiler flags at the back
 set(CMAKE_CXX_FLAGS "${CXX_BASE_FLAGS} ${COMPILER_FLAGS}")
 set(CMAKE_C_FLAGS "${C_BASE_FLAGS} ${COMPILER_FLAGS}")
 
-set(CMAKE_CXX_FLAGS_RELEASE ${COMPILER_FLAGS_RELEASE})
-set(CMAKE_C_FLAGS_RELEASE ${COMPILER_FLAGS_RELEASE})
+set(CMAKE_CXX_FLAGS_RELEASE ${CXX_FLAGS_RELEASE})
+set(CMAKE_C_FLAGS_RELEASE ${C_FLAGS_RELEASE})
 
-set(CMAKE_CXX_FLAGS_DEBUG ${COMPILER_FLAGS_DEBUG})
-set(CMAKE_C_FLAGS_DEBUG ${COMPILER_FLAGS_DEBUG})
+set(CMAKE_CXX_FLAGS_DEBUG ${CXX_FLAGS_DEBUG})
+set(CMAKE_C_FLAGS_DEBUG ${C_FLAGS_DEBUG})
 
 set(CMAKE_EXE_LINKER_FLAGS "${LINKER_FLAGS}")
 
@@ -165,7 +228,7 @@ if (FSO_FATAL_WARNINGS)
 	target_compile_options(compiler INTERFACE "-Werror")
 endif()
 
-# Always define this to make sure that the fixed width format macros are available
+# Always define this to make sure that the fixed-width format macros are available
 target_compile_definitions(compiler INTERFACE __STDC_FORMAT_MACROS=1)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR MINGW)

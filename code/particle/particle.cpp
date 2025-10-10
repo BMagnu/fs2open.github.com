@@ -12,9 +12,12 @@
 #include "bmpman/bmpman.h"
 #include "particle/particle.h"
 #include "particle/ParticleManager.h"
+#include "particle/ParticleEffect.h"
 #include "debugconsole/console.h"
 #include "globalincs/systemvars.h"
 #include "graphics/2d.h"
+#include "lighting/lighting.h"
+#include "math/curve.h"
 #include "render/3d.h"
 #include "render/batching.h"
 #include "tracing/tracing.h"
@@ -30,15 +33,6 @@ namespace
 {
 	SCP_vector<::particle::particle> Particles;
 	SCP_vector<ParticlePtr> Persistent_particles;
-
-	int Anim_bitmap_id_fire = -1;
-	int Anim_num_frames_fire = -1;
-
-	int Anim_bitmap_id_smoke = -1;
-	int Anim_num_frames_smoke = -1;
-
-	int Anim_bitmap_id_smoke2 = -1;
-	int Anim_num_frames_smoke2 = -1;
 
 	static int Particles_enabled = 1;
 
@@ -67,27 +61,25 @@ namespace
 				return 0.0f;
 		}
 
-		if (The_mission.flags[Mission::Mission_Flags::Fullneb] && Neb_affects_particles)
-			alpha *= neb2_get_fog_visibility(pos, 
+		if (Neb_affects_particles)
+			nebula_handle_alpha(alpha, pos, 
 				Neb2_fog_visibility_particle_const + (rad * Neb2_fog_visibility_particle_scaled_factor));
 
 		return alpha;
-	}
-
-	inline int get_percent(int count)
-	{
-		if (count == 0)
-			return 0;
-
-		// this should basically return a scale like:
-		//  50, 75, 100, 125, 150, ...
-		// based on value of 'count' (detail level)
-		return (50 + (25 * (count - 1)));
 	}
 }
 
 namespace particle
 {
+	int Anim_bitmap_id_fire = -1;
+	int Anim_num_frames_fire = -1;
+
+	int Anim_bitmap_id_smoke = -1;
+	int Anim_num_frames_smoke = -1;
+
+	int Anim_bitmap_id_smoke2 = -1;
+	int Anim_num_frames_smoke2 = -1;
+
 	// Reset everything between levels
 	void init()
 	{
@@ -98,22 +90,33 @@ namespace particle
 		}
 
 		// FIRE!!!
-		if (Anim_bitmap_id_fire == -1)
+		if (Anim_bitmap_id_fire < 0)
 		{
 			Anim_bitmap_id_fire = bm_load_animation("particleexp01", &Anim_num_frames_fire, nullptr, NULL, 0);
+			if (Anim_bitmap_id_fire < 0)
+				Warning(LOCATION, "Could not load legacy fire particle bitmap (particleexp01)!");
 		}
 
 		// Cough, cough
-		if (Anim_bitmap_id_smoke == -1)
+		if (Anim_bitmap_id_smoke < 0)
 		{
 			Anim_bitmap_id_smoke = bm_load_animation("particlesmoke01", &Anim_num_frames_smoke, nullptr, NULL, 0);
+			if (Anim_bitmap_id_smoke < 0)
+				Warning(LOCATION, "Could not load legacy smoke particle bitmap (particlesmoke01)!");
 		}
 
 		// wheeze
-		if (Anim_bitmap_id_smoke2 == -1)
+		if (Anim_bitmap_id_smoke2 < 0)
 		{
 			Anim_bitmap_id_smoke2 = bm_load_animation("particlesmoke02", &Anim_num_frames_smoke2, nullptr, NULL, 0);
+			if (Anim_bitmap_id_smoke2 < 0)
+				Warning(LOCATION, "Could not load legacy smoke2 particle bitmap (particlesmoke02)!");
 		}
+	}
+
+	const ParticleEffect& ParticleSubeffectHandle::getParticleEffect() const {
+		//TODO possibly cache this!
+		return ParticleManager::get()->getEffect(handle)[subeffect];
 	}
 
 	// only call from game_shutdown()!!!
@@ -121,6 +124,10 @@ namespace particle
 	{
 		Persistent_particles.clear();
 		Particles.clear();
+	}
+
+	size_t get_particle_count() {
+		return Particles.size() + Persistent_particles.size();
 	}
 
 	void page_in()
@@ -140,148 +147,51 @@ namespace particle
 	DCF_BOOL2(particles, Particles_enabled, "Turns particles on/off",
 			  "Usage: particles [bool]\nTurns particle system on/off.  If nothing passed, then toggles it.\n");
 
-	bool init_particle(particle* part, particle_info* info) {
+	static bool maybe_cull_particle(const particle& new_particle) {
 		if (!Particles_enabled)
 		{
-			return false;
+			return true;
 		}
 
-		int fps = 1;
-
-		part->pos = info->pos;
-		part->velocity = info->vel;
-		part->age = 0.0f;
-		part->max_life = info->lifetime;
-		part->radius = info->rad;
-		part->type = info->type;
-		part->optional_data = info->optional_data;
-		part->attached_objnum = info->attached_objnum;
-		part->attached_sig = info->attached_sig;
-		part->reverse = info->reverse;
-		part->particle_index = (int) Persistent_particles.size();
-		part->looping = false;
-		part->length = info->length;
-
-		switch (info->type)
-		{
-		case PARTICLE_BITMAP:
-		case PARTICLE_BITMAP_PERSISTENT:
-		{
-			Assertion(bm_is_valid(info->optional_data), "Invalid bitmap handle passed to particle create.");
-
-			bm_get_info(info->optional_data, NULL, NULL, NULL, &part->nframes, &fps);
-
-			if (part->nframes > 1 && info->lifetime_from_animation)
-			{
-				// Recalculate max life for ani's
-				part->max_life = i2fl(part->nframes) / i2fl(fps);
-			}
-
-			break;
+		vec3d world_pos = new_particle.pos;
+		if (new_particle.attached_objnum >= 0) {
+			vm_vec_unrotate(&world_pos, &world_pos, &Objects[new_particle.attached_objnum].orient);
+			world_pos += Objects[new_particle.attached_objnum].pos;
+		}
+		// treat particles on lower detail levels as 'further away' for the purposes of culling
+		float adjusted_dist = vm_vec_dist(&Eye_position, &world_pos) * powf(2.5f, (float)(static_cast<int>(DefaultDetailPreset::Num_detail_presets) - Detail.num_particles));
+		// treat bigger particles as 'closer'
+		adjusted_dist /= new_particle.radius;
+		float cull_start_dist = 1000.f;
+		if (adjusted_dist > cull_start_dist) {
+			if (frand() > 1.0f / (log2(adjusted_dist / cull_start_dist) + 1.0f))
+				return true;
 		}
 
-		case PARTICLE_FIRE:
-		{
-			if (Anim_bitmap_id_fire < 0)
-			{
-				return false;
-			}
+		if (new_particle.nframes >= 0 && new_particle.bitmap < 0)
+				return true;
 
-			part->optional_data = Anim_bitmap_id_fire;
-			part->nframes = Anim_num_frames_fire;
-
-			break;
-		}
-
-		case PARTICLE_SMOKE:
-		{
-			if (Anim_bitmap_id_smoke < 0)
-			{
-				return false;
-			}
-
-			part->optional_data = Anim_bitmap_id_smoke;
-			part->nframes = Anim_num_frames_smoke;
-
-			break;
-		}
-
-		case PARTICLE_SMOKE2:
-		{
-			if (Anim_bitmap_id_smoke2 < 0)
-			{
-				return false;
-			}
-
-			part->optional_data = Anim_bitmap_id_smoke2;
-			part->nframes = Anim_num_frames_smoke2;
-
-			break;
-		}
-
-		default:
-			part->nframes = 1;
-			break;
-		}
-
-		return true;
+		return false;
 	}
 
-	void create(particle_info* pinfo) {
-		particle part;
-		if (!init_particle(&part, pinfo)) {
+	void create(particle&& new_particle) {
+		if (maybe_cull_particle(new_particle))
 			return;
-		}
 
-		Particles.push_back(part);
+		Particles.push_back(new_particle);
 	}
 
 	// Creates a single particle. See the PARTICLE_?? defines for types.
-	WeakParticlePtr createPersistent(particle_info* pinfo)
+	WeakParticlePtr createPersistent(particle&& new_particle)
 	{
-		ParticlePtr new_particle = std::make_shared<particle>();
+		if (maybe_cull_particle(new_particle))
+			return {};
 
-		if (!init_particle(new_particle.get(), pinfo)) {
-			return WeakParticlePtr();
-		}
+		ParticlePtr new_particle_ptr = std::make_shared<particle>(new_particle);
 
-		Persistent_particles.push_back(new_particle);
+		Persistent_particles.push_back(new_particle_ptr);
 
-		return WeakParticlePtr(new_particle);
-	}
-
-	void create(vec3d* pos,
-				vec3d* vel,
-				float lifetime,
-				float rad,
-				ParticleType type,
-				int optional_data,
-				object* objp,
-				bool reverse) {
-		particle_info pinfo;
-
-		Assertion((type >= 0) && (type < NUM_PARTICLE_TYPES), "Invalid particle type %d specified!", type);
-
-		// setup old data
-		pinfo.pos = *pos;
-		pinfo.vel = *vel;
-		pinfo.lifetime = lifetime;
-		pinfo.rad = rad;
-		pinfo.type = type;
-		pinfo.optional_data = optional_data;
-
-		// setup new data
-		if (objp == NULL) {
-			pinfo.attached_objnum = -1;
-			pinfo.attached_sig = -1;
-		} else {
-			pinfo.attached_objnum = OBJ_INDEX(objp);
-			pinfo.attached_sig = objp->signature;
-		}
-		pinfo.reverse = reverse;
-
-		// lower level function
-		create(&pinfo);
+		return {new_particle_ptr};
 	}
 
 	/**
@@ -290,7 +200,7 @@ namespace particle
 	 * @param part The particle to process for movement
 	 * @return @c true if the particle has expired and should be removed, @c false otherwise
 	 */
-	static bool move_particle(float frametime, particle* part) {
+	bool move_particle(float frametime, particle* part) {
 		if (part->age == 0.0f)
 		{
 			part->age = 0.00001f;
@@ -328,8 +238,85 @@ namespace particle
 			return true;
 		}
 
+		const auto& source_effect = part->parent_effect.getParticleEffect();
+
+		float part_velocity =  vm_vec_mag_quick(&part->velocity);
+		float vel_scalar = source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::VELOCITY_MULT, std::forward_as_tuple(*part, part_velocity) );
+
 		// move as a regular particle
-		vm_vec_scale_add2(&part->pos, &part->velocity, frametime);
+		vec3d prev_pos = part->pos;
+		part->pos += (part->velocity * vel_scalar) * frametime;
+
+		const auto& curve_input = std::forward_as_tuple(*part, part_velocity * vel_scalar);
+
+		if (source_effect.m_light_source) {
+			const auto& light_source = *source_effect.m_light_source;
+
+			vec3d p_pos;
+			if (part->attached_objnum >= 0)
+			{
+				vm_vec_unrotate(&p_pos, &part->pos, &Objects[part->attached_objnum].orient);
+				vm_vec_add2(&p_pos, &Objects[part->attached_objnum].pos);
+			}
+			else
+			{
+				p_pos = part->pos;
+			}
+			
+			float light_radius = light_source.light_radius * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LIGHT_RADIUS_MULT, curve_input);
+			float source_radius = light_source.source_radius * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LIGHT_SOURCE_RADIUS_MULT, curve_input);
+			float intensity = light_source.intensity * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LIGHT_INTENSITY_MULT, curve_input);
+			float r = light_source.r * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LIGHT_R_MULT, curve_input);
+			float g = light_source.g * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LIGHT_G_MULT, curve_input);
+			float b = light_source.b * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LIGHT_B_MULT, curve_input);
+
+			switch (light_source.light_source_mode) {
+			case ParticleEffect::LightInformation::LightSourceMode::POINT:
+				light_add_point(&p_pos, light_radius, light_radius, intensity, r, g, b, source_radius);
+				break;
+			case ParticleEffect::LightInformation::LightSourceMode::TO_LAST_POS: {
+				vec3d p_prev_pos;
+				if (part->attached_objnum >= 0)
+				{
+					vm_vec_unrotate(&p_prev_pos, &prev_pos, &Objects[part->attached_objnum].last_orient);
+					vm_vec_add2(&p_prev_pos, &Objects[part->attached_objnum].last_pos);
+				}
+				else
+				{
+					p_prev_pos = prev_pos;
+				}
+				light_add_tube(&p_prev_pos, &p_pos, light_radius, light_radius, intensity, r, g, b, source_radius);
+			}
+			break;
+			case ParticleEffect::LightInformation::LightSourceMode::AS_PARTICLE:
+				if (part->length != 0.0f) {
+					vec3d p1;
+					vm_vec_copy_normalize_safe(&p1, &part->velocity);
+					if (part->attached_objnum >= 0) {
+						vm_vec_unrotate(&p1, &p1, &Objects[part->attached_objnum].orient);
+					}
+					p1 *= part->length * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LENGTH_MULT, curve_input);
+					p1 += p_pos;
+					light_add_tube(&p_pos, &p1, light_radius, light_radius, intensity, r, g, b, source_radius);
+				}
+				else {
+					light_add_point(&p_pos, light_radius, light_radius, intensity, r, g, b, source_radius);
+				}
+				break;
+			case ParticleEffect::LightInformation::LightSourceMode::CONE: {
+				float cone_angle = light_source.cone_angle * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LIGHT_CONE_ANGLE_MULT, curve_input);
+				float cone_inner_angle = light_source.cone_inner_angle * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LIGHT_CONE_INNER_ANGLE_MULT, curve_input);
+				vec3d p1;
+				vm_vec_copy_normalize_safe(&p1, &part->velocity);
+				if (part->attached_objnum >= 0) {
+					vm_vec_unrotate(&p1, &p1, &Objects[part->attached_objnum].orient);
+				}
+
+				light_add_cone(&p_pos, &p1, cone_angle, cone_inner_angle, false, light_radius, light_radius, intensity, r, g, b, source_radius);
+			}
+			break;
+			}
+		}
 
 		return false;
 	}
@@ -437,59 +424,60 @@ namespace particle
 
 		g3_transfer_vertex(&pos, &p_pos);
 
+		const auto& source_effect = part->parent_effect.getParticleEffect();
+
+		//For anything apart from the velocity curve, "Post-Curves Velocity" is well defined. This is needed to facilitate complex but common particle scaling and appearance curves.
+		const auto& curve_input = std::forward_as_tuple(*part,
+			vm_vec_mag_quick(&part->velocity) * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::ANIM_STATE, std::forward_as_tuple(*part, vm_vec_mag_quick(&part->velocity))));
+
 		// figure out which frame we should be using
 		int framenum;
 		int cur_frame;
 		if (part->nframes > 1) {
-			framenum = bm_get_anim_frame(part->optional_data, part->age, part->max_life, part->looping);
-			cur_frame = part->reverse ? (part->nframes - framenum - 1) : framenum;
+			if (source_effect.m_lifetime_curves.has_curve(ParticleEffect::ParticleLifetimeCurvesOutput::ANIM_STATE)) {
+				cur_frame = fl2i(i2fl(part->nframes - 1) * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::ANIM_STATE, curve_input));
+			}
+			else {
+				framenum = bm_get_anim_frame(part->bitmap, part->age, part->max_life, part->looping);
+				cur_frame = part->reverse ? (part->nframes - framenum - 1) : framenum;
+			}
 		}
 		else
 		{
 			cur_frame = 0;
 		}
 
-		if (part->type == PARTICLE_DEBUG)
-		{
-			if (part->optional_data >= 0)
-				gr_set_color((part->optional_data >> 16) & 0xff, (part->optional_data >> 8) & 0xff, part->optional_data & 0xff);
-			else
-				gr_set_color(255, 0, 0);
-			g3_draw_sphere_ez(&p_pos, part->radius);
+		framenum = part->bitmap;
+
+		Assert( (cur_frame < part->nframes) || (part->nframes == 0 && cur_frame == 0) );
+
+		float radius = part->radius * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::RADIUS_MULT, curve_input);
+
+		if (part->length != 0.0f) {
+			vec3d p0 = p_pos;
+
+			vec3d p1;
+			vm_vec_copy_normalize_safe(&p1, &part->velocity);
+			if (part->attached_objnum >= 0) {
+				vm_vec_unrotate(&p1, &p1, &Objects[part->attached_objnum].orient);
+			}
+			p1 *= part->length * source_effect.m_lifetime_curves.get_output(ParticleEffect::ParticleLifetimeCurvesOutput::LENGTH_MULT, curve_input);
+			p1 += p_pos;
+
+			batching_add_laser(framenum + cur_frame, &p0, radius, &p1, radius);
 		}
-		else
-		{
-			framenum = part->optional_data;
-
-			Assert( cur_frame < part->nframes );
-
-			if (part->length != 0.0f) {
-				vec3d p0 = part->pos;
-
-				vec3d p1;
-				vm_vec_copy_normalize(&p1, &part->velocity);
-				p1 *= part->length;
-				p1 += part->pos;
-
-				batching_add_laser(framenum + cur_frame, &p0, part->radius, &p1, part->radius);
-			}
-			else {
-				batching_add_volume_bitmap(framenum + cur_frame, &pos, part->particle_index % 8, part->radius, alpha);
-			}
-
-
-			return true;
+		else {
+			// it will subtract Physics_viewer_bank, so without the flag we counter that and make it screen-aligned again
+			batching_add_volume_bitmap_rotated(framenum + cur_frame, &pos, part->use_angle ? part->angle : Physics_viewer_bank, radius, alpha);
 		}
 
-		return false;
+		return true;
 	}
 
 	void render_all()
 	{
 		GR_DEBUG_SCOPE("Render Particles");
 		TRACE_SCOPE(tracing::ParticlesRenderAll);
-
-		bool render_batch = false;
 
 		if (!Particles_enabled)
 			return;
@@ -498,99 +486,12 @@ namespace particle
 			return;
 
 		for (auto& part : Persistent_particles) {
-			if (render_particle(part.get())) {
-				render_batch = true;
-			}
+			render_particle(part.get());
 		}
 
 		for (auto& part : Particles) {
-			if (render_particle(&part)) {
-				render_batch = true;
-			}
+			render_particle(&part);
 		}
 
-		if (render_batch)
-		{
-			batching_render_all();
-		}
-	}
-
-	//============================================================================
-	//============== HIGH-LEVEL PARTICLE SYSTEM CREATION CODE ====================
-	//============================================================================
-
-	// Use a structure rather than pass a ton of parameters to particle_emit
-	/*
-    typedef struct particle_emitter {
-    int		num_low;			// Lowest number of particles to create
-    int		num_high;			// Highest number of particles to create
-    vec3d	pos;				// Where the particles emit from
-    vec3d	vel;				// Initial velocity of all the particles
-    float	lifetime;			// How long the particles live
-    vec3d	normal;				// What normal the particle emit arond
-    float	normal_variance;	// How close they stick to that normal 0=good, 1=360 degree
-    float	min_vel;			// How fast the slowest particle can move
-    float	max_vel;			// How fast the fastest particle can move
-    float	min_rad;			// Min radius
-    float	max_rad;			// Max radius
-    } particle_emitter;
-    */
-
-	// Creates a bunch of particles. You pass a structure
-	// rather than a bunch of parameters.
-	void emit(particle_emitter* pe, ParticleType type, int optional_data, float range)
-	{
-		int i, n;
-
-		if (!Particles_enabled)
-			return;
-
-		int n1, n2;
-
-		// Account for detail
-		int percent = get_percent(Detail.num_particles);
-
-		//Particle rendering drops out too soon.  Seems to be around 150 m.  Is it detail level controllable?  I'd like it to be 500-1000
-		float min_dist = 125.0f;
-		float dist = vm_vec_dist_quick(&pe->pos, &Eye_position) / range;
-		if (dist > min_dist)
-		{
-			percent = fl2i(i2fl(percent) * min_dist / dist);
-			if (percent < 1)
-			{
-				return;
-			}
-		}
-		//mprintf(( "Dist = %.1f, percent = %d%%\n", dist, percent ));
-
-		n1 = (pe->num_low * percent) / 100;
-		n2 = (pe->num_high * percent) / 100;
-
-		// How many to emit?
-		n = Random::next(n1, n2);
-
-		if (n < 1) return;
-
-
-		for (i = 0; i < n; i++)
-		{
-			// Create a particle
-			vec3d tmp_vel;
-			vec3d normal;                // What normal the particle emit arond
-
-			float radius = ((pe->max_rad - pe->min_rad) * frand()) + pe->min_rad;
-
-			float speed = ((pe->max_vel - pe->min_vel) * frand()) + pe->min_vel;
-
-			float life = ((pe->max_life - pe->min_life) * frand()) + pe->min_life;
-
-			normal.xyz.x = pe->normal.xyz.x + (frand() * 2.0f - 1.0f) * pe->normal_variance;
-			normal.xyz.y = pe->normal.xyz.y + (frand() * 2.0f - 1.0f) * pe->normal_variance;
-			normal.xyz.z = pe->normal.xyz.z + (frand() * 2.0f - 1.0f) * pe->normal_variance;
-			vm_vec_normalize_safe(&normal);
-			vm_vec_scale_add(&tmp_vel, &pe->vel, &normal, speed);
-
-			create(&pe->pos, &tmp_vel, life, radius, type, optional_data);
-		}
 	}
 }

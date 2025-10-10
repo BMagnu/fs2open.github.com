@@ -212,8 +212,8 @@ static const char *Text_lines[MAX_TEXT_LINES];
 
 static int Cur_entry = -1;				// this is the current entry selected, using entry indexing
 static int Cur_entry_index = -1;		// this is the current entry selected, using master list indexing
-static int Techroom_ship_modelnum = -1;
-static int Techroom_ship_model_instance = -1;
+static int Techroom_modelnum = -1;
+static int Techroom_model_instance = -1;
 static float Techroom_ship_rot;
 static UI_BUTTON List_buttons[LIST_BUTTONS_MAX];  // buttons for each line of text in list
 
@@ -330,27 +330,27 @@ void techroom_select_new_entry()
 			i++;
 		}
 
-		Techroom_ship_modelnum = model_load(sip, true);
+		Techroom_modelnum = model_load(sip, true);
 
-		if (Techroom_ship_model_instance >= 0) {
-			model_delete_instance(Techroom_ship_model_instance);
+		if (Techroom_model_instance >= 0) {
+			model_delete_instance(Techroom_model_instance);
 		}
-		Techroom_ship_model_instance = model_create_instance(-1, Techroom_ship_modelnum);
+		Techroom_model_instance = model_create_instance(model_objnum_special::OBJNUM_NONE, Techroom_modelnum);
 
-		model_set_up_techroom_instance(sip, Techroom_ship_model_instance);
+		model_set_up_techroom_instance(sip, Techroom_model_instance);
 
-		Current_list->at(Cur_entry).model_num = Techroom_ship_modelnum;
+		Current_list->at(Cur_entry).model_num = Techroom_modelnum;
 
 		// page in ship textures properly (takes care of nondimming pixels)
-		model_page_in_textures(Techroom_ship_modelnum, Cur_entry_index);
+		model_page_in_textures(Techroom_modelnum, Cur_entry_index);
 
 		Current_list->at(Cur_entry).textures_loaded = 1;
 	} else {
-		Techroom_ship_modelnum = -1;
+		Techroom_modelnum = -1;
 
-		if (Techroom_ship_model_instance >= 0) {
-			model_delete_instance(Techroom_ship_model_instance);
-			Techroom_ship_model_instance = -1;
+		if (Techroom_model_instance >= 0) {
+			model_delete_instance(Techroom_model_instance);
+			Techroom_model_instance = -1;
 		}
 
 		Trackball_mode = 0;
@@ -363,7 +363,59 @@ void techroom_select_new_entry()
 		} else {
 			// we've failed to load any animation
 			// load an image and treat it like a 1 frame animation
-			Current_list->at(Cur_entry).bitmap = bm_load(Current_list->at(Cur_entry).tech_anim_filename);
+			bool weaponLoaded = false;
+			if (Tab == WEAPONS_DATA_TAB) {
+				weapon_info* wip = &Weapon_info[Cur_entry_index];
+
+				int i = 0;
+				// little memory management, kinda hacky but it should keep the techroom at around
+				// 100meg rather than the 700+ it can get to with all ships loaded - taylor
+				for (auto& list_entry : *Current_list) {
+					if ((list_entry.model_num > -1) && (list_entry.textures_loaded)) {
+						// don't unload any spot within 5 of current
+						if ((i < Cur_entry + 5) && (i > Cur_entry - 5))
+							continue;
+
+						mprintf(("TECH ROOM: Dumping excess ship textures...\n"));
+
+						model_page_out_textures(list_entry.model_num);
+
+						list_entry.textures_loaded = 0;
+					}
+					i++;
+				}
+
+				// Make sure model is loaded
+				if (VALID_FNAME(wip->tech_model)) {
+					Techroom_modelnum = model_load(wip->tech_model, nullptr, ErrorType::WARNING);
+				}
+
+				if (Techroom_modelnum >= 0) {
+					weaponLoaded = true;
+
+					if (Techroom_model_instance >= 0) {
+						model_delete_instance(Techroom_model_instance);
+					}
+					Techroom_model_instance = model_create_instance(model_objnum_special::OBJNUM_NONE, Techroom_modelnum);
+
+					// If this ends up being needed for weapon models, a weapon version
+					// of this method will need to be created. Should only be necessary
+					// if weapon models start having animations or other advanced model
+					// features. - Mjn
+					//model_set_up_techroom_instance(wip, Techroom_ship_model_instance);
+
+					Current_list->at(Cur_entry).model_num = Techroom_modelnum;
+
+					// page in ship textures properly (takes care of nondimming pixels)
+					model_page_in_textures(Techroom_modelnum, Cur_entry_index);
+
+					Current_list->at(Cur_entry).textures_loaded = 1;
+				}
+
+			}
+
+			if (!weaponLoaded)
+				Current_list->at(Cur_entry).bitmap = bm_load(Current_list->at(Cur_entry).tech_anim_filename);
 		}
 	}
 
@@ -405,7 +457,7 @@ void techroom_render_desc(int xo, int yo, int ho)
 		int more_txt_x = Tech_desc_coords[gr_screen.res][0] + (Tech_desc_coords[gr_screen.res][2]/2) - 10;	// FIXME should move these to constants since they don't move
 		int more_txt_y = Tech_desc_coords[gr_screen.res][1] + Tech_desc_coords[gr_screen.res][3];				// located below brief text, centered
 		int w, h;
-		gr_get_string_size(&w, &h, XSTR("more", 1469), static_cast<int>(strlen(XSTR("more", 1469))));
+		gr_get_string_size(&w, &h, XSTR("more", 1469), 1.0f, static_cast<int>(strlen(XSTR("more", 1469))));
 		gr_set_color_fast(&Color_black);
 		gr_rect(more_txt_x-2, more_txt_y, w+3, h, GR_RESIZE_MENU);
 		gr_set_color_fast(&Color_more_indicator);
@@ -476,19 +528,43 @@ void techroom_ships_render(float frametime)
 	// now render the trackball ship, which is unique to the ships tab
 	float rev_rate = REVOLUTION_RATE;
 	angles rot_angles, view_angles;
-	ship_info *sip = &Ship_info[Cur_entry_index];
 	model_render_params render_info;
 
-	if (sip->uses_team_colors) {
-		render_info.set_team_color(sip->default_team_name, "none", 0, 0);
-	}
+	vec3d closeup_pos;
+	float closeup_zoom = 0.0f;
+	bool noLighting = false;
 
-	// get correct revolution rate
-	if (sip->is_big_ship()) {
-		rev_rate *= 1.7f;
-	}
-	if (sip->is_huge_ship()) {
+	if (Tab == SHIPS_DATA_TAB) {
+		ship_info* sip = &Ship_info[Cur_entry_index];
+
+		if (sip->uses_team_colors) {
+			render_info.set_team_color(sip->default_team_name, "none", 0, 0);
+		}
+
+		// get correct revolution rate
+		if (sip->is_big_ship()) {
+			rev_rate *= 1.7f;
+		}
+		if (sip->is_huge_ship()) {
+			rev_rate *= 3.0f;
+		}
+
+		closeup_pos = sip->closeup_pos;
+		closeup_zoom = sip->closeup_zoom;
+
+		if (!sip->replacement_textures.empty()) {
+			render_info.set_replacement_textures(Techroom_modelnum, sip->replacement_textures);
+		}
+
+		if (sip->flags[Ship::Info_Flags::No_lighting])
+			noLighting = true;
+
+	} else {
+		weapon_info* wip = &Weapon_info[Cur_entry_index];
+
 		rev_rate *= 3.0f;
+		closeup_pos = wip->closeup_pos;
+		closeup_zoom = wip->closeup_zoom;
 	}
 
 	// rotate the ship as much as required for this frame
@@ -528,31 +604,26 @@ void techroom_ships_render(float frametime)
 
 	// render the ship
 	g3_start_frame(1);
-	g3_set_view_matrix(&sip->closeup_pos, &vmd_identity_matrix, sip->closeup_zoom * 1.3f);
+	g3_set_view_matrix(&closeup_pos, &vmd_identity_matrix, closeup_zoom * 1.3f);
 
 	//setup lights
 	common_setup_room_lights();
 
 	Glowpoint_use_depth_buffer = false;
 
-	model_clear_instance(Techroom_ship_modelnum);
+	model_clear_instance(Techroom_modelnum);
 	render_info.set_detail_level_lock(0);
-
-	if (sip->replacement_textures.size() > 0)
-	{
-		render_info.set_replacement_textures(Techroom_ship_modelnum, sip->replacement_textures);
-	}
 
     if(shadow_maybe_start_frame(Shadow_disable_overrides.disable_techroom))
     {
         gr_reset_clip();
 
-		auto pm = model_get(Techroom_ship_modelnum);
+		auto pm = model_get(Techroom_modelnum);
 
-		shadows_start_render(&Eye_matrix, &Eye_position, Proj_fov, gr_screen.clip_aspect, -sip->closeup_pos.xyz.z + pm->rad, -sip->closeup_pos.xyz.z + pm->rad + 200.0f, -sip->closeup_pos.xyz.z + pm->rad + 2000.0f, -sip->closeup_pos.xyz.z + pm->rad + 10000.0f);
+		shadows_start_render(&Eye_matrix, &Eye_position, Proj_fov, gr_screen.clip_aspect, -closeup_pos.xyz.z + pm->rad, -closeup_pos.xyz.z + pm->rad + 200.0f, -closeup_pos.xyz.z + pm->rad + 2000.0f, -closeup_pos.xyz.z + pm->rad + 10000.0f);
         render_info.set_flags(MR_NO_TEXTURING | MR_NO_LIGHTING | MR_AUTOCENTER);
 		
-		model_render_immediate(&render_info, Techroom_ship_modelnum, Techroom_ship_model_instance, &Techroom_ship_orient, &vmd_zero_vector);
+		model_render_immediate(&render_info, Techroom_modelnum, Techroom_model_instance, &Techroom_ship_orient, &vmd_zero_vector);
         shadows_end_render();
 
 		gr_set_clip(Tech_ship_display_coords[gr_screen.res][SHIP_X_COORD], Tech_ship_display_coords[gr_screen.res][SHIP_Y_COORD], Tech_ship_display_coords[gr_screen.res][SHIP_W_COORD], Tech_ship_display_coords[gr_screen.res][SHIP_H_COORD], GR_RESIZE_MENU);
@@ -561,14 +632,14 @@ void techroom_ships_render(float frametime)
 	gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
 	gr_set_view_matrix(&Eye_position, &Eye_matrix);
 
-	uint render_flags = MR_AUTOCENTER;
+	uint64_t render_flags = MR_AUTOCENTER;
 
-	if(sip->flags[Ship::Info_Flags::No_lighting])
+	if(noLighting)
 		render_flags |= MR_NO_LIGHTING;
 
 	render_info.set_flags(render_flags);
 
-	model_render_immediate(&render_info, Techroom_ship_modelnum, Techroom_ship_model_instance, &Techroom_ship_orient, &vmd_zero_vector);
+	model_render_immediate(&render_info, Techroom_modelnum, Techroom_model_instance, &Techroom_ship_orient, &vmd_zero_vector);
 
 	Glowpoint_use_depth_buffer = true;
 
@@ -777,7 +848,7 @@ void techroom_change_tab(int num)
 						// this ship should be displayed, fill out the entry struct
 						temp_entry.index = (int)std::distance(Ship_info.begin(), it);
 						temp_entry.name = *it->tech_title ? it->tech_title : it->get_display_name();
-						temp_entry.desc = it->tech_desc;
+						temp_entry.desc = it->tech_desc.get();
 
                         Ship_list.push_back(temp_entry);
                     }
@@ -819,7 +890,7 @@ void techroom_change_tab(int num)
 					{ 
 						// we have a weapon that should be in the tech db, so fill out specific info
 						temp_entry.index = i;
-						temp_entry.desc = wi.tech_desc;
+						temp_entry.desc = wi.tech_desc.get();
 						temp_entry.name = wi.tech_title[0] ? wi.tech_title : wi.get_display_name();
 						// copy the weapon animation filename
 						strncpy(temp_entry.tech_anim_filename, wi.tech_anim_filename, MAX_FILENAME_LEN - 1);
@@ -993,54 +1064,143 @@ int techroom_load_ani(anim ** /*animpp*/, char *name)
 	return 0;
 }
 
+static intel_data* get_intel_pointer(const char* intel_name)
+{
+	for (int i = 0; i < (int)Intel_info.size(); i++) {
+		if (!stricmp(intel_name, Intel_info[i].name)) {
+			return &Intel_info[i];
+		}
+	}
+
+	// Didn't find anything.
+	return nullptr;
+}
+
+static void intel_info_init(intel_data* inteli)
+{
+	inteli->name[0] = '\0';
+	inteli->desc = "";
+	inteli->anim_filename[0] = '\0';
+	inteli->flags = IIF_DEFAULT_VALUE;
+	inteli->custom_data = {};
+}
+
+void parse_intel_table(const char* filename)
+{
+
+	try {
+		read_file_text(filename, CF_TYPE_TABLES);
+		reset_parse();
+
+		//retail doesn't have this so it can't be required, but it's here for absent minded modders -Mjn
+		optional_string("#Intel");
+
+		while (optional_string("$Entry:")) {
+			
+			bool create_new_entry = true;
+			intel_data intel_t;
+			intel_info_init(&intel_t);
+
+			intel_data* intel_p;
+
+			required_string("$Name:");
+			stuff_string(intel_t.name, F_NAME, NAME_LENGTH);
+
+			if (optional_string("+nocreate")) {
+				if (!Parsing_modular_table) {
+					Warning(LOCATION, "+nocreate flag used for intel entry in non-modular table\n");
+				} else {
+					create_new_entry = false;
+				}
+			}
+
+			//Check if we're creating a new entry.
+			intel_p = get_intel_pointer(intel_t.name);
+			if (create_new_entry) {
+
+				// Current behavior is to warn about a duplicate entry, but append it to the list anyway
+				// So do that here - Mjn
+				if (intel_p != nullptr) {
+					error_display(0, "Duplicate entry %s in %s!", intel_t.name, filename);
+				}
+				Intel_info.push_back(intel_t);
+				intel_p = &Intel_info[Intel_info.size() - 1];
+			} else {
+				if (intel_p == nullptr) {
+					mprintf(("Partial entry for [%s] found, but it does not already exist. Skipping!\n", intel_t.name));
+					if (!skip_to_start_of_string("$Entry:")) {
+						return;
+					}
+				}
+			}
+
+			if (optional_string("$Anim:")) {
+				stuff_string(intel_p->anim_filename, F_NAME, NAME_LENGTH);
+			}
+
+			if (optional_string("$AlwaysInTechRoom:")) {
+				//Change this from stuff_int to stuff_boolean because it can only ever be 1 or 0 here - Mjn
+				int temp;
+				stuff_boolean(&temp);
+				//If we are modifying an existing entry, then reset the flags first
+				if (!create_new_entry) {
+					intel_p->flags = IIF_DEFAULT_VALUE;
+				}
+				if (temp) {
+					// set default to align with what we read - Goober5000
+					intel_p->flags |= IIF_IN_TECH_DATABASE;
+					intel_p->flags |= IIF_DEFAULT_IN_TECH_DATABASE;
+				}
+			}
+
+			if (optional_string("$Description:")) {
+				stuff_string(intel_p->desc, F_MULTITEXT);
+			}
+
+			if (optional_string("$Custom data:")) {
+				parse_string_map(intel_p->custom_data, "$end_custom_data", "+Val:");
+			}
+
+			//retail table doesn't have #end so we have to check for the start of the next entry
+			//or for the end of the file instead. I have also Added #end compatibility here to 
+			//bring the table in line with other tables for absent minded modders - Mjn
+			if (check_for_string("$Entry:") || check_for_string("#end") || check_for_eof()) {
+				continue;
+			} else {
+				error_display(0, "Missing required token: [$Entry]. Found [%.32s] instead.\n", next_tokens());
+				return;
+			}
+
+		}
+
+	} catch (const parse::ParseException& e) {
+		mprintf(("TABLES: Unable to parse '%s'!  Error message = %s.\n", filename, e.what()));
+		return;
+	}
+}
 
 void techroom_intel_init()
 {
-	int  temp;
-
 	if (Intel_inited)
 		return;
-		
-	try
-	{
-		read_file_text("species.tbl", CF_TYPE_TABLES);
-		reset_parse();
 
-		Intel_info.clear();
-		while (optional_string("$Entry:")) {
-			intel_data entry;
-			entry.flags = IIF_DEFAULT_VALUE;
+	Intel_info.clear();
 
-			required_string("$Name:");
-			stuff_string(entry.name, F_NAME, NAME_LENGTH);
-
-			required_string("$Anim:");
-			stuff_string(entry.anim_filename, F_NAME, NAME_LENGTH);
-
-			required_string("$AlwaysInTechRoom:");
-			stuff_int(&temp);
-			if (temp) {
-				// set default to align with what we read - Goober5000
-				entry.flags |= IIF_IN_TECH_DATABASE;
-				entry.flags |= IIF_DEFAULT_IN_TECH_DATABASE;
-			}
-
-			required_string("$Description:");
-			stuff_string(entry.desc, F_MULTITEXT);
-
-			if (intel_info_lookup(entry.name) >= 0)
-				error_display(0, "Duplicate entry %s in species.tbl!", entry.name);
-			else
-				Intel_info.push_back(entry);
-		}
-
-		Intel_inited = true;
+	//Allow intel.tbl to be a alias of species.tbl, but only load one or the other.
+	//Intel.tbl would be newer so assume intended, but print to the log to be sure - Mjn
+	char filename[MAX_FILENAME_LEN] = "species.tbl";
+	if (cf_exists_full("intel.tbl", CF_TYPE_TABLES)){
+		mprintf(("Intel.tbl was found! Using that instead of Species.tbl...\n"));
+		strcpy_s(filename, "intel.tbl");
 	}
-	catch (const parse::ParseException& e)
-	{
-		mprintf(("TABLES: Unable to parse '%s'!  Error message = %s.\n", "species.tbl", e.what()));
-		return;
-	}
+
+	// first parse the default table
+	parse_intel_table(filename);
+
+	// parse any modular tables
+	parse_modular_table("*-intl.tbm", parse_intel_table);
+
+	Intel_inited = true;
 }
 
 void techroom_intel_reset()
@@ -1156,8 +1316,8 @@ void techroom_lists_reset()
 		techroom_unload_animation();
 
 	model_free_all();
-	Techroom_ship_modelnum = -1;
-	Techroom_ship_model_instance = -1;
+	Techroom_modelnum = -1;
+	Techroom_model_instance = -1;
 
 	// This can be cleared immediately because there are no anims or bitmaps associated.
 	Ship_list.clear();
@@ -1320,6 +1480,13 @@ void techroom_do_frame(float frametime)
 			break;
 
 		case WEAPONS_DATA_TAB:
+			if (Techroom_modelnum >= 0) {
+				techroom_ships_render(frametime);
+			} else {
+				techroom_anim_render(frametime);
+			}
+			break;
+
 		case INTEL_DATA_TAB:
 			techroom_anim_render(frametime);
 			break;

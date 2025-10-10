@@ -30,9 +30,10 @@ namespace io
 			UI_TIMESTAMP mBeginTimeStamp; //!< The UI timestamp when the animation was started, unused when not animated
 			size_t mLastFrame; //!< The last frame which was set
 			
-			Cursor(const Cursor&); // Not implemented
-			Cursor& operator=(const Cursor&); // Not implemented
 		public:
+			Cursor(const Cursor&) = delete; // Not implemented
+			Cursor& operator=(const Cursor&) = delete; // Not implemented
+
 			/**
 			 * @brief Default constructor
 			 * @param bitmap The bitmap handle of the cursor. The cursor takes ownership over this handle
@@ -77,6 +78,11 @@ namespace io
 			 * @brief Called to set the correct frame
 			 */
 			void setCurrentFrame();
+
+			/**
+			 * @brief Query the cursors bitmap handle for bmpman
+			 */
+			int getBitmapHandle();
 		};
 
 		/**

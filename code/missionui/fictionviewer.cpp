@@ -12,6 +12,7 @@
 #include "gamesnd/gamesnd.h"
 #include "globalincs/alphacolors.h"
 #include "io/key.h"
+#include "localization/localize.h"
 #include "mission/missionbriefcommon.h"
 #include "missionui/fictionviewer.h"
 #include "missionui/missioncmdbrief.h"
@@ -31,14 +32,15 @@
 // ---------------------------------------------------------------------------------------------------------------------------------------
 // MISSION FICTION VIEWER DEFINES/VARS
 //
-#define NUM_FVW_SETTINGS	2
-const char *Fiction_viewer_ui_names[NUM_FVW_SETTINGS] =
+constexpr int NUM_FVW_LAYOUTS = 2;
+
+const char *Fiction_viewer_ui_names[NUM_FVW_LAYOUTS] =
 {
 	"FS2",	// FreeSpace 2
 	"WCS"	// Wing Commander Saga
 };
 
-const char *Fiction_viewer_screen_filename[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS] =
+const char *Fiction_viewer_screen_filename[NUM_FVW_LAYOUTS][GR_NUM_RESOLUTIONS] =
 {
 	{
 		"FictionViewer",		// GR_640
@@ -50,7 +52,7 @@ const char *Fiction_viewer_screen_filename[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS]
 	}
 };
 
-const char *Fiction_viewer_screen_mask[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS] =
+const char *Fiction_viewer_screen_mask[NUM_FVW_LAYOUTS][GR_NUM_RESOLUTIONS] =
 {
 	{
 		"FictionViewer-m",		// GR_640
@@ -62,7 +64,7 @@ const char *Fiction_viewer_screen_mask[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS] =
 	}
 };
 
-int Fiction_viewer_text_coordinates[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS][4] =
+int Fiction_viewer_text_coordinates[NUM_FVW_LAYOUTS][GR_NUM_RESOLUTIONS][4] =
 {
 	// standard FS2-style interface
 	{
@@ -92,7 +94,7 @@ int Fiction_viewer_text_coordinates[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS][4] =
 // the xt and yt fields aren't normally used for width and height,
 // but the fields would go unused here and this is more
 // convenient for initialization
-ui_button_info Fiction_viewer_buttons[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS][NUM_FVW_BUTTONS] =
+ui_button_info Fiction_viewer_buttons[NUM_FVW_LAYOUTS][GR_NUM_RESOLUTIONS][NUM_FVW_BUTTONS] =
 {
 	// standard FS2-style interface
 	{
@@ -123,7 +125,7 @@ ui_button_info Fiction_viewer_buttons[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS][NUM_
 	}
 };
 
-const char *Fiction_viewer_slider_filename[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS] =
+const char *Fiction_viewer_slider_filename[NUM_FVW_LAYOUTS][GR_NUM_RESOLUTIONS] =
 {
 	// standard FS2-style interface
 	{
@@ -137,7 +139,7 @@ const char *Fiction_viewer_slider_filename[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS]
 	}
 };
 
-int Fiction_viewer_slider_coordinates[NUM_FVW_SETTINGS][GR_NUM_RESOLUTIONS][4] =
+int Fiction_viewer_slider_coordinates[NUM_FVW_LAYOUTS][GR_NUM_RESOLUTIONS][4] =
 {
 	// standard FS2-style interface
 	{
@@ -313,7 +315,7 @@ void fiction_viewer_init()
 		if (Fiction_viewer_ui < 0)
 		{
 			// no UI specified; use the last UI in the array that has an available background bitmap
-			for (Fiction_viewer_ui = NUM_FVW_SETTINGS - 1; Fiction_viewer_ui >= 0; Fiction_viewer_ui--)
+			for (Fiction_viewer_ui = NUM_FVW_LAYOUTS - 1; Fiction_viewer_ui >= 0; Fiction_viewer_ui--)
 			{
 				Fiction_viewer_bitmap = bm_load(Fiction_viewer_screen_filename[Fiction_viewer_ui][gr_screen.res]);
 				if (Fiction_viewer_bitmap >= 0)
@@ -474,7 +476,7 @@ void fiction_viewer_do_frame(float frametime)
 		int more_txt_x = Fiction_viewer_text_coordinates[Fiction_viewer_ui][gr_screen.res][0] + (Fiction_viewer_text_coordinates[Fiction_viewer_ui][gr_screen.res][2]/2) - 10;
 		int more_txt_y = Fiction_viewer_text_coordinates[Fiction_viewer_ui][gr_screen.res][1] + Fiction_viewer_text_coordinates[Fiction_viewer_ui][gr_screen.res][3];				// located below text, centered
 
-		gr_get_string_size(&w, &h, XSTR("more", 1469), (int)strlen(XSTR("more", 1469)));
+		gr_get_string_size(&w, &h, XSTR("more", 1469), 1.0f, (int)strlen(XSTR("more", 1469)));
 		gr_set_color_fast(&Color_black);
 		gr_rect(more_txt_x-2, more_txt_y, w+3, h, GR_RESIZE_MENU);
 		gr_set_color_fast(&Color_more_indicator);
@@ -513,7 +515,7 @@ bool mission_has_fiction()
 int fiction_viewer_ui_name_to_index(const char *ui_name)
 {
 	int i;
-	for (i = 0; i < NUM_FVW_SETTINGS; i++)
+	for (i = 0; i < NUM_FVW_LAYOUTS; i++)
 	{
 		if (!stricmp(ui_name, Fiction_viewer_ui_names[i]))
 		{
@@ -542,6 +544,26 @@ void fiction_viewer_reset()
 		audiostream_close_file(Fiction_viewer_voice);
 		Fiction_viewer_voice = -1;
 	}
+}
+
+SCP_string get_localized_fiction_filename(const char* filename)
+{
+	SCP_string this_filename = filename;
+	
+	// setup the localized filename string
+	int lang = lcl_get_current_lang_index();
+	if (lang > 0) {
+		size_t lastindex = this_filename.find_last_of(".");
+		this_filename = this_filename.substr(0, lastindex);
+		this_filename = this_filename + "-" + Lcl_languages[lang].lang_ext + ".txt";
+	}
+
+	// return the localized version only if it exists
+	if (cf_exists_full(this_filename.c_str(), CF_TYPE_FICTION))
+		return this_filename;
+
+	// if localized doesn't exist then return the base filename
+	return filename;
 }
 
 void fiction_viewer_load(int stage)
@@ -575,15 +597,17 @@ void fiction_viewer_load(int stage)
 	Fiction_viewer_voice = audiostream_open(stagep->voice_filename, ASF_VOICE);
 
 	// load up the text
-	CFILE *fp = cfopen(stagep->story_filename, "rb", CFILE_NORMAL, CF_TYPE_FICTION);
+	SCP_string localized_filename = get_localized_fiction_filename(stagep->story_filename);
+
+	CFILE *fp = cfopen(localized_filename.c_str(), "rb", CF_TYPE_FICTION);
 	if (fp == NULL)
 	{
-		Warning(LOCATION, "Unable to load story file '%s'.", stagep->story_filename);
+		Warning(LOCATION, "Unable to load story file '%s'.", localized_filename.c_str());
 	}
 	else
 	{
 		// allocate space for raw text
-		int file_length = util::check_encoding_and_skip_bom(fp, stagep->story_filename);
+		int file_length = util::check_encoding_and_skip_bom(fp, localized_filename.c_str());
 
 		char *Fiction_viewer_text_raw = (char *) vm_malloc(file_length + 1);
 		Fiction_viewer_text_raw[file_length] = '\0';

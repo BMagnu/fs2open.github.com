@@ -73,7 +73,7 @@ void project_2d_onto_sphere( vec3d *pnt, float u, float v )
 // 1.00 - initial version
 
 // returns 0 if failed
-int load_nebula_sub(char *filename)
+int load_nebula_sub(const char *filename)
 {
 	CFILE *fp;
 	char id[16];
@@ -104,6 +104,10 @@ int load_nebula_sub(char *filename)
 	cfread( &num_tris, sizeof(int), 1, fp );
 	Assert( num_tris < MAX_TRIS );
 
+	// Cyborg - can't load nonsense.
+	if (num_pts <= 0 || num_pts >= MAX_POINTS || num_tris <= 0 || num_tris >= MAX_TRIS)
+		return 0;
+
 	int i;
 	for (i=0; i<num_pts; i++ )	{
 		float xf, yf;
@@ -130,14 +134,15 @@ int load_nebula_sub(char *filename)
 	return 1;
 }
 
-void nebula_init( const char *filename, int pitch, int bank, int heading )
+void nebula_init( int index, int pitch, int bank, int heading )
 {
 	angles a;
 
 	a.p = fl_radians(pitch);
 	a.b = fl_radians(bank);
 	a.h = fl_radians(heading);
-	nebula_init(filename, &a);
+
+	nebula_init(index < 0 ? nullptr : Nebula_filenames[index], &a);
 }
 
 void nebula_init( const char *filename, angles * pbh )
@@ -146,7 +151,7 @@ void nebula_init( const char *filename, angles * pbh )
 		nebula_close();
 	}
 
-	if ( load_nebula_sub( cf_add_ext(filename, NOX(".neb")) ) ) {
+	if ( filename && load_nebula_sub( cf_add_ext(filename, NOX(".neb")) ) ) {
 		Nebula_loaded = 1;
 	}
 

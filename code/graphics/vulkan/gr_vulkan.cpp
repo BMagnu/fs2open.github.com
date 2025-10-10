@@ -4,6 +4,8 @@
 #include "VulkanRenderer.h"
 #include "vulkan_stubs.h"
 
+#include "backends/imgui_impl_sdl.h"
+#include "backends/imgui_impl_vulkan.h"
 #include "mod_table/mod_table.h"
 
 namespace graphics {
@@ -13,14 +15,16 @@ namespace {
 std::unique_ptr<VulkanRenderer> renderer_instance;
 }
 
+void initialize_function_pointers() {
+	init_stub_pointers();
+}
+
 bool initialize(std::unique_ptr<os::GraphicsOperations>&& graphicsOps)
 {
 	renderer_instance.reset(new VulkanRenderer(std::move(graphicsOps)));
 	if (!renderer_instance->initialize()) {
 		return false;
 	}
-
-	init_stub_pointers();
 
 	gr_screen.gf_flip = []() {
 		renderer_instance->flip();

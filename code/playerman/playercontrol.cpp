@@ -32,6 +32,7 @@
 #include "object/object.h"
 #include "object/objectdock.h"
 #include "observer/observer.h"
+#include "options/Option.h"
 #include "parse/parselo.h"
 #include "playerman/player.h"
 #include "ship/ship.h"
@@ -52,13 +53,110 @@ int		Player_num;
 player	*Player = NULL;
 
 // Goober5000
-int		Player_use_ai = 0;
+bool	Player_use_ai = false;
 
 int		lua_game_control = 0;
 
 physics_info Descent_physics;			// used when we want to control the player like the descent ship
 
 angles chase_slew_angles;
+
+angles Player_flight_cursor;
+
+FlightMode Player_flight_mode = FlightMode::ShipLocked;
+bool Perspective_locked = false;
+bool Slew_locked = false;
+
+static void parse_flight_mode_func()
+{
+	SCP_string mode;
+	stuff_string(mode, F_NAME);
+
+	// Convert to lowercase once
+	SCP_tolower(mode);
+
+	// Use a map to associate strings with their respective actions
+	static const std::unordered_map<std::string, std::function<void()>> effectActions =
+	{ 
+		{"ship locked", []() { Player_flight_mode = FlightMode::ShipLocked; }},
+		{"flight cursor", []() { Player_flight_mode = FlightMode::FlightCursor; }}
+	};
+
+	auto it = effectActions.find(mode);
+	if (it != effectActions.end()) {
+		it->second(); // Execute the corresponding action
+	} else {
+		error_display(0, "%s is not a valid flight mode setting", mode.c_str());
+	}
+}
+
+auto FlightModeOption = options::OptionBuilder<FlightMode>("Game.FlightMode",
+	std::pair<const char*, int>{"Flight Mode", 1842},
+	std::pair<const char*, int>{"Choose the flying style to use during gameplay.", 1843})
+	.category(std::make_pair("Game", 1824))
+	.level(options::ExpertLevel::Beginner)
+	.values({ {FlightMode::ShipLocked, {"Ship Locked", 1844}},
+			{FlightMode::FlightCursor, {"Flight Cursor", 1845}} })
+		.default_func([]() { return FlightMode::ShipLocked; })
+	.bind_to(&Player_flight_mode)
+	.flags({ options::OptionFlags::ForceMultiValueSelection })
+	.importance(45)
+	.parser(parse_flight_mode_func)
+	.finish();
+
+static SCP_string degrees_display(float val)
+{
+	auto degrees = fl_degrees(val);
+	SCP_string out;
+	sprintf(out, u8"%.1f\u00B0", degrees);
+	return out;
+}
+
+float Flight_cursor_extent;
+
+static void parse_flight_cursor_extent_func()
+{
+	float value;
+	stuff_float(&value);
+	CLAMP(value, 0.0f, 0.698f);
+	Flight_cursor_extent = value;
+}
+
+auto FlightCursorExtentOption = options::OptionBuilder<float>("Game.FlightCursorExtent",
+	std::pair<const char*, int>{"Flight Cursor Extent", 1846},
+	std::pair<const char*, int>{"How far from the center the cursor can go.", 1847})
+	.category(std::make_pair("Game", 1824))
+	.range(0.0f, 0.698f)
+	.display(degrees_display)
+	.default_func([]() { return 0.348f; })
+	.level(options::ExpertLevel::Beginner)
+	.bind_to(&Flight_cursor_extent)
+	.importance(44)
+	.parser(parse_flight_cursor_extent_func)
+	.finish();
+
+float Flight_cursor_deadzone;
+
+static void parse_cursor_deadzone_func()
+{
+	float value;
+	stuff_float(&value);
+	CLAMP(value, 0.0f, 0.349f);
+	Flight_cursor_deadzone = value;
+}
+
+auto FlightCursorDeadzoneOption = options::OptionBuilder<float>("Game.FlightCursorDeadzone",
+	std::pair<const char*, int>{"Flight Cursor Deadzone", 1848},
+	std::pair<const char*, int>{"How far from the center the cursor needs to go before registering.", 1849})
+	.category(std::make_pair("Game", 1824))
+	.range(0.0f, 0.349f)
+	.display(degrees_display)
+	.default_func([]() { return 0.02f; })
+	.level(options::ExpertLevel::Beginner)
+	.bind_to(&Flight_cursor_deadzone)
+	.importance(43)
+	.parser(parse_cursor_deadzone_func)
+	.finish();
 
 int toggle_glide = 0;
 int press_glide = 0;
@@ -129,10 +227,10 @@ angles	Viewer_slew_angles_delta;
 angles	Viewer_external_angles_delta;
 
 /**
- * @brief Modifies the camera veiw angles according to its current view mode: External, External Locked,
+ * @brief Modifies the camera view angles according to its current view mode: External, External Locked,
  *   TrackIR, Freelook (Unlocked), Normal (Locked), and Centering
  *
- * @param[in,out]   ma      The camera veiw angles to modify (magnitude is saturated to be within max_p and max_h).
+ * @param[in,out]   ma      The camera view angles to modify (magnitude is saturated to be within max_p and max_h).
  * @param[out]  da      The delta angles applied to ma (magnitude is saturated to 1 radian).
  * @param[in]   max_p   The maximum pitch magnitude ma may have (radians).
  * @param[in]   max_h   The maximum heading magnitude ma may have (radians).
@@ -178,7 +276,7 @@ void view_modify(angles *ma, angles *da, float max_p, float max_h)
 			} else if (Viewer_mode & VM_PADLOCK_LEFT) {
 				ma->h = -max_h;
 				ma->p = 0.0f;
-			} // Else, don't do any ajustments. player_set_padlock_state will reset the states
+			} // Else, don't do any adjustments. do_view_slew() will reset the states
 
 			return;
 
@@ -343,7 +441,7 @@ void do_view_slew()
 	view_modify(&chase_slew_angles, &Viewer_slew_angles_delta, PI_2, PI2/3);
 
 	// Check Track target
-	if (Viewer_mode & VM_TRACK) {
+	if (Viewer_mode & VM_TRACK && !Slew_locked) {
 		// Player's vision will track current target.
 		do_view_track_target();
 		Viewer_mode |= VM_CAMERA_LOCKED;
@@ -351,27 +449,29 @@ void do_view_slew()
 	}
 
 	// Check Padlock controls
-	if (check_control(PADLOCK_UP)) {
+	// (Check Slew_locked second so that we don't short-circuit before processing the control)
+	if (check_control(PADLOCK_UP) && !Slew_locked) {
 		Viewer_mode |= (VM_PADLOCK_UP | VM_CAMERA_LOCKED);
 		Viewer_mode &= ~(VM_CENTERING);
 		return;
 
-	} else if (check_control(PADLOCK_DOWN)) {
+	} else if (check_control(PADLOCK_DOWN) && !Slew_locked) {
 		Viewer_mode |= (VM_PADLOCK_REAR | VM_CAMERA_LOCKED);
 		Viewer_mode &= ~(VM_CENTERING);
 		return;
 
-	} else if (check_control(PADLOCK_RIGHT)) {
+	} else if (check_control(PADLOCK_RIGHT) && !Slew_locked) {
 		Viewer_mode |= (VM_PADLOCK_RIGHT | VM_CAMERA_LOCKED);
 		Viewer_mode &= ~(VM_CENTERING);
 		return;
 
-	} else if (check_control(PADLOCK_LEFT)) {
+	} else if (check_control(PADLOCK_LEFT) && !Slew_locked) {
 		Viewer_mode |= (VM_PADLOCK_LEFT | VM_CAMERA_LOCKED);
 		Viewer_mode &= ~(VM_CENTERING);
 		return;
 
 	} else if (Viewer_mode & VM_PADLOCK_ANY) {
+		// at this point the view is in padlock mode but no controls are currently pressed;
 		// clear padlock views and center the view once 
 		// the player lets go of a padlock control
 		Viewer_mode &= ~(VM_PADLOCK_ANY);
@@ -395,7 +495,7 @@ void do_view_slew()
 			return;
 		}
 		
-		if (check_control_timef(VIEW_SLEW)) {
+		if (check_control_timef(VIEW_SLEW) && !Slew_locked) {
 			// Enable freelook mode
 			Viewer_mode &= ~VM_CAMERA_LOCKED;
 
@@ -714,7 +814,7 @@ void read_keyboard_controls( control_info * ci, float frame_time, physics_info *
 
 				//SUSHI: If gliding, don't do anything for speed matching
 				if (!( (Objects[Player->objnum].phys_info.flags & PF_GLIDING) || (Objects[Player->objnum].phys_info.flags & PF_FORCE_GLIDE) )) {
-					pmax_speed = Ships[Player_obj->instance].current_max_speed;
+					pmax_speed = Player_obj->phys_info.max_vel.xyz.z;
 					if (pmax_speed > 0.0f) {
 						ci->forward_cruise_percent = (tspeed / pmax_speed) * 100.0f;
 					} else {
@@ -775,7 +875,7 @@ void read_keyboard_controls( control_info * ci, float frame_time, physics_info *
 		if (!Control_config[JOY_REL_THROTTLE_AXIS].empty())
 			ci->forward_cruise_percent += f2fl(axis[Action::REL_THROTTLE]) * 100.0f * frame_time;
 
-		CLAMP(ci->forward_cruise_percent, 0, 100);
+		CLAMP(ci->forward_cruise_percent, 0.0f, 100.0f);
 
 		// set up the firing stuff.  Read into control info ala Descent so that weapons will be
 		// created during the object simulation phase, and not immediately as was happening before.
@@ -787,7 +887,7 @@ void read_keyboard_controls( control_info * ci, float frame_time, physics_info *
 
 		// for debugging, check to see if the debug key is down -- if so, make fire the debug laser instead
 #ifndef NDEBUG
-		if ( keyd_pressed[KEY_DEBUG_KEY] ) {
+		if ( key_is_pressed(KEY_DEBUG_KEY) ) {
 			ci->fire_debug_count = ci->fire_primary_count;
 			ci->fire_primary_count = 0;
 		}
@@ -968,10 +1068,47 @@ void read_player_controls(object *objp, float frametime)
 		case PCM_NORMAL:
 			read_keyboard_controls(&(Player->ci), frametime, &objp->phys_info );
 
-			// this is similar to ai_control_info_check
 			if (Player_obj->type == OBJ_SHIP) {
 				auto sip = &Ship_info[Ships[Player_obj->instance].ship_info_index];
 
+				if ((Player_flight_mode == FlightMode::FlightCursor || sip->aims_at_flight_cursor)) {
+
+					if (Viewer_mode & VM_CAMERA_LOCKED) {
+						float max_aim_angle = Flight_cursor_extent;
+
+						if (sip->aims_at_flight_cursor)
+							max_aim_angle = sip->flight_cursor_aim_extent;
+
+						Player_flight_cursor.p += Player->ci.pitch * 0.015f;
+						Player_flight_cursor.h += Player->ci.heading * 0.015f;
+
+						float mag = powf(powf(Player_flight_cursor.p, 2.0f) + powf(Player_flight_cursor.h, 2.0f), 0.5f);
+						if (mag > max_aim_angle) {
+							Player_flight_cursor.p *= max_aim_angle / mag;
+							Player_flight_cursor.h *= max_aim_angle / mag;
+							mag = max_aim_angle;
+						}
+
+						float deadzone = Flight_cursor_deadzone;
+						if (mag > deadzone) {
+							float p = Player_flight_cursor.p * ((mag - deadzone) / mag);
+							float h = Player_flight_cursor.h * ((mag - deadzone) / mag);
+
+							Player->ci.pitch = p / (max_aim_angle - deadzone);
+							Player->ci.heading = h / (max_aim_angle - deadzone);
+						}
+						else {
+							Player->ci.pitch = 0.0f;
+							Player->ci.heading = 0.0f;
+						}
+					} else {
+						Player_flight_cursor = vmd_zero_angles;
+						Player->ci.pitch = 0.0f;
+						Player->ci.heading = 0.0f;
+					}
+				}
+
+				// this is similar to ai_control_info_check
 				if (sip->flags[Ship::Info_Flags::Dont_bank_when_turning])
 					Player->ci.control_flags |= CIF_DONT_BANK_WHEN_TURNING;
 				if (sip->flags[Ship::Info_Flags::Dont_clamp_max_velocity])
@@ -1011,9 +1148,9 @@ void read_player_controls(object *objp, float frametime)
 					gameseq_post_event( GS_EVENT_PLAYER_WARPOUT_STOP );
 				} else {
 					if ( Warpout_forced ) {
-						Ships[objp->instance].current_max_speed = target_warpout_speed * 2.0f;
-					} else if (Ships[objp->instance].current_max_speed < target_warpout_speed) {
-						Ships[objp->instance].current_max_speed = target_warpout_speed + 5.0f;
+						objp->phys_info.max_vel.xyz.z = target_warpout_speed * 2.0f;
+					} else if (objp->phys_info.max_vel.xyz.z < target_warpout_speed) {
+						objp->phys_info.max_vel.xyz.z = target_warpout_speed + 5.0f;
 					}
 
 					diff = target_warpout_speed - objp->phys_info.fspeed;
@@ -1021,7 +1158,7 @@ void read_player_controls(object *objp, float frametime)
 					if ( diff < 0.0f ) 
 						diff = 0.0f;
 					
-					Player->ci.forward = ((target_warpout_speed + diff) / Ships[objp->instance].current_max_speed);
+					Player->ci.forward = ((target_warpout_speed + diff) / objp->phys_info.max_vel.xyz.z);
 				}
 			
 				if ( Player->control_mode == PCM_WARPOUT_STAGE1 )
@@ -1052,10 +1189,6 @@ void read_player_controls(object *objp, float frametime)
 		}
 	}
 
-	// the ships maximum velocity now depends on the energy flowing to engines
-	if(objp->type != OBJ_OBSERVER){
-		objp->phys_info.max_vel.xyz.z = Ships[objp->instance].current_max_speed;
-	} 
 	if(Player_obj->type == OBJ_SHIP && !Player_use_ai){	
 		// only read player control info if player ship is not dead
 		// or if Player_use_ai is disabed
@@ -1205,6 +1338,9 @@ void player_init_all_alone_msg()
 	// See if there are any friendly ships present, if so return without preventing msg
 	for ( so = GET_FIRST(&Ship_obj_list); so != END_OF_LIST(&Ship_obj_list); so = GET_NEXT(so) ) {
 		objp = &Objects[so->objnum];
+		if (objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
+
 		if ( objp == Player_obj ) {
 			continue;
 		}
@@ -1309,8 +1445,10 @@ void player_level_init()
 	Viewer_external_info.preferred_distance = 0.0f;
 	Viewer_external_info.current_distance = 0.0f;
 
+	Player_flight_cursor = vmd_zero_angles;
+
 	
-	if (Chase_view_default || The_mission.flags[Mission::Mission_Flags::Player_start_chase_view])
+	if (Default_start_chase_view != The_mission.flags[Mission::Mission_Flags::Toggle_start_chase_view])
 	{
 		Viewer_mode = VM_CHASE;
 	}
@@ -1323,7 +1461,7 @@ void player_level_init()
 	Player_ship = NULL;
 	Player_ai = NULL;
 
-	Player_use_ai = 0;	// Goober5000
+	Player_use_ai = false;	// Goober5000
 
 	if(Player == NULL)
 		return;
@@ -1483,16 +1621,14 @@ int player_process_pending_praise()
 		if ( ship_index >= 0 ) {
 			// Only praise if above 50% integrity
 			if ( get_hull_pct(&Objects[Ships[ship_index].objnum]) > 0.5f ) {
-				if (Player->stats.m_kill_count_ok > 10) {	// this number should probably be in the AI profile or mission file rather than hardcoded
-					message_send_builtin_to_player(MESSAGE_HIGH_PRAISE, &Ships[ship_index], MESSAGE_PRIORITY_HIGH, MESSAGE_TIME_SOON, 0, 0, -1, -1);
+				// This cutoff should probably be in the AI profile or mission file rather than hardcoded
+				auto message = (Player->stats.m_kill_count_ok > 10) ? MESSAGE_HIGH_PRAISE : MESSAGE_PRAISE;
+				if (message_send_builtin(message, &Ships[ship_index], nullptr, -1, -1)) {
+					Player->allow_praise_timestamp = timestamp(Builtin_messages[MESSAGE_PRAISE].min_delay * (Game_skill_level+1) );
+					Player->allow_scream_timestamp = timestamp(20000);		// prevent death scream following praise
+					Player->praise_count++;
+					return 1;
 				}
-				else {
-					message_send_builtin_to_player(MESSAGE_PRAISE, &Ships[ship_index], MESSAGE_PRIORITY_HIGH, MESSAGE_TIME_SOON, 0, 0, -1, -1);
-				}
-				Player->allow_praise_timestamp = timestamp(Builtin_messages[MESSAGE_PRAISE].min_delay * (Game_skill_level+1) );
-				Player->allow_scream_timestamp = timestamp(20000);		// prevent death scream following praise
-				Player->praise_count++;
-				return 1;
 			}
 		}
 	}
@@ -1504,7 +1640,7 @@ int player_process_pending_praise()
 	return 1;
 }
 
-int player_inspect_cap_subsys_cargo(float frametime, char *outstr);
+bool player_inspect_cap_subsys_cargo(float frametime, char *outstr);
 
 /**
  * See if the player should be inspecting cargo, and update progress.
@@ -1512,21 +1648,18 @@ int player_inspect_cap_subsys_cargo(float frametime, char *outstr);
  * @param frametime	Time since last frame in seconds
  * @param outstr (output parm) holds string that HUD should display
  *
- * @return 1 if player should display outstr on HUD; 0if don't display cargo on HUD
+ * @return true if player should display outstr on HUD; false if don't display cargo on HUD
  */
-int player_inspect_cargo(float frametime, char *outstr)
+bool player_inspect_cargo(float frametime, char *outstr)
 {
 	object		*cargo_objp;
-	ship			*cargo_sp;
+	ship		*cargo_sp;
 	ship_info	*cargo_sip;
-	vec3d		vec_to_cargo;
-	float			dot;
-	int scan_subsys;
 
 	outstr[0] = 0;
 
-	if ( Player_ai->target_objnum < 0 ) {
-		return 0;
+	if ( Player_ai->target_objnum < 0 || Player_ship->flags[Ship::Ship_Flags::Cannot_perform_scan] ) {
+		return false;
 	}
 
 	cargo_objp = &Objects[Player_ai->target_objnum];
@@ -1534,37 +1667,64 @@ int player_inspect_cargo(float frametime, char *outstr)
 	cargo_sp = &Ships[cargo_objp->instance];
 	cargo_sip = &Ship_info[cargo_sp->ship_info_index];
 
-	// Goober5000 - possibly swap cargo scan behavior
-    scan_subsys = cargo_sip->is_huge_ship();
-    if (cargo_sp->flags[Ship::Ship_Flags::Toggle_subsystem_scanning])
-		scan_subsys = !scan_subsys;
-	if (scan_subsys)
-		return player_inspect_cap_subsys_cargo(frametime, outstr);
-
-	// check if target is ship class that can be inspected
-	// MWA -- 1/27/98 -- added fighters/bombers to this list.  For multiplayer, we
-	// want to show callsign of player
-	// G5K -- 10/20/08 -- moved the callsign code into hud_stuff_ship_callsign, where
-	// it makes more sense
-
-	// scannable cargo behaves differently.  Scannable cargo is either "scanned" or "not scanned".  This flag
-	// can be set on any ship.  Any ship with this set won't have "normal" cargo behavior
-	if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) ) {
-        if (!(cargo_sip->flags[Ship::Info_Flags::Cargo] || cargo_sip->flags[Ship::Info_Flags::Transport])) {
-			return 0;
+	if (Use_new_scanning_behavior) {
+		// If this flag is active, no matter the ship class, we do subsystem scanning
+		if (cargo_sp->flags[Ship::Ship_Flags::Toggle_subsystem_scanning]) {
+			return player_inspect_cap_subsys_cargo(frametime, outstr);
 		}
+	} else {
+		// Goober5000 - possibly swap cargo scan behavior
+		int scan_subsys = cargo_sip->is_huge_ship();
+		if (cargo_sp->flags[Ship::Ship_Flags::Toggle_subsystem_scanning])
+			scan_subsys = !scan_subsys;
+		if (scan_subsys)
+			return player_inspect_cap_subsys_cargo(frametime, outstr);
+	}
+
+	if (Use_new_scanning_behavior) {
+		// If this flag is inactive then the ship cannot be scanned at all
+		if (!(cargo_sp->flags[Ship::Ship_Flags::Scannable])) {
+			return false;
+		}
+	} else {
+		// scannable cargo behaves differently.  Scannable cargo is either "scanned" or "not scanned".  This flag
+		// can be set on any ship.  Any ship with this set won't have "normal" cargo behavior
+		if (!(cargo_sp->flags[Ship::Ship_Flags::Scannable])) {
+			if (!(cargo_sip->flags[Ship::Info_Flags::Cargo] || cargo_sip->flags[Ship::Info_Flags::Transport])) {
+				return false;
+			}
+		}
+	}
+
+	// Whether or not we are scanning in a mode that will reveal the cargo contents
+	bool reveal_cargo = false;
+	if (Use_new_scanning_behavior && !(cargo_sp->flags[Ship::Ship_Flags::No_scanned_cargo])) {
+		reveal_cargo = true;
+	} else if (!(cargo_sp->flags[Ship::Ship_Flags::Scannable])) {
+		reveal_cargo = true;
 	}
 
 	// if cargo is already revealed
 	if ( cargo_sp->flags[Ship::Ship_Flags::Cargo_revealed] ) {
-		if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) ) {
-			char *cargo_name = Cargo_names[cargo_sp->cargo1 & CARGO_INDEX_MASK];
-            Assert(cargo_sip->flags[Ship::Info_Flags::Cargo] || cargo_sip->flags[Ship::Info_Flags::Transport]);
+		if (reveal_cargo) {
+			auto cargo_name = (cargo_sp->cargo1 & CARGO_INDEX_MASK) == 0
+				? XSTR("Nothing", 1674)
+				: Cargo_names[cargo_sp->cargo1 & CARGO_INDEX_MASK];
+			//Why was this assert here? I'm not sure it makes much sense because any ship can be scanned and have cargo revealed...
+            //Assert(cargo_sip->flags[Ship::Info_Flags::Cargo] || cargo_sip->flags[Ship::Info_Flags::Transport]);
 
-			if ( cargo_name[0] == '#' ) {
-				sprintf(outstr, XSTR("passengers: %s", 83), cargo_name+1 );
+			if (cargo_sp->cargo_title[0] != '\0') {
+				if (cargo_sp->cargo_title[0] == '#') {
+					sprintf(outstr, "%s", cargo_name);
+				} else {
+					sprintf(outstr, "%s: %s", cargo_sp->cargo_title, cargo_name);
+				}
 			} else {
-				sprintf(outstr,XSTR("cargo: %s", 84), cargo_name );
+				if (cargo_name[0] == '#') {
+					sprintf(outstr, XSTR("passengers: %s", 83), cargo_name + 1);
+				} else {
+					sprintf(outstr, XSTR("cargo: %s", 84), cargo_name);
+				}
 			}
 		} else {
 			strcpy(outstr, XSTR( "Scanned", 85) );
@@ -1574,7 +1734,7 @@ int player_inspect_cargo(float frametime, char *outstr)
 		// are in the process of scanning
 		Player->cargo_inspect_time = 0;
 
-		return 1;
+		return true;
 	}
 
 	// see if player is within inspection range
@@ -1583,29 +1743,49 @@ int player_inspect_cargo(float frametime, char *outstr)
 	scan_dist *= player_sip->scanning_range_multiplier;
 
 	if ( Player_ai->current_target_distance < scan_dist ) {
+		vec3d vec_to_cargo;
 
 		// check if player is facing cargo, do not proceed with inspection if not
 		vm_vec_normalized_dir(&vec_to_cargo, &cargo_objp->pos, &Player_obj->pos);
-		dot = vm_vec_dot(&vec_to_cargo, &Player_obj->orient.vec.fvec);
+		float dot = vm_vec_dot(&vec_to_cargo, &Player_obj->orient.vec.fvec);
 		if ( dot < CARGO_MIN_DOT_TO_REVEAL ) {
-			if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) )
-				strcpy(outstr,XSTR( "cargo: <unknown>", 86));
-			else
-				strcpy(outstr,XSTR( "not scanned", 87));
+			if (reveal_cargo) {
+				if (cargo_sp->cargo_title[0] != '\0') {
+					if (cargo_sp->cargo_title[0] == '#') {
+						strcpy(outstr, XSTR("<unknown>", 1852));
+					} else {
+						sprintf(outstr, XSTR("%s: <unknown>", 1850), cargo_sp->cargo_title);
+					}
+				} else {
+					strcpy(outstr, XSTR("cargo: <unknown>", 86));
+				}
+			} else {
+				strcpy(outstr, XSTR("not scanned", 87));
+			}
+
 			hud_targetbox_end_flash(TBOX_FLASH_CARGO);
 			Player->cargo_inspect_time = 0;
-			return 1;
+			return true;
 		}
 
-		// player is facing the cargo, and withing range, so proceed with inspection
+		// player is facing the cargo, and within range, so proceed with inspection
 		if ( hud_sensors_ok(Player_ship, 0) ) {
 			Player->cargo_inspect_time += (int)std::lround(frametime*1000);
 		}
 
-		if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) )
-			strcpy(outstr,XSTR( "cargo: inspecting", 88));
-		else
-			strcpy(outstr,XSTR( "scanning", 89));
+		if (reveal_cargo) {
+			if (cargo_sp->cargo_title[0] != '\0') {
+				if (cargo_sp->cargo_title[0] == '#') {
+					strcpy(outstr, XSTR("inspecting", 1853));
+				} else {
+					sprintf(outstr, XSTR("%s: inspecting", 1851), cargo_sp->cargo_title);
+				}
+			} else {
+				strcpy(outstr, XSTR("cargo: inspecting", 88));
+			}
+		} else {
+			strcpy(outstr, XSTR("scanning", 89));
+		}
 
 		float scan_time = i2fl(cargo_sip->scan_time);
 		scan_time *= player_sip->scanning_time_multiplier;
@@ -1616,54 +1796,83 @@ int player_inspect_cargo(float frametime, char *outstr)
 			Player->cargo_inspect_time = 0;
 		}
 	} else {
-		if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) )
-			strcpy(outstr,XSTR( "cargo: <unknown>", 86));
-		else
-			strcpy(outstr,XSTR( "not scanned", 87));
+		if (reveal_cargo){
+			if (cargo_sp->cargo_title[0] != '\0') {
+				if (cargo_sp->cargo_title[0] == '#') {
+					strcpy(outstr, XSTR("<unknown>", 1852));
+				} else {
+					sprintf(outstr, XSTR("%s: <unknown>", 1850), cargo_sp->cargo_title);
+				}
+			} else {
+				strcpy(outstr, XSTR("cargo: <unknown>", 86));
+			}
+		} else {
+			strcpy(outstr, XSTR("not scanned", 87));
+		}
 	}
 
-	return 1;
+	return true;
 }
 
 /**
  * @return 1 if player should display outstr on HUD; 0 if don't display cargo on HUD
  */
-int player_inspect_cap_subsys_cargo(float frametime, char *outstr)
+bool player_inspect_cap_subsys_cargo(float frametime, char *outstr)
 {
 	object		*cargo_objp;
-	ship			*cargo_sp;
+	ship		*cargo_sp;
 	ship_info	*cargo_sip;
-	vec3d		vec_to_cargo;
-	float			dot;
 	ship_subsys	*subsys;
 
 	outstr[0] = 0;
 	subsys = Player_ai->targeted_subsys;
 
-	if ( subsys == NULL ) {
-		return 0;
-	} 
+	if ( subsys == NULL || Player_ship->flags[Ship::Ship_Flags::Cannot_perform_scan] ) {
+		return false;
+	}
 
 	cargo_objp = &Objects[Player_ai->target_objnum];
 	Assert(cargo_objp->type == OBJ_SHIP);
 	cargo_sp = &Ships[cargo_objp->instance];
 	cargo_sip = &Ship_info[cargo_sp->ship_info_index];
 
+	// If we're using the new scanning behavior then we have to check that the ship is actually scannable first
+	if (Use_new_scanning_behavior && !(cargo_sp->flags[Ship::Ship_Flags::Scannable])) {
+		return false;
+	}
+
 	// don't do any sort of scanning thing unless capship has a non-"nothing" cargo
 	// this compensates for changing the "no display" index from -1 to 0
 	if (subsys->subsys_cargo_name == 0) {
-		return 0;
+		return false;
+	}
+
+	// Whether or not we are scanning in a mode that will reveal the cargo contents
+	bool reveal_cargo = false;
+	if (Use_new_scanning_behavior && !(cargo_sp->flags[Ship::Ship_Flags::No_scanned_cargo])) {
+		reveal_cargo = true;
+	} else if (!(cargo_sp->flags[Ship::Ship_Flags::Scannable])) {
+		reveal_cargo = true;
 	}
 
 	// if cargo is already revealed
 	if (subsys->flags[Ship::Subsystem_Flags::Cargo_revealed]) {
-		if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) ) {
-			char *cargo_name = Cargo_names[subsys->subsys_cargo_name & CARGO_INDEX_MASK];
-
-			if ( cargo_name[0] == '#' ) {
-				sprintf(outstr, XSTR("passengers: %s", 83), cargo_name+1 );
+		if (reveal_cargo) {
+			auto cargo_name = (subsys->subsys_cargo_name & CARGO_INDEX_MASK) == 0
+				? XSTR("Nothing", 1674)
+				: Cargo_names[subsys->subsys_cargo_name & CARGO_INDEX_MASK];
+			if (subsys->subsys_cargo_title[0] != '\0') {
+				if (subsys->subsys_cargo_title[0] == '#') {
+					sprintf(outstr, "%s", cargo_name);
+				} else {
+					sprintf(outstr, "%s: %s", subsys->subsys_cargo_title, cargo_name);
+				}
 			} else {
-				sprintf(outstr,XSTR("cargo: %s", 84), cargo_name );
+				if (cargo_name[0] == '#') {
+					sprintf(outstr, XSTR("passengers: %s", 83), cargo_name + 1);
+				} else {
+					sprintf(outstr, XSTR("cargo: %s", 84), cargo_name);
+				}
 			}
 		} else {
 			strcpy(outstr, XSTR( "Scanned", 85) );
@@ -1673,7 +1882,7 @@ int player_inspect_cap_subsys_cargo(float frametime, char *outstr)
 		// are in the process of scanning
 		Player->cargo_inspect_time = 0;
 
-		return 1;
+		return true;
 	}
 
 	// see if player is within inspection range [ok for subsys]
@@ -1695,20 +1904,32 @@ int player_inspect_cap_subsys_cargo(float frametime, char *outstr)
 	scan_dist *= player_sip->scanning_range_multiplier;
 
 	if ( Player_ai->current_target_distance < scan_dist ) {
+		vec3d vec_to_cargo;
+
 		// check if player is facing cargo, do not proceed with inspection if not
 		vm_vec_normalized_dir(&vec_to_cargo, &subsys_pos, &Player_obj->pos);
-		dot = vm_vec_dot(&vec_to_cargo, &Player_obj->orient.vec.fvec);
+		float dot = vm_vec_dot(&vec_to_cargo, &Player_obj->orient.vec.fvec);
 		int hud_targetbox_subsystem_in_view(object *target_objp, int *sx, int *sy);
 		subsys_in_view = hud_targetbox_subsystem_in_view(cargo_objp, &x, &y);
 
 		if ( (dot < CARGO_MIN_DOT_TO_REVEAL) || (!subsys_in_view) ) {
-			if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) )
-				strcpy(outstr,XSTR( "cargo: <unknown>", 86));
-			else
+			if (reveal_cargo) {
+				if (subsys->subsys_cargo_title[0] != '\0') {
+					if (subsys->subsys_cargo_title[0] == '#') {
+						strcpy(outstr, XSTR("<unknown>", 1852));
+					} else {
+						sprintf(outstr, XSTR("%s: <unknown>", 1850), subsys->subsys_cargo_title);
+					}
+				} else {
+					strcpy(outstr, XSTR("cargo: <unknown>", 86));
+				}
+			} else {
 				strcpy(outstr,XSTR( "not scanned", 87));
+			}
+
 			hud_targetbox_end_flash(TBOX_FLASH_CARGO);
 			Player->cargo_inspect_time = 0;
-			return 1;
+			return true;
 		}
 
 		// player is facing the cargo, and within range, so proceed with inspection
@@ -1716,8 +1937,16 @@ int player_inspect_cap_subsys_cargo(float frametime, char *outstr)
 			Player->cargo_inspect_time += (int)std::lround(frametime*1000);
 		}
 
-		if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) )
-			strcpy(outstr,XSTR( "cargo: inspecting", 88));
+		if (reveal_cargo)
+			if (subsys->subsys_cargo_title[0] != '\0') {
+				if (subsys->subsys_cargo_title[0] == '#') {
+					strcpy(outstr, XSTR("inspecting", 1853));
+				} else {
+					sprintf(outstr, XSTR("%s: inspecting", 1851), subsys->subsys_cargo_title);
+				}
+			} else {
+				strcpy(outstr, XSTR("cargo: inspecting", 88));
+			}
 		else
 			strcpy(outstr,XSTR( "scanning", 89));
 
@@ -1734,13 +1963,21 @@ int player_inspect_cap_subsys_cargo(float frametime, char *outstr)
 			Player->cargo_inspect_time = 0;
 		}
 	} else {
-		if ( !(cargo_sp->flags[Ship::Ship_Flags::Scannable]) )
-			strcpy(outstr,XSTR( "cargo: <unknown>", 86));
+		if (reveal_cargo)
+			if (subsys->subsys_cargo_title[0] != '\0') {
+				if (subsys->subsys_cargo_title[0] == '#') {
+					strcpy(outstr, XSTR("<unknown>", 1852));
+				} else {
+					sprintf(outstr, XSTR("%s: <unknown>", 1850), subsys->subsys_cargo_title);
+				}
+			} else {
+				strcpy(outstr, XSTR("cargo: <unknown>", 86));
+			}
 		else
 			strcpy(outstr,XSTR( "not scanned", 87));
 	}
 
-	return 1;
+	return true;
 }
 
 
@@ -1759,83 +1996,54 @@ float	player_farthest_weapon_range()
 }
 
 /**
- * Determine text name for the weapon that killed the player.
- *
- * @param weapon_info_index	Weapon type that killed the player (can be -1 if no weapon involved)
- * @param killer_species Species of ship that fired weapon
- * @param weapon_name (Output parameter) Stores weapon name generated in this function
- */
-const char *player_get_killer_weapon_name(int weapon_info_index, int killer_species)
-{
-	if ( weapon_info_index < 0 ) {
-		return "";
-	}
-
-#ifndef NDEBUG
-	if ( Show_killer_weapon || (killer_species == Ship_info[Player_ship->ship_info_index].species) ) {
-#else
-	if (killer_species == Ship_info[Player_ship->ship_info_index].species) {
-#endif
-		return Weapon_info[weapon_info_index].get_display_name();
-	} else {
-		if ( Weapon_info[weapon_info_index].subtype == WP_MISSILE ) {
-			return XSTR( "missile", 90);
-		} else {
-			return XSTR( "laser fire", 91);
-		}
-	}
-}
-
-/**
  * Generates the message for death of a player given the information stored in the player object.
  */
 void player_generate_death_message(player *player_p)
 {
 	SCP_string &msg = player_p->death_message;
-	int ship_index;
 
-	auto weapon_name = player_get_killer_weapon_name(player_p->killer_weapon_index, player_p->killer_species);
+	// killer_parent_name is always a ship name or a callsign (or blank).  If it's a ship name, get the ship and use the ship's display name
+	auto ship_entry = ship_registry_get(player_p->killer_parent_name);
+	auto shipp = ship_entry && ship_entry->has_shipp() ? ship_entry->shipp() : nullptr;
+	auto killer_display_name = shipp ? shipp->get_display_name() : player_p->killer_parent_name;
 
 	switch (player_p->killer_objtype)
 	{
 		case OBJ_SHOCKWAVE:
-			if (weapon_name[0])
+			if (player_p->killer_weapon_index >= 0)
 			{
 				sprintf(msg, XSTR( "%s was killed by a missile shockwave", 92), player_p->callsign);
 			}
 			else
 			{
-				sprintf(msg, XSTR( "%s was killed by a shockwave from %s exploding", 93), player_p->callsign, player_p->killer_parent_name);
+				sprintf(msg, XSTR( "%s was killed by a shockwave from %s exploding", 93), player_p->callsign, killer_display_name);
 			}
 			break;
 
 		case OBJ_WEAPON:
-			Assert(weapon_name[0]);
-
 			// is this from a friendly ship?
-			ship_index = ship_name_lookup(player_p->killer_parent_name, 1);
-			if ((ship_index >= 0) && (Player_ship != NULL) && (Player_ship->team == Ships[ship_index].team))
+			if (shipp && Player_ship && (Player_ship->team == shipp->team))
 			{
-				sprintf(msg, XSTR( "%s was killed by friendly fire from %s", 1338), player_p->callsign, player_p->killer_parent_name);
+				sprintf(msg, XSTR( "%s was killed by friendly fire from %s", 1338), player_p->callsign, killer_display_name);
 			}
 			else
 			{
-				sprintf(msg, XSTR( "%s was killed by %s", 94), player_p->callsign, player_p->killer_parent_name);
+				sprintf(msg, XSTR( "%s was killed by %s", 94), player_p->callsign, killer_display_name);
 			}
 			break;
 
 		case OBJ_SHIP:
 			if (player_p->flags & PLAYER_FLAGS_KILLED_BY_EXPLOSION)
 			{
-				sprintf(msg, XSTR( "%s was killed by a blast from %s exploding", 95), player_p->callsign, player_p->killer_parent_name);
+				sprintf(msg, XSTR( "%s was killed by a blast from %s exploding", 95), player_p->callsign, killer_display_name);
 			}
 			else if (player_p->flags & PLAYER_FLAGS_KILLED_BY_ENGINE_WASH)
 			{
-				sprintf(msg, XSTR( "%s was killed by engine wash from %s", 1494), player_p->callsign, player_p->killer_parent_name);
+				sprintf(msg, XSTR( "%s was killed by engine wash from %s", 1494), player_p->callsign, killer_display_name);
 			}
 			else
 			{
-				sprintf(msg, XSTR( "%s was killed by a collision with %s", 96), player_p->callsign, player_p->killer_parent_name);
+				sprintf(msg, XSTR( "%s was killed by a collision with %s", 96), player_p->callsign, killer_display_name);
 			}
 			break;
 
@@ -1856,14 +2064,13 @@ void player_generate_death_message(player *player_p)
 			else
 			{
 				// is this from a friendly ship?
-				ship_index = ship_name_lookup(player_p->killer_parent_name, 1);
-				if ((ship_index >= 0) && (Player_ship != NULL) && (Player_ship->team == Ships[ship_index].team))
+				if (shipp && Player_ship && (Player_ship->team == shipp->team))
 				{
-					sprintf(msg, XSTR( "%s was destroyed by friendly beam fire from %s", 1339), player_p->callsign, player_p->killer_parent_name);
+					sprintf(msg, XSTR( "%s was destroyed by friendly beam fire from %s", 1339), player_p->callsign, killer_display_name);
 				}
 				else
 				{
-					sprintf(msg, XSTR( "%s was destroyed by a beam from %s", 1082), player_p->callsign, player_p->killer_parent_name);
+					sprintf(msg, XSTR( "%s was destroyed by a beam from %s", 1082), player_p->callsign, killer_display_name);
 				}			
 			}
 			break;
@@ -1962,6 +2169,8 @@ void player_maybe_play_all_alone_msg()
 
 	for ( so = GET_FIRST(&Ship_obj_list); so != END_OF_LIST(&Ship_obj_list); so = GET_NEXT(so) ) {
 		objp = &Objects[so->objnum];
+		if (objp->flags[Object::Object_Flags::Should_be_dead])
+			continue;
 
 		if ( objp == Player_obj ) {
 			continue;
@@ -1975,10 +2184,7 @@ void player_maybe_play_all_alone_msg()
 		}
 	}
 
-	// met all the requirements, now only play 50% of the time :)
-	if (Random::flip_coin()) {
-		message_send_builtin_to_player(MESSAGE_ALL_ALONE, NULL, MESSAGE_PRIORITY_HIGH, MESSAGE_TIME_ANYTIME, 0, 0, -1, -1);
-	}
+	message_send_builtin(MESSAGE_ALL_ALONE, nullptr, nullptr, -1, -1);
 	Player->flags |= PLAYER_FLAGS_NO_CHECK_ALL_ALONE_MSG;
 } 
 
@@ -2062,10 +2268,8 @@ camid player_get_cam()
 			if (Viewer_mode & VM_OTHER_SHIP) {
 				//	View from target.
 				viewer_obj = &Objects[Player_ai->target_objnum];
-				if ( viewer_obj->type == OBJ_SHIP ) {
-					ship_get_eye( &eye_pos, &eye_orient, viewer_obj );
-					view_from_player = 0;
-				}
+				object_get_eye( &eye_pos, &eye_orient, viewer_obj );
+				view_from_player = 0;
 			}
 
 			if ( view_from_player ) {
@@ -2074,7 +2278,7 @@ camid player_get_cam()
 				eye_pos = Player_obj->pos;
 
 				vm_vec_normalized_dir(&tmp_dir, &Objects[Player_ai->target_objnum].pos, &eye_pos);
-				vm_vector_2_matrix(&eye_orient, &tmp_dir, NULL, NULL);
+				vm_vector_2_matrix_norm(&eye_orient, &tmp_dir, nullptr, nullptr);
 			}
 		} else {
 			dist = vm_vec_normalized_dir(&vec_to_deader, &Player_obj->pos, &Dead_camera_pos);
@@ -2101,7 +2305,7 @@ camid player_get_cam()
 
 			vm_vec_normalized_dir(&tmp_dir, &Player_obj->pos, &eye_pos);
 
-			vm_vector_2_matrix(&eye_orient, &tmp_dir, NULL, NULL);
+			vm_vector_2_matrix_norm(&eye_orient, &tmp_dir, nullptr, nullptr);
 			viewer_obj = NULL;
 		}
 	} 
@@ -2122,6 +2326,7 @@ camid player_get_cam()
 		} else if (Viewer_mode & VM_EXTERNAL) {
 			Assert(viewer_obj != NULL);
 			matrix	tm, tm2;
+			vec3d uvec;
 
 			vm_angles_2_matrix(&tm2, &Viewer_external_info.angles);
 			vm_matrix_x_matrix(&tm, &viewer_obj->orient, &tm2);
@@ -2130,9 +2335,9 @@ camid player_get_cam()
 
 			vm_vec_scale_add(&eye_pos, &viewer_obj->pos, &tm.vec.fvec, Viewer_external_info.current_distance);
 
-			vm_vec_sub(&tmp_dir, &viewer_obj->pos, &eye_pos);
-			vm_vec_normalize(&tmp_dir);
-			vm_vector_2_matrix(&eye_orient, &tmp_dir, &viewer_obj->orient.vec.uvec, NULL);
+			vm_vec_normalized_dir(&tmp_dir, &viewer_obj->pos, &eye_pos);
+			vm_vec_copy_normalize(&uvec, &viewer_obj->orient.vec.uvec);	// out of an abundance of caution
+			vm_vector_2_matrix_norm(&eye_orient, &tmp_dir, &uvec, nullptr);
  			viewer_obj = NULL;
 
 			//	Modify the orientation based on head orientation.
@@ -2149,8 +2354,7 @@ camid player_get_cam()
 
 			vm_vec_scale_add(&eye_pos, &viewer_obj->pos, &move_dir, -3.0f * viewer_obj->radius - Viewer_chase_info.distance);
 			vm_vec_scale_add2(&eye_pos, &viewer_obj->orient.vec.uvec, 0.75f * viewer_obj->radius);
-			vm_vec_sub(&tmp_dir, &viewer_obj->pos, &eye_pos);
-			vm_vec_normalize(&tmp_dir);
+			vm_vec_normalized_dir(&tmp_dir, &viewer_obj->pos, &eye_pos);
 
 			// JAS: I added the following code because if you slew up using
 			// Descent-style physics, eye_dir and Viewer_obj->orient.vec.uvec are
@@ -2170,29 +2374,16 @@ camid player_get_cam()
 			Warp_camera.get_info(&eye_pos, NULL);
 
 			ship * shipp = &Ships[Player_obj->instance];
-
-
-			vec3d warp_pos = Player_obj->pos;
+			vec3d uvec, warp_pos = Player_obj->pos;
 			shipp->warpout_effect->getWarpPosition(&warp_pos);
-			vm_vec_sub(&tmp_dir, &warp_pos, &eye_pos);
-			vm_vec_normalize(&tmp_dir);
-			vm_vector_2_matrix(&eye_orient, &tmp_dir, &Player_obj->orient.vec.uvec, NULL);
+
+			vm_vec_normalized_dir(&tmp_dir, &warp_pos, &eye_pos);
+			vm_vec_copy_normalize(&uvec, &Player_obj->orient.vec.uvec);	// out of an abundance of caution
+			vm_vector_2_matrix_norm(&eye_orient, &tmp_dir, &uvec, nullptr);
 			viewer_obj = NULL;
 		} else {
-			// get an eye position based upon the correct type of object
-			switch(viewer_obj->type)
-			{
-				case OBJ_SHIP:
-					// make a call to get the eye point for the player object
-					ship_get_eye( &eye_pos, &eye_orient, viewer_obj );
-					break;
-				case OBJ_OBSERVER:
-					// make a call to get the eye point for the player object
-					observer_get_eye( &eye_pos, &eye_orient, viewer_obj );				
-					break;
-				default :
-					Int3();
-			}			
+			// get an eye position for the player object
+			object_get_eye( &eye_pos, &eye_orient, viewer_obj );
 		}
 	}
 

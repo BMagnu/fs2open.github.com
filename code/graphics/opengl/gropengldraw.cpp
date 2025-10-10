@@ -25,21 +25,33 @@
 #include "graphics/matrix.h"
 #include "graphics/paths/PathRenderer.h"
 #include "graphics/util/uniform_structs.h"
+#include "lighting/lighting.h"
 #include "render/3d.h"
 #include "tracing/tracing.h"
 
 GLuint Scene_framebuffer;
+GLuint Scene_framebuffer_ms;
 GLuint Scene_ldr_texture;
 GLuint Scene_color_texture;
 GLuint Scene_position_texture;
 GLuint Scene_normal_texture;
 GLuint Scene_specular_texture;
 GLuint Scene_emissive_texture;
+GLuint Scene_color_texture_ms;
+GLuint Scene_position_texture_ms;
+GLuint Scene_normal_texture_ms;
+GLuint Scene_specular_texture_ms;
+GLuint Scene_emissive_texture_ms;
+GLuint Scene_composite_texture;
 GLuint Scene_luminance_texture;
-GLuint Scene_effect_texture;
 GLuint Scene_depth_texture;
+GLuint Scene_depth_texture_ms;
 GLuint Cockpit_depth_texture;
 GLuint Scene_stencil_buffer;
+
+GLuint Back_framebuffer;
+GLuint Back_texture;
+GLuint Back_depth_texture;
 
 GLuint Distortion_framebuffer = 0;
 GLuint Distortion_texture[2];
@@ -92,7 +104,6 @@ void opengl_setup_scene_textures()
 
 		Scene_ldr_texture = 0;
 		Scene_color_texture = 0;
-		Scene_effect_texture = 0;
 		Scene_depth_texture = 0;
 		return;
 	}
@@ -218,9 +229,28 @@ void opengl_setup_scene_textures()
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Scene_texture_width, Scene_texture_height, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
+	glGenerateMipmap(GL_TEXTURE_2D);
 	opengl_set_object_label(GL_TEXTURE, Scene_emissive_texture, "Scene Emissive texture");
 
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT4, GL_TEXTURE_2D, Scene_emissive_texture, 0);
+
+	// setup compositing render texture
+	glGenTextures(1, &Scene_composite_texture);
+
+	GL_state.Texture.SetActiveUnit(0);
+	GL_state.Texture.SetTarget(GL_TEXTURE_2D);
+	GL_state.Texture.Enable(Scene_composite_texture);
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Scene_texture_width, Scene_texture_height, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
+	opengl_set_object_label(GL_TEXTURE, Scene_composite_texture, "Scene Composite texture");
+
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT5, GL_TEXTURE_2D, Scene_composite_texture, 0);
 
 	//Set up luminance texture (used as input for FXAA)
 	// also used as a light accumulation buffer during the deferred pass
@@ -238,24 +268,6 @@ void opengl_setup_scene_textures()
 
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Scene_texture_width, Scene_texture_height, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
 	opengl_set_object_label(GL_TEXTURE, Scene_luminance_texture, "Scene Luminance texture");
-
-	// setup effect texture
-	glGenTextures(1, &Scene_effect_texture);
-
-	GL_state.Texture.SetActiveUnit(0);
-	GL_state.Texture.SetTarget(GL_TEXTURE_2D);
-	GL_state.Texture.Enable(Scene_effect_texture);
-
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Scene_texture_width, Scene_texture_height, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
-	opengl_set_object_label(GL_TEXTURE, Scene_effect_texture, "Scene Effect texture");
-
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT5, GL_TEXTURE_2D, Scene_effect_texture, 0);
 
 	// setup cockpit depth texture
 	glGenTextures(1, &Cockpit_depth_texture);
@@ -324,9 +336,6 @@ void opengl_setup_scene_textures()
 		glDeleteTextures(1, &Scene_emissive_texture);
 		Scene_emissive_texture = 0;
 
-		glDeleteTextures(1, &Scene_effect_texture);
-		Scene_effect_texture = 0;
-
 		glDeleteTextures(1, &Scene_depth_texture);
 		Scene_depth_texture = 0;
 
@@ -339,6 +348,209 @@ void opengl_setup_scene_textures()
 		Gr_post_processing_enabled = false;
 		Gr_enable_soft_particles = false;
 		return;
+	}
+
+	if (Cmdline_msaa_enabled > 0) {
+		glEnable(GL_MULTISAMPLE);
+
+		// Make sure our MSAA setting are valid
+		int maxSamples;
+		glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+
+		//Disallow >16 samples due to manual sorting networks in shader
+		if (maxSamples > 16)
+			maxSamples = 16;
+
+		if (maxSamples < Cmdline_msaa_enabled) {
+			Warning(LOCATION, "Requested MSAA level of %d is not supported. Max MSAA level is %d.", Cmdline_msaa_enabled, maxSamples);
+			Cmdline_msaa_enabled = maxSamples;
+		}
+		else if (Cmdline_msaa_enabled & (Cmdline_msaa_enabled - 1)) {
+			int newLevel = 1 << (sizeof(int) * 8 - 2);
+			while ((newLevel & Cmdline_msaa_enabled) == 0)
+				newLevel = newLevel >> 1;
+			Warning(LOCATION, "Requested MSAA level of %d is not a power of 2. Setting to %d.", Cmdline_msaa_enabled, newLevel);
+			Cmdline_msaa_enabled = newLevel;
+		}
+
+		// create framebuffer
+		glGenFramebuffers(1, &Scene_framebuffer_ms);
+		GL_state.BindFrameBuffer(Scene_framebuffer_ms);
+		opengl_set_object_label(GL_FRAMEBUFFER, Scene_framebuffer_ms, "Scene framebuffer multisampling");
+
+		// setup high dynamic range color texture
+		glGenTextures(1, &Scene_color_texture_ms);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D_MULTISAMPLE);
+		GL_state.Texture.Enable(Scene_color_texture_ms);
+
+		glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE,
+			Cmdline_msaa_enabled,
+			GL_RGBA16F,
+			Scene_texture_width,
+			Scene_texture_height,
+			GL_TRUE);
+
+		glFramebufferTexture2D(GL_FRAMEBUFFER,
+			GL_COLOR_ATTACHMENT0,
+			GL_TEXTURE_2D_MULTISAMPLE,
+			Scene_color_texture_ms,
+			0);
+		opengl_set_object_label(GL_TEXTURE, Scene_color_texture_ms, "Scene color texture multisampling");
+
+		// setup position render texture
+		glGenTextures(1, &Scene_position_texture_ms);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D_MULTISAMPLE);
+		GL_state.Texture.Enable(Scene_position_texture_ms);
+
+		glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE,
+			Cmdline_msaa_enabled,
+			GL_RGBA16F,
+			Scene_texture_width,
+			Scene_texture_height,
+			GL_TRUE);
+		opengl_set_object_label(GL_TEXTURE, Scene_position_texture_ms, "Scene Position texture multisampling");
+
+		glFramebufferTexture2D(GL_FRAMEBUFFER,
+			GL_COLOR_ATTACHMENT1,
+			GL_TEXTURE_2D_MULTISAMPLE,
+			Scene_position_texture_ms,
+			0);
+
+		// setup normal render texture
+		glGenTextures(1, &Scene_normal_texture_ms);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D_MULTISAMPLE);
+		GL_state.Texture.Enable(Scene_normal_texture_ms);
+
+		glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE,
+			Cmdline_msaa_enabled,
+			GL_RGBA16F,
+			Scene_texture_width,
+			Scene_texture_height,
+			GL_TRUE);
+		opengl_set_object_label(GL_TEXTURE, Scene_normal_texture_ms, "Scene Normal texture multisampling");
+
+		glFramebufferTexture2D(GL_FRAMEBUFFER,
+			GL_COLOR_ATTACHMENT2,
+			GL_TEXTURE_2D_MULTISAMPLE,
+			Scene_normal_texture_ms,
+			0);
+
+		// setup specular render texture
+		glGenTextures(1, &Scene_specular_texture_ms);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D_MULTISAMPLE);
+		GL_state.Texture.Enable(Scene_specular_texture_ms);
+
+		glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE,
+			Cmdline_msaa_enabled,
+			GL_RGBA8,
+			Scene_texture_width,
+			Scene_texture_height,
+			GL_TRUE);
+		opengl_set_object_label(GL_TEXTURE, Scene_specular_texture_ms, "Scene Specular texture multisample");
+
+		glFramebufferTexture2D(GL_FRAMEBUFFER,
+			GL_COLOR_ATTACHMENT3,
+			GL_TEXTURE_2D_MULTISAMPLE,
+			Scene_specular_texture_ms,
+			0);
+
+		// setup emissive render texture
+		glGenTextures(1, &Scene_emissive_texture_ms);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D_MULTISAMPLE);
+		GL_state.Texture.Enable(Scene_emissive_texture_ms);
+
+		glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE,
+			Cmdline_msaa_enabled,
+			GL_RGBA16F,
+			Scene_texture_width,
+			Scene_texture_height,
+			GL_TRUE);
+		opengl_set_object_label(GL_TEXTURE, Scene_emissive_texture_ms, "Scene Emissive texture multisample");
+		glFramebufferTexture2D(GL_FRAMEBUFFER,
+			GL_COLOR_ATTACHMENT4,
+			GL_TEXTURE_2D_MULTISAMPLE,
+			Scene_emissive_texture_ms,
+			0);
+
+		// setup main depth texture
+		glGenTextures(1, &Scene_depth_texture_ms);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D_MULTISAMPLE);
+		GL_state.Texture.Enable(Scene_depth_texture_ms);
+
+		glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE,
+			Cmdline_msaa_enabled,
+			GL_DEPTH_COMPONENT24,
+			Scene_texture_width,
+			Scene_texture_height,
+			GL_TRUE);
+		opengl_set_object_label(GL_TEXTURE, Scene_depth_texture_ms, "Scene depth texture multisample");
+		glFramebufferTexture2D(GL_FRAMEBUFFER,
+			GL_DEPTH_ATTACHMENT,
+			GL_TEXTURE_2D_MULTISAMPLE,
+			Scene_depth_texture_ms,
+			0);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D);
+	}
+
+	if (Cmdline_window_res) {
+		//Gen Framebuffer
+		glGenFramebuffers(1, &Back_framebuffer);
+		GL_state.BindFrameBuffer(Back_framebuffer);
+		opengl_set_object_label(GL_FRAMEBUFFER, Back_framebuffer, "Backbuffer");
+
+		// setup main render texture
+
+		// setup high dynamic range color texture
+		glGenTextures(1, &Back_texture);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D);
+		GL_state.Texture.Enable(Back_texture);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gr_screen.max_w, gr_screen.max_h, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
+
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, Back_texture, 0);
+		opengl_set_object_label(GL_TEXTURE, Back_texture, "Backbuffer texture");
+
+		glGenTextures(1, &Back_depth_texture);
+
+		GL_state.Texture.SetActiveUnit(0);
+		GL_state.Texture.SetTarget(GL_TEXTURE_2D);
+		GL_state.Texture.Enable(Back_depth_texture);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gr_screen.max_w, gr_screen.max_h, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+		opengl_set_object_label(GL_TEXTURE, Back_depth_texture, "Backbuffer depth texture");
+
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, Back_depth_texture, 0);
+		gr_zbuffer_set(GR_ZBUFF_FULL);
+		glClear(GL_DEPTH_BUFFER_BIT);
 	}
 
 	//Setup thruster distortion framebuffer
@@ -432,11 +644,6 @@ void opengl_scene_texture_shutdown()
 		Scene_emissive_texture = 0;
 	}
 
-	if ( Scene_effect_texture ) {
-		glDeleteTextures(1, &Scene_effect_texture);
-		Scene_effect_texture = 0;
-	}
-
 	if ( Scene_depth_texture ) {
 		glDeleteTextures(1, &Scene_depth_texture);
 		Scene_depth_texture = 0;
@@ -475,7 +682,6 @@ void gr_opengl_scene_texture_begin()
 
 	GL_state.PushFramebufferState();
 	GL_state.BindFrameBuffer(Scene_framebuffer);
-	//glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, Scene_depth_texture, 0);
 
 	if (GL_rendering_to_texture)
 	{
@@ -491,17 +697,29 @@ void gr_opengl_scene_texture_begin()
 		Scene_texture_v_scale = 1.0f;
 	}
 
-	if ( Cmdline_no_deferred_lighting ) {
+	if (!light_deferred_enabled()) {
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	} else {
-		GLenum buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4 };
-		glDrawBuffers(5, buffers);
+		GLenum buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4, GL_COLOR_ATTACHMENT5 };
+		glDrawBuffers(6, buffers);
 
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		opengl_clear_deferred_buffers();
+
+		if (Cmdline_msaa_enabled > 0) {
+			GL_state.BindFrameBuffer(Scene_framebuffer_ms);
+
+			glDrawBuffers(6, buffers);
+
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+			opengl_clear_deferred_buffers();
+
+			GL_state.BindFrameBuffer(Scene_framebuffer);
+		}
 
 		glDrawBuffer(GL_COLOR_ATTACHMENT0);
 	}
@@ -586,6 +804,8 @@ void gr_opengl_copy_effect_texture()
 		return;
 	}
 
+    //Make sure we're reading from the up-to-date color texture
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
 	glDrawBuffer(GL_COLOR_ATTACHMENT5);
 	glBlitFramebuffer(0, 0, gr_screen.max_w, gr_screen.max_h, 0, 0, gr_screen.max_w, gr_screen.max_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 	glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -927,14 +1147,16 @@ void gr_opengl_render_decals(decal_material* material_info,
 							 primitive_type prim_type,
 							 vertex_layout* layout,
 							 int num_elements,
-							 const indexed_vertex_source& binding) {
+							 const indexed_vertex_source& binding,
+							 const gr_buffer_handle& instance_buffer,
+							 int num_instances) {
 	opengl_tnl_set_material_decal(material_info);
 
-	opengl_bind_vertex_layout(*layout,
-							  opengl_buffer_get_id(GL_ARRAY_BUFFER, binding.Vbuffer_handle),
+	opengl_bind_vertex_layout_multiple(*layout,
+							  SCP_vector<GLuint> { opengl_buffer_get_id(GL_ARRAY_BUFFER, binding.Vbuffer_handle), opengl_buffer_get_id(GL_ARRAY_BUFFER, instance_buffer) },
 							  opengl_buffer_get_id(GL_ELEMENT_ARRAY_BUFFER, binding.Ibuffer_handle));
 
-	glDrawElements(opengl_primitive_type(prim_type), num_elements, GL_UNSIGNED_INT, nullptr);
+	glDrawElementsInstanced(opengl_primitive_type(prim_type), num_elements, GL_UNSIGNED_INT, nullptr, num_instances);
 }
 
 void gr_opengl_start_decal_pass() {
@@ -953,8 +1175,9 @@ void gr_opengl_stop_decal_pass() {
 		GL_COLOR_ATTACHMENT2,
 		GL_COLOR_ATTACHMENT3,
 		GL_COLOR_ATTACHMENT4,
+		GL_COLOR_ATTACHMENT5,
 	};
-	glDrawBuffers(5, buffers2);
+	glDrawBuffers(6, buffers2);
 }
 
 void gr_opengl_calculate_irrmap()

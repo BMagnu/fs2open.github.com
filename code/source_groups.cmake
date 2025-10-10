@@ -117,6 +117,11 @@ add_file_folder("Camera"
 	camera/camera.h
 )
 
+add_file_folder("Cheats Table"
+	cheats_table/cheats_table.cpp
+	cheats_table/cheats_table.h
+)
+
 # CFile files
 add_file_folder("CFile"
 	cfile/cfile.cpp
@@ -222,6 +227,7 @@ add_file_folder("Default files\\\\data\\\\effects"
 	def_files/data/effects/bloom-comp-f.sdr
 	def_files/data/effects/blur-f.sdr
 	def_files/data/effects/brightpass-f.sdr
+	def_files/data/effects/copy-f.sdr
 	def_files/data/effects/decal-f.sdr
 	def_files/data/effects/decal-v.sdr
 	def_files/data/effects/deferred-clear-f.sdr
@@ -245,6 +251,10 @@ add_file_folder("Default files\\\\data\\\\effects"
 	def_files/data/effects/main-f.sdr
 	def_files/data/effects/main-g.sdr
 	def_files/data/effects/main-v.sdr
+	def_files/data/effects/main_large.sdr
+	def_files/data/effects/main_small.sdr
+	def_files/data/effects/model_shader_flags.h
+	def_files/data/effects/msaa-f.sdr
 	def_files/data/effects/nanovg-f.sdr
 	def_files/data/effects/nanovg-v.sdr
 	def_files/data/effects/normals.sdr
@@ -267,6 +277,7 @@ add_file_folder("Default files\\\\data\\\\effects"
 	def_files/data/effects/tonemapping-f.sdr
 	def_files/data/effects/video-f.sdr
 	def_files/data/effects/video-v.sdr
+	def_files/data/effects/volumetric-f.sdr
 )
 
 add_file_folder("Default files\\\\data\\\\maps"
@@ -277,7 +288,10 @@ add_file_folder("Default files\\\\data\\\\maps"
 )
 
 add_file_folder("Default files\\\\data\\\\scripts"
+	def_files/data/scripts/cfile_include.lua
 	def_files/data/scripts/cfile_require.lua
+	def_files/data/scripts/dkjson.lua
+	def_files/data/scripts/forwarders.lua
 )
 
 add_file_folder("Default files\\\\data\\\\tables"
@@ -289,6 +303,7 @@ add_file_folder("Default files\\\\data\\\\tables"
 	def_files/data/tables/objecttypes.tbl
 	def_files/data/tables/post_processing.tbl
 	def_files/data/tables/species_defs.tbl
+	def_files/data/tables/cheats.tbl
 )
 
 # These files will be included in the executable but not in CFile
@@ -372,26 +387,31 @@ add_file_folder("Generated Files"
 
 # GlobalIncs files
 add_file_folder("GlobalIncs"
+	globalincs/adjustment.cpp
+	globalincs/adjustment.h
 	globalincs/alphacolors.cpp
 	globalincs/alphacolors.h
 	globalincs/crashdump.cpp
 	globalincs/crashdump.h
+	globalincs/flagset.h
 	globalincs/fsmemory.h
 	globalincs/globals.h
 	globalincs/linklist.h
 	globalincs/pstypes.h
 	globalincs/safe_strings.cpp
 	globalincs/safe_strings.h
+	globalincs/scp_defines.h
 	globalincs/systemvars.cpp
 	globalincs/systemvars.h
 	globalincs/toolchain.h
+	globalincs/type_traits.h
 	globalincs/undosys.cpp
 	globalincs/undosys.h
+	globalincs/utility.h
 	globalincs/version.cpp
 	globalincs/version.h
+	globalincs/vmallocator.cpp
 	globalincs/vmallocator.h
-	globalincs/scp_defines.h
-	globalincs/flagset.h
 )
 
 IF (WIN32)
@@ -439,6 +459,9 @@ add_file_folder("Graphics"
 	graphics/material.h
 	graphics/matrix.cpp
 	graphics/matrix.h
+	graphics/openxr.cpp
+	graphics/openxr.h
+	graphics/openxr_internal.h
 	graphics/post_processing.cpp
 	graphics/post_processing.h
 	graphics/render.cpp
@@ -461,6 +484,7 @@ if (FSO_BUILD_WITH_OPENGL)
 		graphics/opengl/gropenglbmpman.cpp
 		graphics/opengl/gropengldeferred.cpp
 		graphics/opengl/gropengldraw.cpp
+		graphics/opengl/gropenglopenxr.cpp
 		graphics/opengl/gropenglpostprocessing.cpp
 		graphics/opengl/gropenglquery.cpp
 		graphics/opengl/gropenglshader.cpp
@@ -477,6 +501,7 @@ if (FSO_BUILD_WITH_OPENGL)
 		graphics/opengl/gropenglbmpman.h
 		graphics/opengl/gropengldeferred.h
 		graphics/opengl/gropengldraw.h
+		graphics/opengl/gropenglopenxr.h
 		graphics/opengl/gropenglpostprocessing.h
 		graphics/opengl/gropenglquery.h
 		graphics/opengl/gropenglshader.h
@@ -650,6 +675,8 @@ add_file_folder("Io"
 	io/joy-sdl.cpp
 	io/joy_ff.h
 	io/joy_ff-sdl.cpp
+	io/spacemouse.cpp
+	io/spacemouse.h
 )
 
 # jpgutils files
@@ -666,31 +693,16 @@ add_file_folder("JumpNode"
 
 # Lab files
 add_file_folder("Lab"
-	lab/wmcgui.cpp
-	lab/wmcgui.h
 	lab/labv2.h
 	lab/labv2_internal.h
 	lab/labv2.cpp
 )
 
 add_file_folder("Lab\\\\Dialogs"
-	lab/dialogs/lab_dialog.h
-	lab/dialogs/ship_classes.h
-	lab/dialogs/ship_classes.cpp
-	lab/dialogs/weapon_classes.h
-	lab/dialogs/weapon_classes.cpp
-	lab/dialogs/class_descriptions.h
-	lab/dialogs/class_descriptions.cpp
-	lab/dialogs/class_options.h
-	lab/dialogs/class_options.cpp
-	lab/dialogs/class_variables.h
-	lab/dialogs/class_variables.cpp
-	lab/dialogs/render_options.h
-	lab/dialogs/render_options.cpp
-	lab/dialogs/backgrounds.h
-	lab/dialogs/backgrounds.cpp
-	lab/dialogs/actions.h
-	lab/dialogs/actions.cpp
+	lab/dialogs/lab_ui.h
+	lab/dialogs/lab_ui.cpp
+	lab/dialogs/lab_ui_helpers.h
+	lab/dialogs/lab_ui_helpers.cpp
 )
 
 add_file_folder("Lab\\\\Manager"
@@ -754,6 +766,8 @@ add_file_folder("Localization"
 
 # Math files
 add_file_folder("Math"
+	math/curve.cpp
+	math/curve.h
 	math/bitarray.h
 	math/fix.cpp
 	math/fix.h
@@ -761,8 +775,8 @@ add_file_folder("Math"
 	math/floating.h
 	math/fvi.cpp
 	math/fvi.h
-        math/ik_solver.cpp
-        math/ik_solver.h
+	math/ik_solver.cpp
+	math/ik_solver.h
 	math/spline.cpp
 	math/spline.h
 	math/staticrand.cpp
@@ -781,8 +795,6 @@ add_file_folder("MenuUI"
 	menuui/fishtank.h
 	menuui/mainhallmenu.cpp
 	menuui/mainhallmenu.h
-	menuui/mainhalltemp.cpp
-	menuui/mainhalltemp.h
 	menuui/optionsmenu.cpp
 	menuui/optionsmenu.h
 	menuui/optionsmenumulti.cpp
@@ -824,6 +836,12 @@ add_file_folder("Mission"
 	mission/mission_flags.h
 )
 
+# MissionEditor file
+add_file_folder("MissionEditor"
+	missioneditor/common.cpp
+	missioneditor/common.h
+)
+
 # MissionUI files
 add_file_folder("MissionUI"
 	missionui/chatbox.cpp
@@ -859,15 +877,8 @@ add_file_folder("mod_table"
 # Model files
 add_file_folder("Model"
 	model/model.h
-	model/modelanimation.cpp
-	model/modelanimation.h
-	model/modelanimation_moveables.cpp
-	model/modelanimation_moveables.h
-	model/modelanimation_segments.cpp
-	model/modelanimation_segments.h
 	model/modelcollide.cpp
 	model/modelinterp.cpp
-	model/modeloctant.cpp
 	model/modelread.cpp
 	model/modelrender.h
 	model/modelrender.cpp
@@ -877,12 +888,26 @@ add_file_folder("Model"
 	model/model_flags.h
 )
 
+# Model Animation files
+add_file_folder("Model Animation"
+	model/animation/modelanimation.cpp
+	model/animation/modelanimation.h
+	model/animation/modelanimation_driver.cpp
+	model/animation/modelanimation_driver.h
+	model/animation/modelanimation_moveables.cpp
+	model/animation/modelanimation_moveables.h
+	model/animation/modelanimation_segments.cpp
+	model/animation/modelanimation_segments.h
+)
+
 # Nebula files
 add_file_folder("Nebula"
 	nebula/neb.cpp
 	nebula/neb.h
 	nebula/neblightning.cpp
 	nebula/neblightning.h
+	nebula/volumetrics.cpp
+	nebula/volumetrics.h
 )
 
 # Network files
@@ -911,6 +936,8 @@ add_file_folder("Network"
 	network/multi_kick.h
 	network/multi_log.cpp
 	network/multi_log.h
+	network/multi_lua.cpp
+	network/multi_lua.h
 	network/multi_mdns.cpp
 	network/multi_mdns.h
 	network/multi_obj.cpp
@@ -941,6 +968,8 @@ add_file_folder("Network"
 	network/multi_sw.h
 	network/multi_team.cpp
 	network/multi_team.h
+	network/multi_turret_manager.cpp
+	network/multi_turret_manager.h
 	network/multi_time_manager.cpp
 	network/multi_time_manager.h
 	network/multi_update.cpp
@@ -1005,6 +1034,7 @@ add_file_folder("Object"
 	object/waypoint.cpp
 	object/waypoint.h
 	object/object_flags.h
+	object/object_instance.h
 )
 
 # Observer files
@@ -1014,10 +1044,25 @@ add_file_folder("Observer"
 )
 
 add_file_folder("Options"
+	options/default_settings_table.cpp
+	options/default_settings_table.h
+	options/Ingame_Options.cpp
+	options/Ingame_Options.h
+	options/Ingame_Options_internal.h
 	options/Option.cpp
 	options/Option.h
 	options/OptionsManager.cpp
 	options/OptionsManager.h
+)
+
+add_file_folder("Options\\\\Dialogs"
+	options/dialogs/ingame_options_ui.h
+	options/dialogs/ingame_options_ui.cpp
+)
+
+add_file_folder("Options\\\\Manager"
+	options/manager/ingame_options_manager.h
+	options/manager/ingame_options_manager.cpp
 )
 
 # OsApi files
@@ -1040,6 +1085,8 @@ add_file_folder("Parse"
 	parse/encrypt.h
 	parse/generic_log.cpp
 	parse/generic_log.h
+	parse/md5_hash.cpp
+	parse/md5_hash.h
 	parse/parsehi.cpp
 	parse/parsehi.h
 	parse/parselo.cpp
@@ -1067,38 +1114,45 @@ add_file_folder("Parse\\\\SEXP"
 
 # Particle files
 add_file_folder("Particle"
+	particle/EffectHost.h
 	particle/particle.cpp
 	particle/particle.h
+	particle/ParticleEffect.cpp
 	particle/ParticleEffect.h
 	particle/ParticleManager.cpp
 	particle/ParticleManager.h
+	particle/ParticleParse.cpp
 	particle/ParticleSource.cpp
 	particle/ParticleSource.h
-	particle/ParticleSourceWrapper.cpp
-	particle/ParticleSourceWrapper.h
+	particle/ParticleVolume.h
 )
 
-add_file_folder("Particle\\\\Effects"
-	particle/effects/BeamPiercingEffect.cpp
-	particle/effects/BeamPiercingEffect.h
-	particle/effects/CompositeEffect.cpp
-	particle/effects/CompositeEffect.h
-	particle/effects/ConeShape.h
-	particle/effects/GenericShapeEffect.h
-	particle/effects/ParticleEmitterEffect.cpp
-	particle/effects/ParticleEmitterEffect.h
-	particle/effects/SingleParticleEffect.cpp
-	particle/effects/SingleParticleEffect.h
-	particle/effects/SphereShape.h
-	particle/effects/VolumeEffect.cpp
-	particle/effects/VolumeEffect.h
+add_file_folder("Particle\\\\Hosts"
+	particle/hosts/EffectHostBeam.cpp
+	particle/hosts/EffectHostBeam.h
+	particle/hosts/EffectHostObject.cpp
+	particle/hosts/EffectHostObject.h
+	particle/hosts/EffectHostParticle.cpp
+	particle/hosts/EffectHostParticle.h
+	particle/hosts/EffectHostSubmodel.cpp
+	particle/hosts/EffectHostSubmodel.h
+	particle/hosts/EffectHostTurret.cpp
+	particle/hosts/EffectHostTurret.h
+	particle/hosts/EffectHostVector.cpp
+	particle/hosts/EffectHostVector.h
 )
 
-add_file_folder("Particle\\\\Util"
-	particle/util/EffectTiming.cpp
-	particle/util/EffectTiming.h
-	particle/util/ParticleProperties.cpp
-	particle/util/ParticleProperties.h
+add_file_folder("Particle\\\\Volumes"
+	particle/volumes/ConeVolume.cpp
+	particle/volumes/ConeVolume.h
+	particle/volumes/LegacyAACuboidVolume.cpp
+	particle/volumes/LegacyAACuboidVolume.h
+	particle/volumes/PointVolume.cpp
+	particle/volumes/PointVolume.h
+	particle/volumes/RingVolume.cpp
+	particle/volumes/RingVolume.h
+	particle/volumes/SpheroidVolume.cpp
+	particle/volumes/SpheroidVolume.h
 )
 
 # PcxUtils files
@@ -1111,6 +1165,8 @@ add_file_folder("PcxUtils"
 add_file_folder("Physics"
 	physics/physics.cpp
 	physics/physics.h
+	physics/physics_state.cpp
+	physics/physics_state.h
 )
 
 # PilotFile files
@@ -1128,6 +1184,8 @@ add_file_folder("PilotFile"
 	pilotfile/pilotfile_convert.h
 	pilotfile/plr.cpp
 	pilotfile/plr_convert.cpp
+	pilotfile/plr_hudprefs.cpp
+	pilotfile/plr_hudprefs.h
 )
 
 # Playerman files
@@ -1184,6 +1242,10 @@ add_file_folder("ScpUi"
 	scpui/IncludeNodeHandler.h
 	scpui/rocket_ui.cpp
 	scpui/rocket_ui.h
+	scpui/RocketDecorators.cpp
+	scpui/RocketDecorators.h
+	scpui/RocketDecoratorsInstancer.cpp
+	scpui/RocketDecoratorsInstancer.h
 	scpui/RocketFileInterface.cpp
 	scpui/RocketFileInterface.h
 	scpui/RocketLuaSystemInterface.cpp
@@ -1211,16 +1273,21 @@ add_file_folder("Scripting"
 	scripting/ade_args.h
 	scripting/ade_doc.cpp
 	scripting/ade_doc.h
+	scripting/ade_external_serializer.h
 	scripting/doc_html.cpp
 	scripting/doc_html.h
 	scripting/doc_json.cpp
 	scripting/doc_json.h
+	scripting/doc_luastub.cpp
+	scripting/doc_luastub.h
 	scripting/doc_parser.cpp
 	scripting/doc_parser.h
 	scripting/global_hooks.cpp
 	scripting/global_hooks.h
 	scripting/hook_api.cpp
 	scripting/hook_api.h
+	scripting/hook_conditions.cpp
+	scripting/hook_conditions.h
 	scripting/lua.cpp
 	scripting/scripting.cpp
 	scripting/scripting.h
@@ -1260,6 +1327,8 @@ add_file_folder("Scripting\\\\Api\\\\Libs"
 	scripting/api/libs/controls.h
 	scripting/api/libs/engine.cpp
 	scripting/api/libs/engine.h
+	scripting/api/libs/globals.cpp
+	scripting/api/libs/globals.h
 	scripting/api/libs/graphics.cpp
 	scripting/api/libs/graphics.h
 	scripting/api/libs/hookvars.cpp
@@ -1289,6 +1358,8 @@ add_file_folder("Scripting\\\\Api\\\\Libs"
 add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/ai_helper.cpp
 	scripting/api/objs/ai_helper.h
+	scripting/api/objs/animation_handle.cpp
+	scripting/api/objs/animation_handle.h
 	scripting/api/objs/asteroid.cpp
 	scripting/api/objs/asteroid.h
 	scripting/api/objs/audio_stream.cpp
@@ -1307,8 +1378,12 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/cmd_brief.h
 	scripting/api/objs/cockpit_display.cpp
 	scripting/api/objs/cockpit_display.h
+	scripting/api/objs/comm_order.cpp
+	scripting/api/objs/comm_order.h
 	scripting/api/objs/control_binding.cpp
 	scripting/api/objs/control_binding.h
+	scripting/api/objs/control_config.cpp
+	scripting/api/objs/control_config.h
 	scripting/api/objs/color.cpp
 	scripting/api/objs/color.h
 	scripting/api/objs/control_info.cpp
@@ -1341,22 +1416,36 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/font.h
 	scripting/api/objs/gameevent.cpp
 	scripting/api/objs/gameevent.h
+	scripting/api/objs/gamehelp.cpp
+	scripting/api/objs/gamehelp.h
 	scripting/api/objs/gamestate.cpp
 	scripting/api/objs/gamestate.h
+	scripting/api/objs/goal.cpp
+	scripting/api/objs/goal.h
+	scripting/api/objs/hudconfig.cpp
+	scripting/api/objs/hudconfig.h
 	scripting/api/objs/hudgauge.cpp
 	scripting/api/objs/hudgauge.h
 	scripting/api/objs/intelentry.cpp
 	scripting/api/objs/intelentry.h
 	scripting/api/objs/loop_brief.cpp
 	scripting/api/objs/loop_brief.h
+	scripting/api/objs/LuaEnum.cpp
+	scripting/api/objs/LuaEnum.h
 	scripting/api/objs/LuaSEXP.cpp
 	scripting/api/objs/LuaSEXP.h
 	scripting/api/objs/luaaisexp.cpp
 	scripting/api/objs/luaaisexp.h
 	scripting/api/objs/mc_info.cpp
 	scripting/api/objs/mc_info.h
+	scripting/api/objs/medals.cpp
+	scripting/api/objs/medals.h
 	scripting/api/objs/message.cpp
 	scripting/api/objs/message.h
+	scripting/api/objs/missionhotkey.cpp
+	scripting/api/objs/missionhotkey.h
+	scripting/api/objs/missionlog.cpp
+	scripting/api/objs/missionlog.h
 	scripting/api/objs/model.cpp
 	scripting/api/objs/model.h
 	scripting/api/objs/modelinstance.cpp
@@ -1365,6 +1454,8 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/model_path.h
 	scripting/api/objs/movie_player.cpp
 	scripting/api/objs/movie_player.h
+	scripting/api/objs/multi_objects.cpp
+	scripting/api/objs/multi_objects.h
 	scripting/api/objs/object.cpp
 	scripting/api/objs/object.h
 	scripting/api/objs/option.cpp
@@ -1383,22 +1474,26 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/player.h
 	scripting/api/objs/promise.cpp
 	scripting/api/objs/promise.h
+	scripting/api/objs/rank.cpp
+	scripting/api/objs/rank.h
 	scripting/api/objs/redalert.cpp
 	scripting/api/objs/redalert.h
+	scripting/api/objs/rpc.cpp
+	scripting/api/objs/rpc.h
 	scripting/api/objs/sexpvar.cpp
 	scripting/api/objs/sexpvar.h
 	scripting/api/objs/shields.cpp
 	scripting/api/objs/shields.h
 	scripting/api/objs/ship_bank.cpp
 	scripting/api/objs/ship_bank.h
-	scripting/api/objs/ship_registry_entry.cpp
-	scripting/api/objs/ship_registry_entry.h
 	scripting/api/objs/shipclass.cpp
 	scripting/api/objs/shipclass.h
 	scripting/api/objs/ship.cpp
 	scripting/api/objs/ship.h
 	scripting/api/objs/shiptype.cpp
 	scripting/api/objs/shiptype.h
+	scripting/api/objs/ship_registry_entry.cpp
+	scripting/api/objs/ship_registry_entry.h
 	scripting/api/objs/shipwepselect.cpp
 	scripting/api/objs/shipwepselect.h
 	scripting/api/objs/sound.cpp
@@ -1411,6 +1506,8 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/subsystem.h
 	scripting/api/objs/team.cpp
 	scripting/api/objs/team.h
+	scripting/api/objs/team_colors.cpp
+	scripting/api/objs/team_colors.h
 	scripting/api/objs/techroom.cpp
 	scripting/api/objs/techroom.h
 	scripting/api/objs/texture.cpp
@@ -1431,6 +1528,8 @@ add_file_folder("Scripting\\\\Api\\\\Objs"
 	scripting/api/objs/weapon.h
 	scripting/api/objs/wing.cpp
 	scripting/api/objs/wing.h
+	scripting/api/objs/wingformation.cpp
+	scripting/api/objs/wingformation.h
 )
 
 add_file_folder("Scripting\\\\Lua"
@@ -1506,6 +1605,13 @@ add_file_folder("Sound"
 	sound/voicerec.cpp
 	sound/voicerec.h
 )
+
+if (APPLE)
+	add_file_folder("Sound"
+		${file_root_sound}
+		sound/speech.mm
+	)
+endif()
 
 if (FSO_BUILD_WITH_FFMPEG)
 	# Sound -> ffmpeg files
@@ -1600,12 +1706,15 @@ add_file_folder("Utils"
 	utils/HeapAllocator.h
 	utils/id.h
 	utils/join_string.h
+	utils/modular_curves.h
 	utils/Random.cpp
 	utils/Random.h
 	utils/RandomRange.h
 	utils/string_utils.cpp
 	utils/string_utils.h
 	utils/strings.h
+	utils/threading.cpp
+	utils/threading.h
 	utils/tuples.h
 	utils/unicode.cpp
 	utils/unicode.h
