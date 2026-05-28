@@ -92,6 +92,8 @@ const char* Resolution_prefixes[GR_NUM_RESOLUTIONS] = {"", "2_"};
 
 screen gr_screen;
 
+std::pair<uint16_t, uint16_t> Window_res = {0, 0};
+
 lua_screen gr_lua_screen;
 
 color_gun Gr_red, Gr_green, Gr_blue, Gr_alpha;
@@ -755,7 +757,6 @@ void removeVSyncOption()
 static std::unique_ptr<graphics::util::UniformBufferManager> UniformBufferManager;
 
 // Forward definitions
-static void uniform_buffer_managers_init();
 static void uniform_buffer_managers_deinit();
 static void uniform_buffer_managers_retire_buffers();
 
@@ -1853,19 +1854,6 @@ bool gr_init(std::unique_ptr<os::GraphicsOperations>&& graphicsOps, int d_mode, 
 		}
 	}
 
-	if (!Fred_running && !Cmdline_window_res.has_value()) {
-		// For whatever reason, it seems that a combination of Win 11 and presumably NVidia GPU's causes weird artifacts.
-		// These artifacts do not appear in windowed mode, or with an attached renderdoc / nvidia nsight.
-		// Similarly using the -window_res command line parameter prevents this.
-		// To the best of our knowledge, this is because all of the aforementioned methods route the rendering through another buffer
-		// (be that a window, a render overlay from nsight, or an FSO-internal buffer) instead of directly rendering to the OS-provided direct screen backbuffer.
-		// As the cost of -window_res is one single blit of a fullscreen buffer, it's probably an acceptable compromise to get rid of render artifacts.
-		// As such, forcibly enable -window_res at the screen resolution here, if we're in fullscreen.
-
-		// Additionally, SDL3+ doesn't work when reading from the GL_FRONT buffers, so we need our own intermediate buffers.
-		Cmdline_window_res.emplace(static_cast<uint16_t>(width), static_cast<uint16_t>(height));
-	}
-
 	if (d_mode == GR_DEFAULT) {
 		// OpenGL should be default
 		mode = GR_OPENGL;
@@ -1948,6 +1936,26 @@ bool gr_init(std::unique_ptr<os::GraphicsOperations>&& graphicsOps, int d_mode, 
 #endif
 #endif
 
+	// For whatever reason, it seems that a combination of Win 11 and presumably NVidia GPU's causes weird artifacts.
+	// These artifacts do not appear in windowed mode, or with an attached renderdoc / nvidia nsight.
+	// Similarly using the -window_res command line parameter prevents this.
+	// To the best of our knowledge, this is because all of the aforementioned methods route the rendering through another buffer
+	// (be that a window, a render overlay from nsight, or an FSO-internal buffer) instead of directly rendering to the OS-provided direct screen backbuffer.
+	// As the cost of -window_res is one single blit of a fullscreen buffer, it's probably an acceptable compromise to get rid of render artifacts.
+	//
+	// Additionally, SDL3+ doesn't work when reading from the GL_FRONT buffers, so we need our own intermediate buffers.
+	// Furthermore, gamma handling now also requires a blit of the final scene (not just the 3D scene, since it needs to work on menus as well).
+	//
+	// As such, the Window_res is set to the render resolution here, unless overridden by the user with the -window_res
+	// command line parameter, or with a VR-specific default.
+	if (Cmdline_window_res.has_value()) {
+		Window_res = Cmdline_window_res.value();
+	} else if (Cmdline_enable_vr) {
+		Window_res = {static_cast<uint16_t>(1000), static_cast<uint16_t>(1000)};
+	} else {
+		Window_res = {static_cast<uint16_t>(width), static_cast<uint16_t>(height)};
+	}
+
 	if (center_aspect_ratio <= 0.0f) {
 		float aspect_ratio = (float)width / (float)height;
 		if (aspect_ratio > 3.5f) {
@@ -1974,9 +1982,6 @@ bool gr_init(std::unique_ptr<os::GraphicsOperations>&& graphicsOps, int d_mode, 
 	graphics::paths::PathRenderer::init();
 
 	gr_light_init();
-
-	// Initialize uniform buffer managers
-	uniform_buffer_managers_init();
 
 	gpu_heap_init();
 
@@ -2986,7 +2991,7 @@ void gr_print_timestamp(int x, int y, fix timestamp, int resize_mode)
 	gr_string(x, y, time.c_str(), resize_mode);
 }
 
-static void uniform_buffer_managers_init()
+void gr_uniform_buffer_managers_init()
 {
 	if (gr_screen.mode == GR_STUB) {
 		return;

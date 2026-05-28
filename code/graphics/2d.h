@@ -41,6 +41,10 @@ extern float Min_draw_distance;
 extern float Max_draw_distance;
 extern int Gr_inited;
 
+// Window size in pixels for the OS window.
+// Set to the render resolution by default but may be overridden by -window_res or VR.
+extern std::pair<uint16_t, uint16_t> Window_res;
+
 // z-buffering stuff
 extern int gr_zbuffering, gr_zbuffering_mode;
 extern int gr_global_zbuffering;
@@ -1488,6 +1492,8 @@ void gr_set_gamma(float gamma);
 void gr_get_post_process_effect_names(SCP_vector<SCP_string> &names);
 
 bool gr_is_viewport_window();
+
+void gr_uniform_buffer_managers_init();
 
 // Include this last to make the 2D rendering function available everywhere
 #include "graphics/render.h"

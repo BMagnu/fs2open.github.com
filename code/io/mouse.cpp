@@ -98,8 +98,8 @@ const std::shared_ptr<scripting::Hook<>> OnMouseWheelHook = scripting::Hook<>::F
 	});
 
 #define SCALE_MOUSE_TO_WINDOW(x, y, op) \
-	static_cast<decltype(x)>(Cmdline_window_res ? static_cast<float>(x) op (static_cast<float>(gr_screen.max_w) / static_cast<float>(Cmdline_window_res->first)) : x), \
-	static_cast<decltype(y)>(Cmdline_window_res ? static_cast<float>(y) op (static_cast<float>(gr_screen.max_h) / static_cast<float>(Cmdline_window_res->second)) : y)
+	static_cast<decltype(x)>(static_cast<float>(x) op (static_cast<float>(gr_screen.max_w) / static_cast<float>(Window_res.first))), \
+	static_cast<decltype(y)>(static_cast<float>(y) op (static_cast<float>(gr_screen.max_h) / static_cast<float>(Window_res.second)))
 
 namespace
 {
@@ -629,12 +629,10 @@ int mouse_get_pos_unscaled( int *xpos, int *ypos )
 void mouse_get_real_pos(int *mx, int *my)
 {
 	SDL_GetMouseState(mx, my);
-	if (Cmdline_window_res) {
-		if (mx)
-			*mx *= gr_screen.max_w / Cmdline_window_res->first;
-		if (my)
-			*my *= gr_screen.max_h / Cmdline_window_res->second;
-	}
+	if (mx)
+		*mx *= gr_screen.max_w / Window_res.first;
+	if (my)
+		*my *= gr_screen.max_h / Window_res.second;
 }
 
 void mouse_set_pos(int xpos, int ypos)

@@ -1943,7 +1943,6 @@ bool SetCmdlineParams()
 		// ensure ingame resolution is set to sensible values in VR mode, 
 		// which will exceed the resolution otherwise shown and is not dependent on the monitor resolution
 		Cmdline_capture_mouse = true;
-		Cmdline_window_res.emplace(static_cast<uint16_t>(1000), static_cast<uint16_t>(1000));
 
 		Cmdline_fullscreen_window = false;
 		Cmdline_window = true; /* Make sure no-one sets both */

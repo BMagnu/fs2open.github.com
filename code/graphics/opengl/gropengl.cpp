@@ -118,28 +118,22 @@ void gr_opengl_flip()
 	if (!GL_initted)
 		return;
 
-	if (Cmdline_window_res) {
-		GL_state.PushFramebufferState();
-		GL_state.BindFrameBuffer(0, GL_FRAMEBUFFER);
-		glViewport(0, 0, Cmdline_window_res->first, Cmdline_window_res->second);
+	GL_state.PopFramebufferState();
 
-		opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_GAMMA_BLIT, 0));
+	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_GAMMA_BLIT, 0));
 
-		GL_state.Texture.Enable(0, GL_TEXTURE_2D, Back_texture);
-		Current_shader->program->Uniforms.setTextureUniform("tex", 0);
+	GL_state.Texture.Enable(0, GL_TEXTURE_2D, Back_texture);
+	Current_shader->program->Uniforms.setTextureUniform("tex", 0);
 
-		GL_state.SetAlphaBlendMode(gr_alpha_blend::ALPHA_BLEND_NONE);
-		GL_state.SetZbufferType(ZBUFFER_TYPE_NONE);
+	GL_state.SetAlphaBlendMode(ALPHA_BLEND_NONE);
+	GL_state.SetZbufferType(ZBUFFER_TYPE_NONE);
 
-		opengl_set_generic_uniform_data<graphics::generic_data::gamma_blit_data>(
-			[](graphics::generic_data::gamma_blit_data* data) {
-				data->gamma = Gr_gamma;
-			});
+	opengl_set_generic_uniform_data<graphics::generic_data::gamma_blit_data>(
+		[](graphics::generic_data::gamma_blit_data* data) {
+			data->gamma = Gr_gamma;
+		});
 
-		opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, 1.0f);
-
-		GL_state.PopFramebufferState();
-	}
+	opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, 1.0f);
 
 	if (Cmdline_gl_finish)
 		glFinish();
@@ -163,11 +157,9 @@ void gr_opengl_setup_frame() {
 	if (!GL_initted)
 		return;
 
-	if (Cmdline_window_res) {
-		GL_state.PushFramebufferState();
-		GL_state.BindFrameBuffer(Back_framebuffer);
-		glViewport(0, 0, gr_screen.max_w, gr_screen.max_h);
-	}
+	GL_state.PushFramebufferState();
+	GL_state.BindFrameBuffer(Back_framebuffer);
+	glViewport(0, 0, gr_screen.max_w, gr_screen.max_h);
 }
 
 void gr_opengl_set_clip(int x, int y, int w, int h, int resize_mode)
@@ -295,10 +287,9 @@ void gr_opengl_print_screen(const char *filename)
     _mkdir(os_get_config_path("screenshots").c_str());
 
 	GL_state.PushFramebufferState();
-	GL_state.BindFrameBuffer(Cmdline_window_res ? Back_framebuffer : 0, GL_FRAMEBUFFER);
+	GL_state.BindFrameBuffer(Back_framebuffer, GL_FRAMEBUFFER);
 
-	//Reading from the front buffer here seems to no longer work correctly; that just reads back all zeros
-	glReadBuffer(Cmdline_window_res ? GL_COLOR_ATTACHMENT0 : GL_FRONT);
+	glReadBuffer(GL_COLOR_ATTACHMENT0);
 
 	// Clamp float values to [0,1] when reading from the GL_RGBA16F back framebuffer.
 	// The default GL_FIXED_ONLY only clamps fixed-point FBOs, leaving float FBO reads
@@ -375,8 +366,7 @@ SCP_string gr_opengl_blob_screen()
 	GLuint render_target = opengl_get_rtt_framebuffer();
 	if (render_target != 0) {
 		source_fbo = render_target;
-	}
-	else if (Cmdline_window_res) {
+	} else {
 		source_fbo = Back_framebuffer;
 	}
 
@@ -699,10 +689,9 @@ int  gr_opengl_save_screen()
 	GLboolean save_state = GL_state.DepthTest(GL_FALSE);
 
 	GL_state.PushFramebufferState();
-	GL_state.BindFrameBuffer(Cmdline_window_res ? Back_framebuffer : 0, GL_FRAMEBUFFER);
+	GL_state.BindFrameBuffer(Back_framebuffer, GL_FRAMEBUFFER);
 
-	//Reading from the front buffer here seems to no longer work correctly; that just reads back all zeros
-	glReadBuffer(Cmdline_window_res ? GL_COLOR_ATTACHMENT0 : GL_FRONT);
+	glReadBuffer(GL_COLOR_ATTACHMENT0);
 
 	if ( Use_PBOs ) {
 		GLubyte *pixels = NULL;
@@ -943,8 +932,8 @@ int opengl_init_display_device()
 #endif
 
 	attrs.display = os_config_read_uint("Video", "Display", 0);
-	attrs.width = (uint32_t) gr_screen.max_w;
-	attrs.height = (uint32_t) gr_screen.max_h;
+	attrs.width = Window_res.first;
+	attrs.height = Window_res.second;
 
 	attrs.title = Osreg_title;
 	if (!Window_title.empty()) {
@@ -1496,6 +1485,7 @@ bool gr_opengl_init(std::unique_ptr<os::GraphicsOperations>&& graphicsOps)
 	Gr_current_green = &Gr_green;
 	Gr_current_alpha = &Gr_alpha;
 
+	gr_uniform_buffer_managers_init();
 
 	gr_setup_frame();
 	gr_opengl_reset_clip();

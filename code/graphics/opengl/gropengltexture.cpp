@@ -1779,13 +1779,7 @@ int opengl_set_render_target( int slot, int face, int is_static )
 			}
 		}
 
-		if(Cmdline_window_res) {
-			GL_state.BindFrameBuffer(Back_framebuffer);
-		}
-		else {
-			GL_state.BindFrameBuffer(0);
-			glBindRenderbuffer(GL_RENDERBUFFER, 0);
-		}
+		GL_state.BindFrameBuffer(Back_framebuffer);
 
 		// done with this render target so lets move on
 		render_target = NULL;

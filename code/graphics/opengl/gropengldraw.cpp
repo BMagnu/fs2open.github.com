@@ -525,60 +525,58 @@ void opengl_setup_scene_textures()
 		GL_state.Texture.SetTarget(GL_TEXTURE_2D);
 	}
 
-	if (Cmdline_window_res) {
-		//Gen Framebuffer
-		glGenFramebuffers(1, &Back_framebuffer);
-		GL_state.BindFrameBuffer(Back_framebuffer);
-		opengl_set_object_label(GL_FRAMEBUFFER, Back_framebuffer, "Backbuffer");
+	//Gen Framebuffer
+	glGenFramebuffers(1, &Back_framebuffer);
+	GL_state.BindFrameBuffer(Back_framebuffer);
+	opengl_set_object_label(GL_FRAMEBUFFER, Back_framebuffer, "Backbuffer");
 
-		// setup main render texture
+	// setup main render texture
 
-		// setup high dynamic range color texture
-		glGenTextures(1, &Back_texture);
+	// setup high dynamic range color texture
+	glGenTextures(1, &Back_texture);
 
-		GL_state.Texture.SetActiveUnit(0);
-		GL_state.Texture.SetTarget(GL_TEXTURE_2D);
-		GL_state.Texture.Enable(Back_texture);
+	GL_state.Texture.SetActiveUnit(0);
+	GL_state.Texture.SetTarget(GL_TEXTURE_2D);
+	GL_state.Texture.Enable(Back_texture);
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gr_screen.max_w, gr_screen.max_h, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gr_screen.max_w, gr_screen.max_h, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
 
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, Back_texture, 0);
-		opengl_set_object_label(GL_TEXTURE, Back_texture, "Backbuffer texture");
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, Back_texture, 0);
+	opengl_set_object_label(GL_TEXTURE, Back_texture, "Backbuffer texture");
 
-		glGenTextures(1, &Back_depth_texture);
+	glGenTextures(1, &Back_depth_texture);
 
-		GL_state.Texture.SetActiveUnit(0);
-		GL_state.Texture.SetTarget(GL_TEXTURE_2D);
-		GL_state.Texture.Enable(Back_depth_texture);
+	GL_state.Texture.SetActiveUnit(0);
+	GL_state.Texture.SetTarget(GL_TEXTURE_2D);
+	GL_state.Texture.Enable(Back_depth_texture);
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
 
-		glTexImage2D(GL_TEXTURE_2D,
-			0,
-			GL_DEPTH24_STENCIL8,
-			gr_screen.max_w,
-			gr_screen.max_h,
-			0,
-			GL_DEPTH_STENCIL,
-			GL_UNSIGNED_INT_24_8,
-			nullptr);
-		opengl_set_object_label(GL_TEXTURE, Back_depth_texture, "Backbuffer depth texture");
+	glTexImage2D(GL_TEXTURE_2D,
+		0,
+		GL_DEPTH24_STENCIL8,
+		gr_screen.max_w,
+		gr_screen.max_h,
+		0,
+		GL_DEPTH_STENCIL,
+		GL_UNSIGNED_INT_24_8,
+		nullptr);
+	opengl_set_object_label(GL_TEXTURE, Back_depth_texture, "Backbuffer depth texture");
 
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, Back_depth_texture, 0);
-		gr_zbuffer_set(GR_ZBUFF_FULL);
-		glClear(GL_DEPTH_BUFFER_BIT);
-	}
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, Back_depth_texture, 0);
+	gr_zbuffer_set(GR_ZBUFF_FULL);
+	glClear(GL_DEPTH_BUFFER_BIT);
 
 	//Setup thruster distortion framebuffer
     if (Gr_framebuffer_effects.any_set())

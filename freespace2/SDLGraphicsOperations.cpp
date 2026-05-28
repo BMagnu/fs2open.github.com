@@ -212,11 +212,6 @@ std::unique_ptr<os::Viewport> SDLGraphicsOperations::createViewport(const os::Vi
 	uint32_t width = props.width;
 	uint32_t height = props.height;
 
-	if (Cmdline_window_res) {
-		width = Cmdline_window_res->first;
-		height = Cmdline_window_res->second;
-	}
-
 	if (bounds.w == (int)width && bounds.h == (int)height) {
 		// If we have the same size as the desktop we explicitly specify 0,0 to make sure that the window borders aren't hidden
 		mprintf(("SDL: Creating window at %d,%d because window has same size as desktop.\n", bounds.x, bounds.y));

@@ -223,13 +223,13 @@ bool gr_opengl_openxr_flip() {
 		GR_DEBUG_SCOPE("XR Blit");
 
 		GL_state.PushFramebufferState();
-		GL_state.BindFrameBuffer(Cmdline_window_res ? Back_framebuffer : 0, GL_READ_FRAMEBUFFER);
+		GL_state.BindFrameBuffer(Back_framebuffer, GL_READ_FRAMEBUFFER);
 		GL_state.BindFrameBuffer(xr_fbo, GL_DRAW_FRAMEBUFFER);
 
 		glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, xr_swap_tex, 0);
 
 		glDrawBuffer(GL_COLOR_ATTACHMENT0);
-		glReadBuffer(Cmdline_window_res ? GL_COLOR_ATTACHMENT0 : GL_BACK);
+		glReadBuffer(GL_COLOR_ATTACHMENT0);
 		glBlitFramebuffer(0, 0, gr_screen.max_w, gr_screen.max_h, 0, 0, gr_screen.max_w, gr_screen.max_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 		glDrawBuffer(GL_NONE);
 
@@ -380,12 +380,12 @@ bool gr_opengl_openxr_flip() {
 			GR_DEBUG_SCOPE("XR Blit");
 
 			GL_state.PushFramebufferState();
-			GL_state.BindFrameBuffer(Cmdline_window_res ? Back_framebuffer : 0, GL_READ_FRAMEBUFFER);
+			GL_state.BindFrameBuffer(Back_framebuffer, GL_READ_FRAMEBUFFER);
 			GL_state.BindFrameBuffer(xr_fbo, GL_DRAW_FRAMEBUFFER);
 
 			glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, image.image, 0);
 			glDrawBuffer(GL_COLOR_ATTACHMENT0);
-			glReadBuffer(Cmdline_window_res ? GL_COLOR_ATTACHMENT0 : GL_BACK);
+			glReadBuffer(GL_COLOR_ATTACHMENT0);
 			glBlitFramebuffer(0, 0, gr_screen.max_w, gr_screen.max_h, 0, 0, xr_swapchains[i]->width, xr_swapchains[i]->height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 			glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0);
 			glDrawBuffer(GL_NONE);
