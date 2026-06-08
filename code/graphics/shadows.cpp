@@ -578,9 +578,8 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			if (shipp->model_instance_num >= 0) {
 				pmi = model_get_instance(shipp->model_instance_num);
 			}
-			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, offset, OBJ_INDEX(objp), &objp->pos, &objp->orient, has_clip ? &clip : nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, OBJ_INDEX(objp), &objp->pos, &objp->orient, has_clip ? &clip : nullptr);
 			break;
 		}
 
@@ -595,9 +594,8 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			if (instance_num >= 0) {
 				pmi = model_get_instance(instance_num);
 			}
-			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, offset, OBJ_INDEX(objp), &objp->pos, &objp->orient, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, OBJ_INDEX(objp), &objp->pos, &objp->orient, nullptr);
 			break;
 		}
 
@@ -608,9 +606,7 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			model_clear_instance(model_num);
 			auto pm = model_get(model_num);
 
-			size_t offset = shadow_list.alloc_transform(pm->n_models);
-
-			shadow_render_list::add_model_draws(&shadow_list, pm, nullptr, offset, OBJ_INDEX(objp), &objp->pos, &objp->orient, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, nullptr, OBJ_INDEX(objp), &objp->pos, &objp->orient, nullptr);
 			break;
 		}
 
@@ -625,9 +621,8 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			if (db->model_instance_num >= 0) {
 				pmi = model_get_instance(db->model_instance_num);
 			}
-			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, offset, db->objnum, &debris_obj->pos, &debris_obj->orient, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, db->objnum, &debris_obj->pos, &debris_obj->orient, nullptr);
 			break;
 		}
 
@@ -636,7 +631,6 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 		}
 	}
 
-	shadow_list.submit_transforms();
 	shadow_list.build_and_render(Shadow_proj_matrix);
 
 	shadows_end_render();

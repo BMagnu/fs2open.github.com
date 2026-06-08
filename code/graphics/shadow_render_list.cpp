@@ -10,7 +10,6 @@ extern float model_render_determine_depth(int obj_num, int model_num, const matr
 extern int model_render_determine_detail(float depth, int model_num, int detail_level_locked);
 
 shadow_render_list::shadow_render_list()
-	: _current_transform_offset(0)
 {
 }
 
@@ -20,30 +19,12 @@ shadow_render_list::~shadow_render_list()
 
 void shadow_render_list::reset()
 {
-	_transforms.clear();
 	_batches.clear();
-	_current_transform_offset = 0;
-}
-
-size_t shadow_render_list::alloc_transform(int n_models)
-{
-	size_t offset = _current_transform_offset;
-	_current_transform_offset += n_models;
-
-	_transforms.resize(_current_transform_offset);
-
-	for (int i = 0; i < n_models; i++) {
-		vm_matrix4_set_identity(&_transforms[offset + i]);
-		_transforms[offset + i].a1d[15] = 0.0f;
-	}
-
-	return offset * sizeof(matrix4);
 }
 
 void shadow_render_list::add_draw(const indexed_vertex_source* vert_src,
                                   vertex_buffer* buffer,
                                   size_t texi,
-                                  size_t transform_base_offset,
                                   const matrix4& model_matrix,
                                   const vec3d& scale,
                                   const clip_plane_info* clip)
@@ -54,7 +35,6 @@ void shadow_render_list::add_draw(const indexed_vertex_source* vert_src,
 	key.texi = texi;
 
 	batch_entry entry;
-	entry.transform_base_offset = transform_base_offset;
 	entry.model_matrix = model_matrix;
 	entry.scale = scale;
 	entry.has_clip_plane = (clip != nullptr);
@@ -71,15 +51,6 @@ void shadow_render_list::add_draw(const indexed_vertex_source* vert_src,
 	}
 
 	_batches[key].push_back(entry);
-}
-
-void shadow_render_list::submit_transforms()
-{
-	if (_transforms.empty()) {
-		return;
-	}
-
-	gr_update_transform_buffer(_transforms.data(), _transforms.size() * sizeof(matrix4));
 }
 
 void shadow_render_list::build_and_render(const matrix4* shadow_proj_matrices)
@@ -121,7 +92,6 @@ void shadow_render_list::build_and_render(const matrix4* shadow_proj_matrices)
 
 			element->clip_equation = entry.clip_equation;
 			element->use_clip_plane = entry.has_clip_plane ? 1 : 0;
-			element->buffer_matrix_offset = static_cast<int>(entry.transform_base_offset / sizeof(matrix4));
 
 			entry.uniform_buffer_offset = _dataBuffer.getCurrentAlignerOffset();
 		}
@@ -176,7 +146,6 @@ const matrix4& shadow_render_list::get_current_transform() const
 void shadow_render_list::add_model_draws(shadow_render_list* list,
                                          polymodel* pm,
                                          polymodel_instance* pmi,
-                                         size_t transform_base_offset,
                                          int obj_num,
                                          const vec3d* pos, const matrix* orient,
                                          const clip_plane_info* clip)
@@ -185,7 +154,7 @@ void shadow_render_list::add_model_draws(shadow_render_list* list,
 	int detail_level = model_render_determine_detail(depth, pm->id, -1);
 	int detail_root = pm->detail[detail_level];
 
-	list->_transform_stack.clear();
+	//list->_transform_stack.clear();
 	list->push_transform(pos, orient);
 
 	const vec3d scale_identity = SCALE_IDENTITY_VECTOR;
@@ -214,7 +183,7 @@ void shadow_render_list::add_model_draws(shadow_render_list* list,
 					continue;
 				}
 
-				list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world, scale_identity, clip);
+				list->add_draw(&pm->vert_source, &buffer, j, world, scale_identity, clip);
 			}
 		}
 	}
@@ -224,7 +193,7 @@ void shadow_render_list::add_model_draws(shadow_render_list* list,
 
 	while (i >= 0) {
 		if (!pm->submodel[i].flags[Model::Submodel_flags::Is_thruster]) {
-			render_submodel_children(list, pm, pmi, i, transform_base_offset, clip);
+			render_submodel_children(list, pm, pmi, i, clip);
 		}
 
 		i = pm->submodel[i].next_sibling;
@@ -241,7 +210,6 @@ void shadow_render_list::render_submodel_children(shadow_render_list* list,
                                                   polymodel* pm,
                                                   polymodel_instance* pmi,
                                                   int mn,
-                                                  size_t transform_base_offset,
                                                   const clip_plane_info* clip)
 {
 	bsp_info* sm = &pm->submodel[mn];
@@ -284,7 +252,7 @@ void shadow_render_list::render_submodel_children(shadow_render_list* list,
 					continue;
 				}
 
-				list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world, scale_identity, clip);
+				list->add_draw(&pm->vert_source, &buffer, j, world, scale_identity, clip);
 			}
 		}
 	}
@@ -293,7 +261,7 @@ void shadow_render_list::render_submodel_children(shadow_render_list* list,
 	int i = sm->first_child;
 	while (i >= 0) {
 		if (!pm->submodel[i].flags[Model::Submodel_flags::Is_thruster]) {
-			render_submodel_children(list, pm, pmi, i, transform_base_offset, clip);
+			render_submodel_children(list, pm, pmi, i, clip);
 		}
 
 		i = pm->submodel[i].next_sibling;

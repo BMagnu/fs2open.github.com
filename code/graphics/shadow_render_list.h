@@ -21,12 +21,9 @@ public:
 
 	void reset();
 
-	size_t alloc_transform(int n_models);
-
 	void add_draw(const indexed_vertex_source* vert_src,
 	              vertex_buffer* buffer,
 	              size_t texi,
-	              size_t transform_base_offset,
 	              const matrix4& model_matrix,
 	              const vec3d& scale,
 	              const clip_plane_info* clip);
@@ -35,8 +32,6 @@ public:
 	void pop_transform();
 	const matrix4& get_current_transform() const;
 
-	void submit_transforms();
-
 	void build_and_render(const matrix4* shadow_proj_matrices);
 
 	// Walk all submodels of a polymodel and add shadow draws, using the transform_stack
@@ -44,7 +39,6 @@ public:
 	static void add_model_draws(shadow_render_list* list,
 	                            polymodel* pm,
 	                            polymodel_instance* pmi,
-	                            size_t transform_base_offset,
 	                            int obj_num,
 	                            const vec3d* pos, const matrix* orient,
 	                            const clip_plane_info* clip);
@@ -59,7 +53,6 @@ private:
 	};
 
 	struct batch_entry {
-		size_t transform_base_offset;
 		size_t uniform_buffer_offset;
 		bool has_clip_plane;
 		vec4 clip_equation;
@@ -71,12 +64,9 @@ private:
 	                                     polymodel* pm,
 	                                     polymodel_instance* pmi,
 	                                     int mn,
-	                                     size_t transform_base_offset,
 	                                     const clip_plane_info* clip);
 
-	SCP_vector<matrix4> _transforms;
 	SCP_map<batch_key, SCP_vector<batch_entry>> _batches;
 	graphics::util::UniformBuffer _dataBuffer;
-	size_t _current_transform_offset;
 	transform_stack _transform_stack;
 };

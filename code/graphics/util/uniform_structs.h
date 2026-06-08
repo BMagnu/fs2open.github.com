@@ -150,8 +150,6 @@ struct shadow_uniform_data {
 	matrix4 shadow_proj_matrix[4];  // cascade projection matrices
 	vec4 clip_equation;             // xyz = normal, w = -dot(normal, point)
 	int use_clip_plane;             // 1 if clip plane is active
-	int buffer_matrix_offset;       // index into transform_tex
-	float pad[2];                   // alignment to 16 bytes
 };
 
 const size_t shadow_uniform_data_size = sizeof(shadow_uniform_data);

@@ -661,10 +661,6 @@ void gr_opengl_render_shadow_draw(gr_buffer_handle ubo_handle, size_t ubo_offset
 
 	gr_bind_uniform_buffer(uniform_block_type::ShadowMapData, ubo_offset, ubo_size, ubo_handle);
 
-	// Bind the transform texture buffer so the vertex shader can read model transforms
-	Current_shader->program->Uniforms.setTextureUniform("transform_tex", 10);
-	GL_state.Texture.Enable(10, GL_TEXTURE_BUFFER, opengl_get_transform_buffer_texture());
-
 	GL_state.FrontFaceValue(gr_screen.rendering_to_texture != -1 ? GL_CCW : GL_CW);
 
 	// Enable clip distance; actual clipping is gated by the use_clip_plane uniform in the shader

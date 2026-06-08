@@ -2075,9 +2075,7 @@ void shipfx_shadow_render_blowup(shadow_render_list* shadow_list, ship* shipp)
 		clip.normal = clip_plane_norm;
 		clip.position = model_clip_plane_pt;
 
-		size_t offset = shadow_list->alloc_transform(pm->n_models);
-
-		shadow_render_list::add_model_draws(shadow_list, pm, pmi, offset, shipp->objnum, &half->local_pivot, &half->orient, &clip);
+		shadow_render_list::add_model_draws(shadow_list, pm, pmi, shipp->objnum, &half->local_pivot, &half->orient, &clip);
 	}
 }
 
