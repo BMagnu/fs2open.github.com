@@ -45,6 +45,7 @@ void shadow_render_list::add_draw(const indexed_vertex_source* vert_src,
                                   size_t texi,
                                   size_t transform_base_offset,
                                   const matrix4& model_matrix,
+                                  const vec3d& scale,
                                   const clip_plane_info* clip)
 {
 	batch_key key;
@@ -55,6 +56,7 @@ void shadow_render_list::add_draw(const indexed_vertex_source* vert_src,
 	batch_entry entry;
 	entry.transform_base_offset = transform_base_offset;
 	entry.model_matrix = model_matrix;
+	entry.scale = scale;
 	entry.has_clip_plane = (clip != nullptr);
 	if (clip != nullptr) {
 		entry.clip_equation.xyzw.x = clip->normal.xyz.x;
@@ -80,8 +82,7 @@ void shadow_render_list::submit_transforms()
 	gr_update_transform_buffer(_transforms.data(), _transforms.size() * sizeof(matrix4));
 }
 
-void shadow_render_list::build_and_render(const matrix4& light_view_matrix,
-                                          const matrix4* shadow_proj_matrices)
+void shadow_render_list::build_and_render(const matrix4* shadow_proj_matrices)
 {
 	if (_batches.empty()) {
 		return;
@@ -100,8 +101,19 @@ void shadow_render_list::build_and_render(const matrix4& light_view_matrix,
 		for (auto& entry : entries) {
 			auto element = _dataBuffer.aligner().addTypedElement<graphics::shadow_uniform_data>();
 
-			vm_matrix4_x_matrix4(&element->modelViewMatrix, &light_view_matrix, &entry.model_matrix);
-			element->modelMatrix = entry.model_matrix;
+			// Exact replica of convert_model_material lines 43-48
+			matrix4 scaled_matrix = entry.model_matrix;
+			scaled_matrix.a2d[0][0] *= entry.scale.xyz.x;
+			scaled_matrix.a2d[0][1] *= entry.scale.xyz.x;
+			scaled_matrix.a2d[0][2] *= entry.scale.xyz.x;
+			scaled_matrix.a2d[1][0] *= entry.scale.xyz.y;
+			scaled_matrix.a2d[1][1] *= entry.scale.xyz.y;
+			scaled_matrix.a2d[1][2] *= entry.scale.xyz.y;
+			scaled_matrix.a2d[2][0] *= entry.scale.xyz.z;
+			scaled_matrix.a2d[2][1] *= entry.scale.xyz.z;
+			scaled_matrix.a2d[2][2] *= entry.scale.xyz.z;
+			element->modelMatrix = scaled_matrix;
+			vm_matrix4_x_matrix4(&element->modelViewMatrix, &gr_view_matrix, &scaled_matrix);
 
 			for (size_t i = 0; i < MAX_SHADOW_CASCADES; i++) {
 				element->shadow_proj_matrix[i] = shadow_proj_matrices[i];
@@ -135,6 +147,8 @@ void shadow_render_list::build_and_render(const matrix4& light_view_matrix,
 				kv.first.texi);
 		}
 	}
+
+	gr_alpha_mask_set(0, 1.0f);
 }
 
 bool shadow_render_list::batch_key::operator<(const batch_key& other) const
@@ -174,6 +188,8 @@ void shadow_render_list::add_model_draws(shadow_render_list* list,
 	list->_transform_stack.clear();
 	list->push_transform(pos, orient);
 
+	const vec3d scale_identity = SCALE_IDENTITY_VECTOR;
+
 	if (pm->flags & PM_FLAG_AUTOCEN) {
 		vec3d auto_back = pm->autocenter;
 		vm_vec_scale(&auto_back, -1.0f);
@@ -198,7 +214,7 @@ void shadow_render_list::add_model_draws(shadow_render_list* list,
 					continue;
 				}
 
-				list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world, clip);
+				list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world, scale_identity, clip);
 			}
 		}
 	}
@@ -241,6 +257,8 @@ void shadow_render_list::render_submodel_children(shadow_render_list* list,
 	matrix submodel_orient = vmd_identity_matrix;
 	vec3d submodel_offset = sm->offset;
 
+	const vec3d scale_identity = SCALE_IDENTITY_VECTOR;
+
 	if (smi != nullptr) {
 		submodel_orient = smi->canonical_orient;
 		vm_vec_add2(&submodel_offset, &smi->canonical_offset);
@@ -266,7 +284,7 @@ void shadow_render_list::render_submodel_children(shadow_render_list* list,
 					continue;
 				}
 
-				list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world, clip);
+				list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world, scale_identity, clip);
 			}
 		}
 	}

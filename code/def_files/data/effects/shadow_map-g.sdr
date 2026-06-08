@@ -52,10 +52,8 @@ void main(void)
 		vertOut.normal = vertIn[vert].normal;
 
 		gl_Layer = instanceID;
+		gl_ClipDistance[0] = gl_in[vert].gl_ClipDistance[0];
 
-		if (use_clip_plane) {
-			gl_ClipDistance[0] = gl_in[vert].gl_ClipDistance[0];
-		}
 		EmitVertex();
 	}
 	EndPrimitive();

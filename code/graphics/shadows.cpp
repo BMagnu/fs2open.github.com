@@ -543,8 +543,6 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 		std::get<0>(Shadow_distances), std::get<1>(Shadow_distances),
 		std::get<2>(Shadow_distances), std::get<3>(Shadow_distances));
 
-	matrix4 light_view_matrix = gr_view_matrix;
-
 	shadow_render_list shadow_list;
 	object *objp = Objects;
 
@@ -639,7 +637,7 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 	}
 
 	shadow_list.submit_transforms();
-	shadow_list.build_and_render(light_view_matrix, Shadow_proj_matrix);
+	shadow_list.build_and_render(Shadow_proj_matrix);
 
 	shadows_end_render();
 

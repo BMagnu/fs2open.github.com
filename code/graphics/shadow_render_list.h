@@ -28,6 +28,7 @@ public:
 	              size_t texi,
 	              size_t transform_base_offset,
 	              const matrix4& model_matrix,
+	              const vec3d& scale,
 	              const clip_plane_info* clip);
 
 	void push_transform(const vec3d* pos, const matrix* orient);
@@ -36,8 +37,7 @@ public:
 
 	void submit_transforms();
 
-	void build_and_render(const matrix4& light_view_matrix,
-	                      const matrix4* shadow_proj_matrices);
+	void build_and_render(const matrix4* shadow_proj_matrices);
 
 	// Walk all submodels of a polymodel and add shadow draws, using the transform_stack
 	// for correct per-submodel world transforms.
@@ -64,6 +64,7 @@ private:
 		bool has_clip_plane;
 		vec4 clip_equation;
 		matrix4 model_matrix;
+		vec3d scale;
 	};
 
 	static void render_submodel_children(shadow_render_list* list,
