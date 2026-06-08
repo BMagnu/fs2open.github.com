@@ -8,7 +8,6 @@
 shadow_render_list::shadow_render_list()
 	: _current_transform_offset(0)
 {
-	vm_matrix4_set_identity(&_identity_matrix);
 }
 
 shadow_render_list::~shadow_render_list()
@@ -22,7 +21,7 @@ void shadow_render_list::reset()
 	_current_transform_offset = 0;
 }
 
-size_t shadow_render_list::alloc_transform(const matrix4& world_matrix, int n_models)
+size_t shadow_render_list::alloc_transform(int n_models)
 {
 	size_t offset = _current_transform_offset;
 	_current_transform_offset += n_models;
@@ -30,7 +29,7 @@ size_t shadow_render_list::alloc_transform(const matrix4& world_matrix, int n_mo
 	_transforms.resize(_current_transform_offset);
 
 	for (int i = 0; i < n_models; i++) {
-		_transforms[offset + i] = world_matrix;
+		vm_matrix4_set_identity(&_transforms[offset + i]);
 	}
 
 	return offset * sizeof(matrix4);
@@ -40,6 +39,7 @@ void shadow_render_list::add_draw(const indexed_vertex_source* vert_src,
                                   vertex_buffer* buffer,
                                   size_t texi,
                                   size_t transform_base_offset,
+                                  const matrix4& model_matrix,
                                   const clip_plane_info* clip)
 {
 	batch_key key;
@@ -49,6 +49,7 @@ void shadow_render_list::add_draw(const indexed_vertex_source* vert_src,
 
 	batch_entry entry;
 	entry.transform_base_offset = transform_base_offset;
+	entry.model_matrix = model_matrix;
 	entry.has_clip_plane = (clip != nullptr);
 	if (clip != nullptr) {
 		entry.clip_equation.xyzw.x = clip->normal.xyz.x;
@@ -94,8 +95,8 @@ void shadow_render_list::build_and_render(const matrix4& light_view_matrix,
 		for (const auto& entry : entries) {
 			auto element = _dataBuffer.aligner().addTypedElement<graphics::shadow_uniform_data>();
 
-			element->modelViewMatrix = light_view_matrix;
-			element->modelMatrix = _identity_matrix;
+			vm_matrix4_x_matrix4(&element->modelViewMatrix, &light_view_matrix, &entry.model_matrix);
+			element->modelMatrix = entry.model_matrix;
 
 			for (size_t i = 0; i < MAX_SHADOW_CASCADES; i++) {
 				element->shadow_proj_matrix[i] = shadow_proj_matrices[i];
@@ -143,6 +144,7 @@ bool shadow_render_list::batch_key::operator<(const batch_key& other) const
 void shadow_render_list::add_model_draws(shadow_render_list* list,
                                          class polymodel* pm,
                                          size_t transform_base_offset,
+                                         const matrix4& world_matrix,
                                          const clip_plane_info* clip)
 {
 	for (int i = 0; i < pm->n_models; i++) {
@@ -167,7 +169,7 @@ void shadow_render_list::add_model_draws(shadow_render_list* list,
 				continue;
 			}
 
-			list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, clip);
+			list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world_matrix, clip);
 		}
 	}
 }

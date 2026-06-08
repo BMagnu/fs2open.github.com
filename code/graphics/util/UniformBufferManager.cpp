@@ -39,6 +39,7 @@ size_t getHeaderSize(uniform_block_type type)
 	case uniform_block_type::DecalInfo:
 		return sizeof(graphics::decal_globals);
 	case uniform_block_type::ModelData:
+	case uniform_block_type::ShadowMapData:
 	case uniform_block_type::NanoVGData:
 	case uniform_block_type::Matrices:
 	case uniform_block_type::MovieData:

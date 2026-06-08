@@ -584,9 +584,9 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 
 			auto pm = model_get(Ship_info[shipp->ship_info_index].model_num);
 			matrix4 world = obj_world_matrix(objp);
-			size_t offset = shadow_list.alloc_transform(world, pm->n_models);
+			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, offset, has_clip ? &clip : nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, offset, world, has_clip ? &clip : nullptr);
 			break;
 		}
 
@@ -597,9 +597,9 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			model_clear_instance(model_num);
 
 			matrix4 world = obj_world_matrix(objp);
-			size_t offset = shadow_list.alloc_transform(world, pm->n_models);
+			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, offset, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, offset, world, nullptr);
 			break;
 		}
 
@@ -611,9 +611,9 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			auto pm = model_get(model_num);
 
 			matrix4 world = obj_world_matrix(objp);
-			size_t offset = shadow_list.alloc_transform(world, pm->n_models);
+			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, offset, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, offset, world, nullptr);
 			break;
 		}
 
@@ -625,9 +625,9 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			object* debris_obj = &Objects[db->objnum];
 
 			matrix4 world = obj_world_matrix(debris_obj);
-			size_t offset = shadow_list.alloc_transform(world, pm->n_models);
+			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, offset, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, offset, world, nullptr);
 			break;
 		}
 

@@ -2078,9 +2078,9 @@ void shipfx_shadow_render_blowup(shadow_render_list* shadow_list, ship* shipp)
 		matrix4 world_matrix;
 		vm_matrix4_set_transform(&world_matrix, &half->orient, &half->local_pivot);
 
-		size_t offset = shadow_list->alloc_transform(world_matrix, pm->n_models);
+		size_t offset = shadow_list->alloc_transform(pm->n_models);
 
-		shadow_render_list::add_model_draws(shadow_list, pm, offset, &clip);
+		shadow_render_list::add_model_draws(shadow_list, pm, offset, world_matrix, &clip);
 	}
 }
 
