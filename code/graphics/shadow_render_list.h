@@ -6,6 +6,9 @@
 #include "graphics/util/UniformBuffer.h"
 #include "matrix.h"
 
+class polymodel;
+class polymodel_instance;
+
 class shadow_render_list {
 public:
 	struct clip_plane_info {
@@ -27,16 +30,23 @@ public:
 	              const matrix4& model_matrix,
 	              const clip_plane_info* clip);
 
+	void push_transform(const vec3d* pos, const matrix* orient);
+	void pop_transform();
+	const matrix4& get_current_transform() const;
+
 	void submit_transforms();
 
 	void build_and_render(const matrix4& light_view_matrix,
 	                      const matrix4* shadow_proj_matrices);
 
-	// Walk all submodels of a polymodel and add shadow draws
+	// Walk all submodels of a polymodel and add shadow draws, using the transform_stack
+	// for correct per-submodel world transforms.
 	static void add_model_draws(shadow_render_list* list,
-	                            class polymodel* pm,
+	                            polymodel* pm,
+	                            polymodel_instance* pmi,
 	                            size_t transform_base_offset,
-	                            const matrix4& world_matrix,
+	                            int obj_num,
+	                            const vec3d* pos, const matrix* orient,
 	                            const clip_plane_info* clip);
 
 private:
@@ -56,8 +66,16 @@ private:
 		matrix4 model_matrix;
 	};
 
+	static void render_submodel_children(shadow_render_list* list,
+	                                     polymodel* pm,
+	                                     polymodel_instance* pmi,
+	                                     int mn,
+	                                     size_t transform_base_offset,
+	                                     const clip_plane_info* clip);
+
 	SCP_vector<matrix4> _transforms;
 	SCP_map<batch_key, SCP_vector<batch_entry>> _batches;
 	graphics::util::UniformBuffer _dataBuffer;
 	size_t _current_transform_offset;
+	transform_stack _transform_stack;
 };

@@ -670,6 +670,10 @@ void gr_opengl_render_shadow_draw(gr_buffer_handle ubo_handle, size_t ubo_offset
 	// Enable clip distance; actual clipping is gated by the use_clip_plane uniform in the shader
 	GL_state.ClipDistance(0, true);
 
+	gr_zbuffer_set(ZBUFFER_TYPE_FULL);
+	gr_zbias(-1024);
+	GL_state.CullFace(GL_TRUE);
+
 	opengl_bind_vertex_layout(buffer->layout,
 		opengl_buffer_get_id(GL_ARRAY_BUFFER, vert_src->Vbuffer_handle),
 		opengl_buffer_get_id(GL_ELEMENT_ARRAY_BUFFER, vert_src->Ibuffer_handle));

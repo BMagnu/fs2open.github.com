@@ -4,6 +4,10 @@
 #include "graphics/matrix.h"
 #include "graphics/shadows.h"
 #include "model/model.h"
+#include "render/3d.h"
+
+extern float model_render_determine_depth(int obj_num, int model_num, const matrix* orient, const vec3d* pos, int detail_level_locked);
+extern int model_render_determine_detail(float depth, int model_num, int detail_level_locked);
 
 shadow_render_list::shadow_render_list()
 	: _current_transform_offset(0)
@@ -140,35 +144,142 @@ bool shadow_render_list::batch_key::operator<(const batch_key& other) const
 	return texi < other.texi;
 }
 
+void shadow_render_list::push_transform(const vec3d* pos, const matrix* orient)
+{
+	_transform_stack.push(pos, orient);
+}
+
+void shadow_render_list::pop_transform()
+{
+	_transform_stack.pop();
+}
+
+const matrix4& shadow_render_list::get_current_transform() const
+{
+	return _transform_stack.get_transform();
+}
+
 void shadow_render_list::add_model_draws(shadow_render_list* list,
-                                         class polymodel* pm,
+                                         polymodel* pm,
+                                         polymodel_instance* pmi,
                                          size_t transform_base_offset,
-                                         const matrix4& world_matrix,
+                                         int obj_num,
+                                         const vec3d* pos, const matrix* orient,
                                          const clip_plane_info* clip)
 {
-	for (int i = 0; i < pm->n_models; i++) {
-		if (i > 0 && pm->submodel[i].flags[Model::Submodel_flags::Is_thruster]) {
-			continue;
-		}
+	float depth = model_render_determine_depth(obj_num, pm->id, orient, pos, -1);
+	int detail_level = model_render_determine_detail(depth, pm->id, -1);
+	int detail_root = pm->detail[detail_level];
 
-		auto& buffer = pm->submodel[i].buffer;
-		if (buffer.tex_buf.empty()) {
-			continue;
-		}
+	list->_transform_stack.clear();
+	list->push_transform(pos, orient);
 
-		for (size_t j = 0; j < buffer.tex_buf.size(); j++) {
-			if (buffer.tex_buf[j].n_verts == 0) {
-				continue;
+	if (pm->flags & PM_FLAG_AUTOCEN) {
+		vec3d auto_back = pm->autocenter;
+		vm_vec_scale(&auto_back, -1.0f);
+		list->push_transform(&auto_back, NULL);
+	}
+
+	// Render the detail root submodel (hull)
+	{
+		auto& buffer = pm->submodel[detail_root].buffer;
+		if (!buffer.tex_buf.empty()) {
+			matrix4 world = list->get_current_transform();
+
+			for (size_t j = 0; j < buffer.tex_buf.size(); j++) {
+				if (buffer.tex_buf[j].n_verts == 0) {
+					continue;
+				}
+
+				int tmap_num = buffer.tex_buf[j].texture;
+				int base_tex = pm->maps[tmap_num].textures[TM_BASE_TYPE].GetTexture();
+
+				if (base_tex < 0) {
+					continue;
+				}
+
+				list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world, clip);
 			}
-
-			int tmap_num = buffer.tex_buf[j].texture;
-			int base_tex = pm->maps[tmap_num].textures[TM_BASE_TYPE].GetTexture();
-
-			if (base_tex < 0) {
-				continue;
-			}
-
-			list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world_matrix, clip);
 		}
 	}
+
+	// Walk children and render
+	int i = pm->submodel[detail_root].first_child;
+
+	while (i >= 0) {
+		if (!pm->submodel[i].flags[Model::Submodel_flags::Is_thruster]) {
+			render_submodel_children(list, pm, pmi, i, transform_base_offset, clip);
+		}
+
+		i = pm->submodel[i].next_sibling;
+	}
+
+	if (pm->flags & PM_FLAG_AUTOCEN) {
+		list->pop_transform();
+	}
+
+	list->pop_transform();
+}
+
+void shadow_render_list::render_submodel_children(shadow_render_list* list,
+                                                  polymodel* pm,
+                                                  polymodel_instance* pmi,
+                                                  int mn,
+                                                  size_t transform_base_offset,
+                                                  const clip_plane_info* clip)
+{
+	bsp_info* sm = &pm->submodel[mn];
+	submodel_instance* smi = nullptr;
+
+	if (pmi != nullptr) {
+		smi = &pmi->submodel[mn];
+		if (smi->blown_off) {
+			return;
+		}
+	}
+
+	matrix submodel_orient = vmd_identity_matrix;
+	vec3d submodel_offset = sm->offset;
+
+	if (smi != nullptr) {
+		submodel_orient = smi->canonical_orient;
+		vm_vec_add2(&submodel_offset, &smi->canonical_offset);
+	}
+
+	list->push_transform(&submodel_offset, &submodel_orient);
+
+	// Render this submodel's geometry
+	{
+		auto& buffer = sm->buffer;
+		if (!buffer.tex_buf.empty()) {
+			matrix4 world = list->get_current_transform();
+
+			for (size_t j = 0; j < buffer.tex_buf.size(); j++) {
+				if (buffer.tex_buf[j].n_verts == 0) {
+					continue;
+				}
+
+				int tmap_num = buffer.tex_buf[j].texture;
+				int base_tex = pm->maps[tmap_num].textures[TM_BASE_TYPE].GetTexture();
+
+				if (base_tex < 0) {
+					continue;
+				}
+
+				list->add_draw(&pm->vert_source, &buffer, j, transform_base_offset, world, clip);
+			}
+		}
+	}
+
+	// Recurse into children
+	int i = sm->first_child;
+	while (i >= 0) {
+		if (!pm->submodel[i].flags[Model::Submodel_flags::Is_thruster]) {
+			render_submodel_children(list, pm, pmi, i, transform_base_offset, clip);
+		}
+
+		i = pm->submodel[i].next_sibling;
+	}
+
+	list->pop_transform();
 }

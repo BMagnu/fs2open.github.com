@@ -467,13 +467,6 @@ void shadows_end_render()
 	gr_shadow_map_end();
 }
 
-static matrix4 obj_world_matrix(const object* objp)
-{
-	matrix4 out;
-	vm_matrix4_set_transform(&out, &const_cast<object*>(objp)->orient, &const_cast<object*>(objp)->pos);
-	return out;
-}
-
 static bool shadow_obj_clip_plane(const object* objp, shadow_render_list::clip_plane_info* clip)
 {
 	if (objp->type != OBJ_SHIP)
@@ -583,10 +576,13 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			bool has_clip = shadow_obj_clip_plane(objp, &clip);
 
 			auto pm = model_get(Ship_info[shipp->ship_info_index].model_num);
-			matrix4 world = obj_world_matrix(objp);
+			polymodel_instance* pmi = nullptr;
+			if (shipp->model_instance_num >= 0) {
+				pmi = model_get_instance(shipp->model_instance_num);
+			}
 			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, offset, world, has_clip ? &clip : nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, offset, OBJ_INDEX(objp), &objp->pos, &objp->orient, has_clip ? &clip : nullptr);
 			break;
 		}
 
@@ -596,10 +592,14 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			auto pm = model_get(model_num);
 			model_clear_instance(model_num);
 
-			matrix4 world = obj_world_matrix(objp);
+			polymodel_instance* pmi = nullptr;
+			int instance_num = object_get_model_instance_num(objp);
+			if (instance_num >= 0) {
+				pmi = model_get_instance(instance_num);
+			}
 			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, offset, world, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, offset, OBJ_INDEX(objp), &objp->pos, &objp->orient, nullptr);
 			break;
 		}
 
@@ -610,10 +610,9 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			model_clear_instance(model_num);
 			auto pm = model_get(model_num);
 
-			matrix4 world = obj_world_matrix(objp);
 			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, offset, world, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, nullptr, offset, OBJ_INDEX(objp), &objp->pos, &objp->orient, nullptr);
 			break;
 		}
 
@@ -624,10 +623,13 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 			auto pm = model_get(db->model_num);
 			object* debris_obj = &Objects[db->objnum];
 
-			matrix4 world = obj_world_matrix(debris_obj);
+			polymodel_instance* pmi = nullptr;
+			if (db->model_instance_num >= 0) {
+				pmi = model_get_instance(db->model_instance_num);
+			}
 			size_t offset = shadow_list.alloc_transform(pm->n_models);
 
-			shadow_render_list::add_model_draws(&shadow_list, pm, offset, world, nullptr);
+			shadow_render_list::add_model_draws(&shadow_list, pm, pmi, offset, db->objnum, &debris_obj->pos, &debris_obj->orient, nullptr);
 			break;
 		}
 
