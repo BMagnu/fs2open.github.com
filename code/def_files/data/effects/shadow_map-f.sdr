@@ -5,7 +5,6 @@
 in VertexOutputGeo {
 	vec4 position;
 	vec3 normal;
-	vec4 texCoord;
 } vertIn;
 
 out vec4 fragOut0;

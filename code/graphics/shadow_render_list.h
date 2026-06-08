@@ -50,6 +50,7 @@ private:
 
 	struct batch_entry {
 		size_t transform_base_offset;
+		size_t uniform_buffer_offset;
 		bool has_clip_plane;
 		vec4 clip_equation;
 		matrix4 model_matrix;

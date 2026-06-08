@@ -30,6 +30,7 @@ size_t shadow_render_list::alloc_transform(int n_models)
 
 	for (int i = 0; i < n_models; i++) {
 		vm_matrix4_set_identity(&_transforms[offset + i]);
+		_transforms[offset + i].a1d[15] = 0.0f;
 	}
 
 	return offset * sizeof(matrix4);
@@ -90,9 +91,9 @@ void shadow_render_list::build_and_render(const matrix4& light_view_matrix,
 	_dataBuffer = gr_get_uniform_buffer(uniform_block_type::ShadowMapData, total_entries);
 
 	for (auto& kv : _batches) {
-		const auto& entries = kv.second;
+		auto& entries = kv.second;
 
-		for (const auto& entry : entries) {
+		for (auto& entry : entries) {
 			auto element = _dataBuffer.aligner().addTypedElement<graphics::shadow_uniform_data>();
 
 			vm_matrix4_x_matrix4(&element->modelViewMatrix, &light_view_matrix, &entry.model_matrix);
@@ -105,31 +106,29 @@ void shadow_render_list::build_and_render(const matrix4& light_view_matrix,
 			element->clip_equation = entry.clip_equation;
 			element->use_clip_plane = entry.has_clip_plane ? 1 : 0;
 			element->buffer_matrix_offset = static_cast<int>(entry.transform_base_offset / sizeof(matrix4));
+
+			entry.uniform_buffer_offset = _dataBuffer.getCurrentAlignerOffset();
 		}
 	}
 
 	_dataBuffer.submitData();
 
-	size_t entry_index = 0;
 	for (auto& kv : _batches) {
-		const auto& entries = kv.second;
+		auto& entries = kv.second;
 
 		for (size_t i = 0; i < entries.size(); i++) {
 			auto* datap = &kv.first.buffer->tex_buf[kv.first.texi];
 			if (datap->n_verts == 0) {
-				entry_index++;
 				continue;
 			}
 
 			gr_render_shadow_draw(
 				_dataBuffer.bufferHandle(),
-				entry_index * sizeof(graphics::shadow_uniform_data),
+				entries[i].uniform_buffer_offset,
 				sizeof(graphics::shadow_uniform_data),
 				kv.first.buffer,
 				const_cast<indexed_vertex_source*>(kv.first.vert_src),
 				kv.first.texi);
-
-			entry_index++;
 		}
 	}
 }
