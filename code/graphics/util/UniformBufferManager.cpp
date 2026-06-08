@@ -14,6 +14,8 @@ size_t getElementSize(uniform_block_type type)
 		return sizeof(graphics::deferred_light_data);
 	case uniform_block_type::ModelData:
 		return sizeof(graphics::model_uniform_data);
+	case uniform_block_type::ShadowMapData:
+		return sizeof(graphics::shadow_uniform_data);
 	case uniform_block_type::NanoVGData:
 		return sizeof(graphics::nanovg_draw_data);
 	case uniform_block_type::DecalInfo:
