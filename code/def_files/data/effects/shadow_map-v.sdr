@@ -5,6 +5,7 @@ in vec4 vertPosition;
 in vec4 vertTexCoord;
 in vec3 vertNormal;
 in vec4 vertTangent;
+in float vertModelID;
 
 layout (std140) uniform shadowMapData {
 	mat4 modelViewMatrix;
@@ -12,7 +13,10 @@ layout (std140) uniform shadowMapData {
 	mat4 shadow_proj_matrix[4];
 	vec4 clip_equation;
 	bool use_clip_plane;
+	int buffer_matrix_offset;
 };
+
+uniform samplerBuffer transform_tex;
 
 out VertexOutput {
 #if !defined(GL_ARB_gpu_shader5)
@@ -22,12 +26,26 @@ out VertexOutput {
 	vec3 normal;
 } vertOut;
 
+#define TEXELS_PER_MATRIX 4
+
+void getModelTransform(inout mat4 transform, out bool invisible, int id, int matrix_offset)
+{
+	transform[0] = texelFetch(transform_tex, (matrix_offset + id) * TEXELS_PER_MATRIX);
+	transform[1] = texelFetch(transform_tex, (matrix_offset + id) * TEXELS_PER_MATRIX + 1);
+	transform[2] = texelFetch(transform_tex, (matrix_offset + id) * TEXELS_PER_MATRIX + 2);
+	transform[3] = texelFetch(transform_tex, (matrix_offset + id) * TEXELS_PER_MATRIX + 3);
+	invisible = transform[3].w >= 0.9;
+	transform[3].w = 1.0;
+}
+
 void main()
 {
 	vec4 position;
 	vec3 normal;
 	mat4 orient = mat4(1.0);
 	bool clipModel = false;
+
+	getModelTransform(orient, clipModel, int(vertModelID), buffer_matrix_offset);
 
 	vec4 vertex = vertPosition;
 

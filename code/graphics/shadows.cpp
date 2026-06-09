@@ -631,7 +631,8 @@ void shadows_render_all(fov_t fov, matrix *eye_orient, vec3d *eye_pos)
 		}
 	}
 
-	shadow_list.build_and_render(Shadow_proj_matrix);
+	shadow_list.init_render(true);
+	shadow_list.render_all();
 
 	shadows_end_render();
 

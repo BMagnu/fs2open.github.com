@@ -13,6 +13,7 @@ layout (std140) uniform shadowMapData {
 	mat4 shadow_proj_matrix[4];
 	vec4 clip_equation;
 	bool use_clip_plane;
+	int buffer_matrix_offset;
 };
 
 in VertexOutput {

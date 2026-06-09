@@ -661,14 +661,21 @@ void gr_opengl_render_shadow_draw(gr_buffer_handle ubo_handle, size_t ubo_offset
 
 	gr_bind_uniform_buffer(uniform_block_type::ShadowMapData, ubo_offset, ubo_size, ubo_handle);
 
+	// Bind the transform texture buffer so the vertex shader can read model transforms
+	Current_shader->program->Uniforms.setTextureUniform("transform_tex", 10);
+	GL_state.Texture.Enable(10, GL_TEXTURE_BUFFER, opengl_get_transform_buffer_texture());
+
+	GL_state.SetAlphaBlendMode(ALPHA_BLEND_NONE);
+	gr_zbuffer_set(ZBUFFER_TYPE_FULL);
+	gr_set_cull(1);
+	gr_zbias(-1024);
+	gr_set_fill_mode(GR_FILL_MODE_SOLID);
+	GL_state.ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
 	GL_state.FrontFaceValue(gr_screen.rendering_to_texture != -1 ? GL_CCW : GL_CW);
 
 	// Enable clip distance; actual clipping is gated by the use_clip_plane uniform in the shader
 	GL_state.ClipDistance(0, true);
-
-	gr_zbuffer_set(ZBUFFER_TYPE_FULL);
-	gr_zbias(-1024);
-	GL_state.CullFace(GL_TRUE);
 
 	opengl_bind_vertex_layout(buffer->layout,
 		opengl_buffer_get_id(GL_ARRAY_BUFFER, vert_src->Vbuffer_handle),
