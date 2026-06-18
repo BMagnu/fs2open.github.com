@@ -332,6 +332,8 @@ namespace os
 		 * @return The created viewport, may be @c nullptr if the viewport can't be created
 		 */
 		virtual std::unique_ptr<Viewport> createViewport(const ViewPortProperties& props) = 0;
+
+		virtual std::pair<uint32_t, uint32_t> getScreenBounds(uint32_t display) = 0;
 	};
 
 	/**

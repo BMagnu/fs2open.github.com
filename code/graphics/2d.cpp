@@ -1870,9 +1870,26 @@ bool gr_init(std::unique_ptr<os::GraphicsOperations>&& graphicsOps, int d_mode, 
 		// (be that a window, a render overlay from nsight, or an FSO-internal buffer) instead of directly rendering to the OS-provided direct screen backbuffer.
 		// As the cost of -window_res is one single blit of a fullscreen buffer, it's probably an acceptable compromise to get rid of render artifacts.
 		// As such, forcibly enable -window_res at the screen resolution here, if we're in fullscreen.
-
 		// Additionally, SDL3+ doesn't work when reading from the GL_FRONT buffers, so we need our own intermediate buffers.
-		Cmdline_window_res.emplace(static_cast<uint16_t>(width), static_cast<uint16_t>(height));
+
+		//Cmdline_window_res can get a few different values by default if not specified by the user.
+		//Typically, it should be set to the render resolution as to minimize artifacts.
+		//When in true fullscreen, some drivers really get confused if they try to modeset a resolution that's too different from the screen, so use that in that case.
+		//Finally, in VR, we really want a small but not too tiny square, so that the window is smaller than the screen for sure.
+
+		if (openxr_requested()) {
+			//OpenXR, 1000x1000
+			Cmdline_window_res.emplace(static_cast<uint16_t>(1000), static_cast<uint16_t>(1000));
+		}
+		else if ((Using_in_game_options && Gr_configured_window_state == os::ViewportState::Fullscreen) ||
+				(!Using_in_game_options && !Cmdline_window && !Cmdline_fullscreen_window)){
+			//True Fullscreen, native screen size.
+			Cmdline_window_res.emplace(graphicsOps->getScreenBounds(os_config_read_uint("Video", "Display", 0)));
+		}
+		else {
+			//Other, render resolution
+			Cmdline_window_res.emplace(static_cast<uint16_t>(width), static_cast<uint16_t>(height));
+		}
 	}
 
 	if (d_mode == GR_DEFAULT) {

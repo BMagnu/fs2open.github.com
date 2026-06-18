@@ -62,6 +62,8 @@ class QtGraphicsOperations: public os::GraphicsOperations {
 	void makeOpenGLContextCurrent(os::Viewport* view, os::OpenGLContext* ctx) override;
 
 	std::unique_ptr<os::Viewport> createViewport(const os::ViewPortProperties& props) override;
+
+	std::pair<uint32_t, uint32_t> getScreenBounds(uint32_t display) override;
 };
 
 }

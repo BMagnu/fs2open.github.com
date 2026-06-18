@@ -176,6 +176,15 @@ SDLGraphicsOperations::~SDLGraphicsOperations() {
 
 	SDL_QuitSubSystem(SDL_INIT_VIDEO);
 }
+std::pair<uint32_t, uint32_t> SDLGraphicsOperations::getScreenBounds(uint32_t display) {
+	SDL_Rect bounds;
+	if (SDL_GetDisplayBounds(display, &bounds) != 0) {
+		mprintf(("Failed to get display bounds: %s\n", SDL_GetError()));
+		return {0, 0};
+	}
+
+	return std::make_pair(bounds.w, bounds.h);
+}
 std::unique_ptr<os::Viewport> SDLGraphicsOperations::createViewport(const os::ViewPortProperties& props)
 {
 	uint32_t windowflags = SDL_WINDOW_SHOWN;

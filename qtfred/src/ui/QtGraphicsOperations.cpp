@@ -132,6 +132,15 @@ std::unique_ptr<os::Viewport> QtGraphicsOperations::createViewport(const os::Vie
 	return view;
 }
 
+std::pair<uint32_t, uint32_t> QtGraphicsOperations::getScreenBounds(uint32_t display) {
+	const auto& screens = QGuiApplication::screens();
+	if (screens.size() >= static_cast<int>(display))
+		return {0, 0};
+
+	auto screen_geo = screens[display]->geometry();
+	return {screen_geo.width(), screen_geo.height()};
+};
+
 SDL_Window* QtViewport::toSDLWindow() {
 	return nullptr;
 }
