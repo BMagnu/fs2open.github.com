@@ -3,6 +3,8 @@
 #include "asteroid/asteroid.h"
 #include "debris/debris.h"
 #include "freespace.h"
+#include "model/animation/modelanimation.h"
+#include "model/animation/modelanimation_driver.h"
 #include "model/model.h"
 #include "model/modelreplace.h"
 #include "network/multiutil.h"
@@ -351,6 +353,18 @@ void parse_prop_table(const char* filename)
 
 			required_string("$end_custom_strings");
 		}
+
+		if (optional_string("$Animations:")) {
+			animation::ModelAnimationParseHelper::parseAnimsetInfo(pip->animations, 'p', pip->name);
+		}
+
+		if (optional_string("$Driven Animations:")) {
+			animation::ModelAnimationParseHelper::parseAnimsetInfoDrivers(pip->animations, 'p', pip->name, animation::parse_object_property_driver_source);
+		}
+
+		if (optional_string("$Animation Moveables:")) {
+			animation::ModelAnimationParseHelper::parseMoveablesetInfo(pip->animations);
+		}
 	}
 
 	required_string("#END");
@@ -558,7 +572,13 @@ int prop_create(const matrix* orient, const vec3d* pos, int prop_type, const cha
 		}
 	}
 
-	//animation::anim_set_initial_states(propp);
+	{
+		auto pmi = model_get_instance(propp->model_instance_num);
+		pip->animations.clearShipData(pmi);
+		pip->animations.getAll(pmi, animation::ModelAnimationTriggerType::Initial).start(animation::ModelAnimationDirection::FWD, true, true);
+		pip->animations.initializeMoveables(pmi);
+		pip->animations.getAll(pmi, animation::ModelAnimationTriggerType::OnSpawn).start(animation::ModelAnimationDirection::FWD);
+	}
 
 	// Start up stracking for this prop in multi.
 	//if (Game_mode & (GM_MULTIPLAYER)) {
@@ -585,7 +605,7 @@ void prop_delete(object* obj)
 
 	propp.objnum = -1;
 
-	//animation::ModelAnimationSet::stopAnimations(model_get_instance(propp->model_instance_num));
+	animation::ModelAnimationSet::stopAnimations(model_get_instance(propp.model_instance_num));
 
 	// glow point banks
 	propp.glow_point_bank_active.clear();
@@ -671,7 +691,13 @@ static void prop_model_change(int n, int prop_type)
 	// create new model instance data
 	// note: this is needed for both subsystem stuff and submodel animation stuff
 	sp->model_instance_num = model_create_instance(OBJ_INDEX(objp), sip->model_num);
-	//pmi = model_get_instance(sp->model_instance_num);
+
+	// re-initialize animations for the new model instance
+	auto pmi = model_get_instance(sp->model_instance_num);
+	sip->animations.clearShipData(pmi);
+	sip->animations.getAll(pmi, animation::ModelAnimationTriggerType::Initial).start(animation::ModelAnimationDirection::FWD, true, true);
+	sip->animations.initializeMoveables(pmi);
+	sip->animations.getAll(pmi, animation::ModelAnimationTriggerType::OnSpawn).start(animation::ModelAnimationDirection::FWD);
 }
 
 /**

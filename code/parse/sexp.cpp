@@ -2784,10 +2784,11 @@ int check_sexp_syntax(int node, int desired_return_type, int recursive, int *bad
 			}
 
 			case OPF_ANIMATION_NAME: {
-				// OP 1 is always the ship
+				// OP 1 is always the ship or prop
 
 				int shipnum,ship_class;
 				int ship_node;
+				bool is_prop = false;
 
 				if (node_subtype != SEXP_ATOM_STRING){
 					return SEXP_CHECK_TYPE_MISMATCH;
@@ -2814,26 +2815,46 @@ int check_sexp_syntax(int node, int desired_return_type, int recursive, int *bad
 				}
 				else
 				{
-					// must try to find the ship in the arrival list
-					p_object *p_objp = mission_parse_get_arrival_ship(shipname);
-
-					if (!p_objp)
+					// try prop
+					int prop_idx = prop_name_lookup(shipname);
+					if (prop_idx >= 0)
 					{
-						if (desired_argument_type == OPF_SUBSYSTEM_OR_NONE)
-							break;
-						else
+						is_prop = true;
+					}
+					else
+					{
+						// must try to find the ship in the arrival list
+						p_object *p_objp = mission_parse_get_arrival_ship(shipname);
+
+						if (!p_objp)
 						{
 							if (bad_node)
 								*bad_node = ship_node;
 
-							return SEXP_CHECK_INVALID_SHIP;
+							return SEXP_CHECK_INVALID_SHIP_PROP;
 						}
-					}
 
-					ship_class = p_objp->ship_class;
+						ship_class = p_objp->ship_class;
+					}
 				}
 
-				const auto& animSet = Ship_info[ship_class].animations;
+				const animation::ModelAnimationSet* animSet;
+				if (is_prop)
+				{
+					int prop_idx = prop_name_lookup(shipname);
+					auto prop_entry = prop_id_lookup(prop_idx);
+					if (prop_entry == nullptr)
+					{
+						if (bad_node)
+							*bad_node = ship_node;
+						return SEXP_CHECK_INVALID_SHIP_PROP;
+					}
+					animSet = &Prop_info[prop_entry->prop_info_index].animations;
+				}
+				else
+				{
+					animSet = &Ship_info[ship_class].animations;
+				}
 				switch(op_const) {
 					case OP_TRIGGER_ANIMATION_NEW:
 					case OP_STOP_LOOPING_ANIMATION: {
@@ -2841,7 +2862,7 @@ int check_sexp_syntax(int node, int desired_return_type, int recursive, int *bad
 						//Third OP triggered by
 						auto triggerType = animation::anim_match_type(CTEXT(CDR(ship_node)));
 						
-						const auto& animations = animSet.getRegisteredTriggers();
+						const auto& animations = animSet->getRegisteredTriggers();
 						
 						SCP_string triggeredBy = CTEXT(CDDR(ship_node));
 						SCP_tolower(triggeredBy);
@@ -2877,7 +2898,7 @@ int check_sexp_syntax(int node, int desired_return_type, int recursive, int *bad
 						SCP_string name = CTEXT(CDR(ship_node));
 						SCP_tolower(name);
 						
-						const auto& moveables = animSet.getRegisteredMoveables();
+						const auto& moveables = animSet->getRegisteredMoveables();
 						
 						if(std::find(moveables.cbegin(), moveables.cend(), name) == moveables.cend())
 							return SEXP_CHECK_INVALID_ANIMATION;
@@ -23453,10 +23474,40 @@ void sexp_trigger_submodel_animation(int node)
 	}
 }
 
+struct AnimObjectTarget {
+	animation::ModelAnimationSet* animset = nullptr;
+	polymodel_instance* pmi = nullptr;
+	SCP_string name;
+};
+
+static AnimObjectTarget resolve_anim_target(int node)
+{
+	AnimObjectTarget target;
+
+	auto ship_entry = eval_ship(node);
+	if (ship_entry != nullptr && ship_entry->has_shipp()) {
+		target.animset = &Ship_info[ship_entry->shipp()->ship_info_index].animations;
+		target.pmi = model_get_instance(ship_entry->shipp()->model_instance_num);
+		target.name = ship_entry->name;
+		return target;
+	}
+
+	auto prop_entry = eval_prop(node);
+	if (prop_entry != nullptr) {
+		auto pip = &Prop_info[prop_entry->prop_info_index];
+		target.animset = &pip->animations;
+		target.pmi = model_get_instance(prop_entry->model_instance_num);
+		target.name = prop_entry->prop_name;
+		return target;
+	}
+
+	return target;
+}
+
 void sexp_trigger_submodel_animation_new(int n)
 {
-	auto ship_entry = eval_ship(n);
-	if (!ship_entry || !ship_entry->has_shipp())
+	auto target = resolve_anim_target(n);
+	if (!target.animset || !target.pmi)
 		return;
 	n = CDR(n);
 
@@ -23508,14 +23559,14 @@ void sexp_trigger_submodel_animation_new(int n)
 	else
 		pause = false;
 
-	const auto& list = Ship_info[ship_entry->shipp()->ship_info_index].animations.parseScripted(model_get_instance(ship_entry->shipp()->model_instance_num), animation_type, triggeredBy);
+	const auto& list = target.animset->parseScripted(target.pmi, animation_type, triggeredBy);
 	list.start(direction, forced || instant, instant, pause);
 }
 
 void sexp_stop_looping_animation(int n)
 {
-	auto ship_entry = eval_ship(n);
-	if (!ship_entry || !ship_entry->has_shipp())
+	auto target = resolve_anim_target(n);
+	if (!target.animset || !target.pmi)
 		return;
 	n = CDR(n);
 
@@ -23530,7 +23581,7 @@ void sexp_stop_looping_animation(int n)
 	SCP_string triggeredBy(CTEXT(n));
 	n = CDR(n);
 
-	const auto& list = Ship_info[ship_entry->shipp()->ship_info_index].animations.parseScripted(model_get_instance(ship_entry->shipp()->model_instance_num), animation_type, triggeredBy);
+	const auto& list = target.animset->parseScripted(target.pmi, animation_type, triggeredBy);
 	list.setFlag(animation::Animation_Instance_Flags::Stop_after_next_loop);
 }
 
@@ -23538,8 +23589,8 @@ void sexp_update_moveable_animation(int node)
 {
 	bool is_nan, is_nan_forever;
 
-	auto ship_entry = eval_ship(node);
-	if (!ship_entry || !ship_entry->has_shipp())
+	auto target = resolve_anim_target(node);
+	if (!target.animset || !target.pmi)
 		return;
 
 	node = CDR(node);
@@ -23555,25 +23606,25 @@ void sexp_update_moveable_animation(int node)
 		args.emplace_back(eval_num(node, is_nan, is_nan_forever));
 		
 		if(is_nan || is_nan_forever)
-			Warning(LOCATION, "Value for moveable %s on ship %s was NaN!", name.c_str(), ship_entry->name);
+			Warning(LOCATION, "Value for moveable %s on %s was NaN!", name.c_str(), target.name.c_str());
 		
 		node = CDR(node);
 	}
 
-	Ship_info[ship_entry->shipp()->ship_info_index].animations.updateMoveable(model_get_instance(ship_entry->shipp()->model_instance_num), name, args);
+	target.animset->updateMoveable(target.pmi, name, args);
 }
 
 void sexp_advance_moveable_animation(int node)
 {
-	auto ship_entry = eval_ship(node);
-	if (!ship_entry || !ship_entry->has_shipp())
+	auto target = resolve_anim_target(node);
+	if (!target.animset || !target.pmi)
 		return;
 
 	node = CDR(node);
 
 	SCP_string name(CTEXT(node));
 
-	Ship_info[ship_entry->shipp()->ship_info_index].animations.advanceMoveableToFinal(model_get_instance(ship_entry->shipp()->model_instance_num), name);
+	target.animset->advanceMoveableToFinal(target.pmi, name);
 }
 
 void sexp_add_remove_escort(int node)
@@ -34948,7 +34999,7 @@ int query_operator_argument_type(int op_index, int argnum)
 		case OP_TRIGGER_ANIMATION_NEW:
 		case OP_STOP_LOOPING_ANIMATION:
 			if (argnum == 0)
-				return OPF_SHIP;
+				return OPF_SHIP_PROP;
 			else if (argnum == 1)
 				return OPF_ANIMATION_TYPE;
 			else if (argnum == 2)
@@ -34958,7 +35009,7 @@ int query_operator_argument_type(int op_index, int argnum)
 
 		case OP_UPDATE_MOVEABLE:
 			if (argnum == 0)
-				return OPF_SHIP;
+				return OPF_SHIP_PROP;
 			else if(argnum == 1)
 				return OPF_ANIMATION_NAME;
 			else
@@ -34966,7 +35017,7 @@ int query_operator_argument_type(int op_index, int argnum)
 
 		case OP_ADVANCE_MOVEABLE:
 			if (argnum == 0)
-				return OPF_SHIP;
+				return OPF_SHIP_PROP;
 			else
 				return OPF_ANIMATION_NAME;
 
@@ -42864,9 +42915,9 @@ SCP_vector<sexp_help_struct> Sexp_help = {
 	},
 
 	{ OP_TRIGGER_ANIMATION_NEW , "trigger-ship-animation\r\n"
-		"\tTriggers an animation on a ship.\r\n"
+		"\tTriggers an animation on a ship or prop.\r\n"
 		"Takes 3 or more arguments...\r\n"
-		"\t1: The ship to trigger the animation on (ship must be in-mission).\r\n"
+		"\t1: The ship or prop to trigger the animation on (must be in-mission).\r\n"
 		"\t2: The trigger type of the animation.\r\n"
 		"\t3: The triggered-by value of the animation. Must be the same as in the table for the animation. Leave blank if not specified in the table.\r\n"
 		"\t\tException: fighterbay-type animations must specify the number of the fighter bay path.\r\n"
@@ -42879,7 +42930,7 @@ SCP_vector<sexp_help_struct> Sexp_help = {
 	{ OP_STOP_LOOPING_ANIMATION, "stop-looping-animation\r\n"
 		"\tStops a looping animation once it finishes its current loop.\r\n"
 		"Takes 3 arguments...\r\n"
-		"\t1: The ship to trigger the animation on (ship must be in-mission).\r\n"
+		"\t1: The ship or prop to trigger the animation on (must be in-mission).\r\n"
 		"\t2: The trigger type of the animation.\r\n"
 		"\t3: The triggered-by value of the animation. Must be the same as in the table for the animation. Leave blank if not specified in the table.\r\n"
 		"\t\tException: fighterbay-type animations must specify the number of the fighter bay path.\r\n"
@@ -42888,7 +42939,7 @@ SCP_vector<sexp_help_struct> Sexp_help = {
 	{ OP_UPDATE_MOVEABLE , "update-moveable-animation\r\n"
 		"\tUpdates the data for a moveable animation.\r\n"
 		"Takes 2 and more arguments...\r\n"
-		"\t1: The ship to update the moveable for (ship must be in-mission).\r\n"
+		"\t1: The ship or prop to update the moveable for (must be in-mission).\r\n"
 		"\t2: The name of the moveable.\r\n"
 		"\tRest: The data for the moveable. Depends on moveable type. Refer to the table below:\r\n\r\n"
 		"Orientation:\r\n"
@@ -42907,7 +42958,7 @@ SCP_vector<sexp_help_struct> Sexp_help = {
 	{ OP_ADVANCE_MOVEABLE, "advance-moveable-animation\r\n"
 		"\tAdvances a moveable animation to its final state instantly.\r\n"
 		"Takes 2 arguments...\r\n"
-		"\t1: The ship (ship must be in-mission).\r\n"
+		"\t1: The ship or prop (must be in-mission).\r\n"
 		"\t2: The name of the moveable.\r\n"
 	},
 

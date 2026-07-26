@@ -3,6 +3,7 @@
 #include "globalincs/pstypes.h"
 
 #include "mission/mission_flags.h"
+#include "model/animation/modelanimation.h"
 #include "object/object.h"
 #include "object/objcollide.h"
 #include "prop/prop_flags.h"
@@ -23,6 +24,7 @@ typedef struct prop_info {
 	flagset<Prop::Info_Flags> flags;                            // Info flags
 	SCP_map<SCP_string, SCP_string> custom_data;                // Custom data for this prop
 	SCP_vector<custom_string> custom_strings;                   // Custom strings for this prop
+	animation::ModelAnimationSet animations;                    // Animations for this prop class
 } prop_info;
 
 typedef struct prop {

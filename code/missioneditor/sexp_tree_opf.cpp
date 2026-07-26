@@ -1401,12 +1401,28 @@ sexp_list_item *SexpTreeOPF::get_listing_opf_animation_name(int parent_node) con
 	// get the operator type of the node
 	const int op = get_operator_const(_model.tree_nodes[parent_node].text);
 
-	// first child node is the ship name
+	// first child node is the ship/prop name
 	int child = _model.tree_nodes[parent_node].child;
 	if (child < 0)
 		return nullptr;
-	const int sh = ship_name_lookup(_model.tree_nodes[child].text, 1);
-	if (sh < 0) {
+
+	const animation::ModelAnimationSet* anim_set = nullptr;
+	{
+		const int sh = ship_name_lookup(_model.tree_nodes[child].text, 1);
+		if (sh >= 0) {
+			anim_set = &Ship_info[Ships[sh].ship_info_index].animations;
+		} else {
+			const int prop_idx = prop_name_lookup(_model.tree_nodes[child].text);
+			if (prop_idx >= 0) {
+				auto prop_entry = prop_id_lookup(prop_idx);
+				if (prop_entry != nullptr) {
+					anim_set = &Prop_info[prop_entry->prop_info_index].animations;
+				}
+			}
+		}
+	}
+
+	if (anim_set == nullptr) {
 		return nullptr;
 	}
 
@@ -1419,7 +1435,7 @@ sexp_list_item *SexpTreeOPF::get_listing_opf_animation_name(int parent_node) con
 			}
 			auto triggerType = animation::anim_match_type(_model.tree_nodes[child].text);
 
-			for (const auto& anim_ref : Ship_info[Ships[sh].ship_info_index].animations.getRegisteredTriggers()) {
+			for (const auto& anim_ref : anim_set->getRegisteredTriggers()) {
 				if (anim_ref.type != triggerType)
 					continue;
 
@@ -1444,7 +1460,7 @@ sexp_list_item *SexpTreeOPF::get_listing_opf_animation_name(int parent_node) con
 		}
 
 		case OP_UPDATE_MOVEABLE:
-			for(const auto& moveable : Ship_info[Ships[sh].ship_info_index].animations.getRegisteredMoveables())
+			for(const auto& moveable : anim_set->getRegisteredMoveables())
 				head.add_data(moveable.c_str());
 
 			break;
