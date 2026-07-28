@@ -1,0 +1,42 @@
+#ifdef VULKAN
+
+struct FlareEntry {
+	vec2 meanPos;
+	vec2 aabbMin;
+	vec2 aabbMax;
+	float brightness;
+	uint  mipLevel;
+};
+
+layout(std430, set = 1, binding = 8) buffer FlareSSBO {
+	uint flareCount;
+	FlareEntry entries[];
+};
+
+layout(location = 0) out float vBrightness;
+
+void main() {
+	FlareEntry e = entries[gl_InstanceIndex];
+
+	float minUV = 0.002;
+	vec2 halfSize = (e.aabbMax - e.aabbMin) * 0.5;
+	float stretch = e.brightness * 5.0;
+	vec2 lo = e.meanPos - vec2(max(halfSize.x * stretch, minUV), max(halfSize.y, minUV * 0.5));
+	vec2 hi = e.meanPos + vec2(max(halfSize.x * stretch, minUV), max(halfSize.y, minUV * 0.5));
+
+	uint v = gl_VertexIndex;
+	float x = (v == 1 || v == 3 || v == 4) ? hi.x : lo.x;
+	float y = (v == 2 || v == 4 || v == 5) ? hi.y : lo.y;
+
+	gl_Position = vec4(vec2(x, y) * 2.0 - 1.0, 0.0, 1.0);
+
+	vBrightness = e.brightness;
+}
+
+#else
+
+void main() {
+	gl_Position = vec4(0.0);
+}
+
+#endif

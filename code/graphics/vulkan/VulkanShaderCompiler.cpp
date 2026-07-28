@@ -156,6 +156,16 @@ SCP_string VulkanShaderCompiler::buildHeader(vk::ShaderStageFlagBits /*stage*/, 
 	header += shader_get_shadow_cascade_defines();
 	header += shader_get_rt_shadow_light_limit_define();
 
+	// Lens flare mip-range defines — baked at compile time so the detect
+	// shader can unroll its search pyramid; mirrors NUM_SHADOW_CASCADES.
+	if (sdrType == SDR_TYPE_POST_PROCESS_LENSFLARE_DETECT) {
+		char tmp[48];
+		snprintf(tmp, sizeof(tmp), "#define LENSFLARE_COARSE_MIP %d\n", Gr_lensflare_coarse_mip);
+		header += tmp;
+		snprintf(tmp, sizeof(tmp), "#define LENSFLARE_FINE_MIP %d\n",  Gr_lensflare_fine_mip);
+		header += tmp;
+	}
+
 	// Post-processing shaders need special header injection (matching OpenGL's
 	// opengl_post_shader_header). Effect indices map to #define names, and
 	// lightshafts needs the sample count.
@@ -285,6 +295,8 @@ SCP_vector<uint32_t> VulkanShaderCompiler::compile(const SCP_string& filename,
 	shaderc_shader_kind kind;
 	if (stage == vk::ShaderStageFlagBits::eVertex) {
 		kind = shaderc_vertex_shader;
+	} else if (stage == vk::ShaderStageFlagBits::eCompute) {
+		kind = shaderc_compute_shader;
 	} else {
 		kind = shaderc_fragment_shader;
 	}
@@ -297,12 +309,12 @@ SCP_vector<uint32_t> VulkanShaderCompiler::compile(const SCP_string& filename,
 
 	if (status != shaderc_compilation_status_success) {
 		const char* errMsg = sc->result_get_error_message(result);
-		nprintf(("vulkan", "VulkanShaderCompiler: COMPILATION FAILED for %s (flags=0x%x):\n%s\n",
-		         filename.c_str(), flags, errMsg ? errMsg : "(no error message)"));
+		Error(LOCATION, "VulkanShaderCompiler: COMPILATION FAILED for %s (flags=0x%x):\n%s\n",
+		         filename.c_str(), flags, errMsg ? errMsg : "(no error message)");
 	} else {
 		if (sc->result_get_num_warnings(result) > 0) {
 			const char* errMsg = sc->result_get_error_message(result);
-			nprintf(("vulkan", "VulkanShaderCompiler: Warnings for %s:\n%s\n",
+			mprintf(("VulkanShaderCompiler: Warnings for %s:\n%s\n",
 			         filename.c_str(), errMsg ? errMsg : ""));
 		}
 

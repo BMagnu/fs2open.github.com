@@ -180,6 +180,28 @@ const VulkanShaderModule* VulkanShaderManager::getShaderByType(shader_type type)
 	return nullptr;
 }
 
+vk::UniqueShaderModule VulkanShaderManager::createComputeModule(const SCP_string& filename,
+                                                                  shader_type type,
+                                                                  unsigned int flags)
+{
+	if (!m_initialized || !m_compiler) {
+		return {};
+	}
+
+	bool requiresRaytracing = shader_variant_requires_raytracing(type, flags);
+	auto spirv = m_compiler->compile(filename, vk::ShaderStageFlagBits::eCompute,
+	                                 type, flags, requiresRaytracing);
+	if (spirv.empty()) {
+		nprintf(("vulkan", "VulkanShaderManager: Failed to compile compute shader '%s'\n", filename.c_str()));
+		return {};
+	}
+
+	vk::ShaderModuleCreateInfo createInfo;
+	createInfo.codeSize = spirv.size() * sizeof(uint32_t);
+	createInfo.pCode = spirv.data();
+	return m_device.createShaderModuleUnique(createInfo);
+}
+
 int VulkanShaderManager::loadShader(shader_type type, unsigned int flags)
 {
 	const ShaderTypeInfo* typeInfo = shader_get_type_info(type);

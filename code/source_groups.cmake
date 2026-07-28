@@ -252,6 +252,9 @@ add_file_folder("Default files\\\\data\\\\effects"
 	def_files/data/effects/gamma-correct-f.sdr
 	def_files/data/effects/irrmap-f.sdr
 	def_files/data/effects/lighting.sdr
+	def_files/data/effects/lensflare-detect-c.sdr
+	def_files/data/effects/lensflare-render-f.sdr
+	def_files/data/effects/lensflare-render-v.sdr
 	def_files/data/effects/ls-f.sdr
 	def_files/data/effects/main-f.sdr
 	def_files/data/effects/main-g.sdr
@@ -618,6 +621,7 @@ if (FSO_BUILD_WITH_VULKAN)
 		graphics/vulkan/VulkanPostProcessing.h
 		graphics/vulkan/VulkanPostProcessingBloom.cpp
 		graphics/vulkan/VulkanPostProcessingCommon.cpp
+		graphics/vulkan/VulkanPostProcessingLensFlare.cpp
 		graphics/vulkan/VulkanPostProcessingDistortion.cpp
 		graphics/vulkan/VulkanPostProcessingFog.cpp
 		graphics/vulkan/VulkanPostProcessingGBuffer.cpp

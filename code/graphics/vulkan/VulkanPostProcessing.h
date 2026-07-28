@@ -274,6 +274,98 @@ private:
 };
 
 /**
+ * @brief Lens flare (compute-based bright-texel detection + instanced quad rendering)
+ *
+ * Self-contained subsystem: owns a multi-mip scratch image (pre-bloom scene copy),
+ * a compute-pipeline + SSBO for flare detection, and a render-pass for additively
+ * compositing flare quads onto the post-bloom scene color. Configurable mip-range
+ * (coarseMip -> fineMip), brightness threshold, and max flare count.
+ *
+ * The detection algorithm walks the mip pyramid recursively from coarseMip=N:
+ *   - If a texel is bright at level X -> emit a flare (refine to fineMip=M for
+ *     precise geometric-mean position and tight AABB). Stop descending.
+ *   - If not bright and X > M -> split into 4 sub-texels at level X-1 and recurse.
+ *   - If not bright and X == M -> dead end, nothing emitted.
+ *
+ * One or more flares may be emitted per original coarse texel.
+ */
+class VulkanLensFlare {
+public:
+	bool init(PostProcessContext& ctx, const RenderTarget& sceneColor);
+	void shutdown();
+	bool resize();
+
+	/**
+	 * @brief Capture pre-bloom scene color into the mip chain
+	 *
+	 * Must be called BEFORE executeBloom() while scene color is still the raw
+	 * HDR frame. Copies scene → mip chain level 0, then generates all mips.
+	 * After return the mip image is in eGeneral (compute-storage) layout.
+	 *
+	 * @param cmd Active command buffer (must be outside a render pass)
+	 */
+	void capturePreBloom(vk::CommandBuffer cmd);
+
+	/**
+	 * @brief Run lens flare detection and draw onto post-bloom scene
+	 *
+	 * Must be called AFTER capturePreBloom() and after executeBloom().
+	 * Dispatches the compute detection shader on the pre-bloom mip chain,
+	 * then draws additive-flare quads onto the (now bloomed) scene color.
+	 *
+	 * @param cmd Active command buffer (must be outside a render pass)
+	 */
+	void execute(vk::CommandBuffer cmd);
+
+	bool isInitialized() const { return m_initialized; }
+
+	// -- Tunable parameters (may be changed between frames, take effect next execute()) --
+	int      m_coarseMip  = 8;    // N: coarsest mip-level to search
+	int      m_fineMip    = 3;    // M: finest mip-level to refine to
+	float    m_threshold  = 1.25f; // luminance threshold [0..)
+
+private:
+	bool createTargets();
+	void destroyTargets();
+	bool createComputeResources();
+	void destroyComputeResources();
+
+	PostProcessContext* m_ctx = nullptr;
+	const RenderTarget* m_sceneColor = nullptr;
+
+	// Pre-bloom mip chain (RGBA16F, full-res, coarseMip+1 levels)
+	vk::Image        m_mipImage;
+	vk::ImageView    m_mipFullView;
+	VulkanAllocation m_mipAllocation;
+	uint32_t         m_mipLevelCount = 0;
+	uint32_t         m_mipWidth  = 0;
+	uint32_t         m_mipHeight = 0;
+
+	// Flare output SSBO + params UBO
+	vk::Buffer        m_flareBuffer;
+	VulkanAllocation  m_flareBufferAlloc;
+	void*             m_flareBufferMapped = nullptr;
+
+	vk::Buffer        m_paramsBuffer;
+	VulkanAllocation  m_paramsAlloc;
+	void*             m_paramsMapped = nullptr;
+
+	// Compute resources
+	vk::DescriptorSetLayout m_computeDescSetLayout;
+	vk::PipelineLayout      m_computePipelineLayout;
+	vk::UniqueShaderModule  m_computeModule;
+	vk::Pipeline            m_computePipeline;
+	vk::DescriptorPool      m_computeDescPool;
+	vk::DescriptorSet       m_computeDescSet;
+
+	// Flare compositing render pass + framebuffer
+	vk::RenderPass   m_flareRenderPass;
+	vk::Framebuffer  m_flareFramebuffer;
+
+	bool m_initialized = false;
+};
+
+/**
  * @brief Deferred geometry buffer (G-buffer) + optional MSAA G-buffer & resolve
  *
  * Cohesive subsystem owning the single-sample G-buffer targets (position, normal,
@@ -885,6 +977,17 @@ public:
 	void executeBloom(vk::CommandBuffer cmd) { m_bloom.execute(cmd); }
 
 	/**
+	 * @brief Execute lens flare detection and compositing
+	 *
+	 * Reads the pre-bloom scene copy, runs compute-based detection, and draws
+	 * additive flare quads onto the post-bloom scene color.
+	 * Must be called outside a render pass.
+	 */
+	void executeLensFlare(vk::CommandBuffer cmd) { m_lensFlare.execute(cmd); }
+	void capturePreBloom(vk::CommandBuffer cmd) { m_lensFlare.capturePreBloom(cmd); }
+	bool isLensFlareInitialized() const { return m_lensFlare.isInitialized(); }
+
+	/**
 	 * @brief Execute tonemapping pass (HDR scene → LDR)
 	 *
 	 * Called after bloom and before FXAA. Renders to Scene_ldr (RGBA8).
@@ -1123,6 +1226,10 @@ private:
 	bool initMSAA() { return m_deferred.initMsaa(); }
 	void shutdownMSAA() { m_deferred.shutdownMsaa(); }
 
+	// Lens flare (forwards to the VulkanLensFlare subsystem)
+	bool initLensFlare() { return m_lensFlare.init(m_ctx, m_sceneColor); }
+	void shutdownLensFlare() { m_lensFlare.shutdown(); }
+
 	// Bloom pipeline (forwards to the VulkanBloom subsystem)
 	bool initBloom() { return m_bloom.init(m_ctx, m_sceneColor); }
 	void shutdownBloom() { m_bloom.shutdown(); }
@@ -1182,6 +1289,9 @@ private:
 
 	// ---- Fog / volumetric nebula (self-contained subsystem) ----
 	VulkanFog m_fog;
+
+	// ---- Lens flare (compute-based detection + instanced quad rendering) ----
+	VulkanLensFlare m_lensFlare;
 
 	// ---- Distortion (ping-pong textures, self-contained subsystem) ----
 	VulkanDistortion m_distortion;

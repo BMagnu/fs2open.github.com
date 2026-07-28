@@ -77,3 +77,6 @@ bool gr_sunglare_enabled();
 int gr_bloom_intensity();
 // used by lab
 void gr_set_bloom_intensity(int intensity);
+
+extern int Gr_lensflare_coarse_mip;
+extern int Gr_lensflare_fine_mip;

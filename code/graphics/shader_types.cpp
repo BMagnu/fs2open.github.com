@@ -116,6 +116,12 @@ static ShaderTypeInfo SHADER_TYPES[] = {
 
 	{ SDR_TYPE_GAMMA_BLIT, "post-v.sdr", "gamma-correct-f.sdr", nullptr,
 		{ VATTRIB_POSITION, VATTRIB_TEXCOORD }, "Gamma correct blit", false },
+
+	{ SDR_TYPE_POST_PROCESS_LENSFLARE_DETECT, nullptr, nullptr, nullptr,
+		{ }, "Lens flare detection (compute)", false },
+
+	{ SDR_TYPE_POST_PROCESS_LENSFLARE_RENDER, "lensflare-render-v.sdr", "lensflare-render-f.sdr", nullptr,
+		{ }, "Lens flare rendering (instanced quads)", false },
 };
 // clang-format on
 

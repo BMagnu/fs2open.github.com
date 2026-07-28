@@ -155,6 +155,7 @@ namespace MaterialBinding {
 	static constexpr uint32_t SceneColor   = 5; // sampler2D: scene color (distortion)
 	static constexpr uint32_t DistortionMap = 6; // sampler2D: distortion texture
 	static constexpr uint32_t ShadowMapData = 7; // UBO: shadow map generation per-draw data (shadow_render_list)
+	static constexpr uint32_t FlareData    = 8; // SSBO: lens flare instance data (lensflare-render-v)
 }
 
 // Texture array slot indices (elements within MaterialBinding::TextureArray)

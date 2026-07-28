@@ -36,6 +36,7 @@ static constexpr DescriptorBindingTemplate s_materialBindings[] = {
 	{MaterialBinding::SceneColor,    vk::DescriptorType::eCombinedImageSampler, 1,  vk::ShaderStageFlagBits::eFragment},
 	{MaterialBinding::DistortionMap, vk::DescriptorType::eCombinedImageSampler, 1,  vk::ShaderStageFlagBits::eFragment},
 	{MaterialBinding::ShadowMapData, vk::DescriptorType::eUniformBuffer,        1,  vk::ShaderStageFlagBits::eVertex},
+	{MaterialBinding::FlareData,    vk::DescriptorType::eStorageBuffer,        1,  vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment},
 };
 static constexpr DescriptorSetTemplate s_materialTemplate(s_materialBindings);
 

@@ -312,3 +312,6 @@ void gr_set_bloom_intensity(int intensity)
 	graphics::Post_processing_bloom_intensity = intensity;
 	options::OptionsManager::instance()->set_ingame_range_option("Graphics.BloomIntensity", intensity);
 }
+
+int Gr_lensflare_coarse_mip = 3;
+int Gr_lensflare_fine_mip   = 1;

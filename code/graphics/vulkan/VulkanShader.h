@@ -109,9 +109,21 @@ public:
 	const VulkanShaderModule* getShaderByType(shader_type type) const;
 
 	/**
-	 * @brief Get total number of loaded shaders
+	 * @brief Compile a compute shader and create its module independently
+	 *
+	 * The existing loadShader path requires vertex+fragment pair and marks the
+	 * shader invalid when either is missing. This method is for the first pure-
+	 * compute pass in the pipeline (lens flare detection) which doesn't follow
+	 * that pattern.
+	 *
+	 * @param filename Compute shader source file (e.g. "lensflare-detect-c.sdr")
+	 * @param type     Shader type (must not be SDR_TYPE_NONE)
+	 * @param flags    SDR_FLAG_* variant mask (0 for no variants)
+	 * @return A valid module on success, null handle on failure
 	 */
-	size_t getShaderCount() const { return m_shaders.size(); }
+	vk::UniqueShaderModule createComputeModule(const SCP_string& filename,
+	                                            shader_type type,
+	                                            unsigned int flags);
 
 private:
 	/**

@@ -328,7 +328,15 @@ void VulkanRenderer::endSceneRendering()
 	}
 
 	// Execute post-processing passes (all between HDR scene pass and swap chain pass)
+	// Lens flare: capture pre-bloom scene → mip chain BEFORE bloom modifies it
+	if (m_postProcessor->isLensFlareInitialized()) {
+		m_postProcessor->capturePreBloom(m_currentCommandBuffer);
+	}
 	m_postProcessor->executeBloom(m_currentCommandBuffer);
+	// Lens flare: detect + render onto post-bloom scene
+	if (m_postProcessor->isLensFlareInitialized()) {
+		m_postProcessor->executeLensFlare(m_currentCommandBuffer);
+	}
 	m_postProcessor->executeTonemap(m_currentCommandBuffer);
 	m_postProcessor->executeFXAA(m_currentCommandBuffer);
 	m_postProcessor->executeSMAA(m_currentCommandBuffer);

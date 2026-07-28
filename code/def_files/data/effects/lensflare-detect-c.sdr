@@ -1,0 +1,169 @@
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D mipImage;
+
+struct FlareEntry {
+	vec2 meanPos;
+	vec2 aabbMin;
+	vec2 aabbMax;
+	float brightness;
+	uint  mipLevel;
+};
+
+layout(std430, set = 0, binding = 1) buffer FlareSSBO {
+	uint flareCount;
+	FlareEntry entries[];
+};
+
+layout(std140, set = 0, binding = 2) uniform FlareParams {
+	int  coarseMip;
+	int  fineMip;
+	float threshold;
+	int  maxFlares;
+	float invWidth;
+	float invHeight;
+	float _pad0;
+	float _pad1;
+};
+
+float luminance(vec3 c) {
+	return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
+// Check a texel at the given level.  If it is bright, refine all the way
+// down to LENSFLARE_FINE_MIP to compute a tight AABB and geometric-mean
+// position, atomically write one FlareEntry, and return true so the
+// caller knows not to descend further within this region.  If the texel
+// is not bright, return false immediately.
+//
+// NOTE: the per-level loops below are unrolled via preprocessor guards
+// because recursive function calls are rejected by the SPIR-V linker
+// when targeting Vulkan.  Once the in-progress post-processing system
+// supports compile-time limited-recursion source-level resolve, switch
+// back to a recursive helper and delete the manual pyramid.
+
+bool tryEmit(ivec2 coord, int level) {
+	vec4 color = texelFetch(mipImage, coord, level);
+	float lum  = luminance(color.rgb);
+
+	if (lum <= threshold) return false;
+
+	int step     = 1 << (level - LENSFLARE_FINE_MIP);
+	ivec2 base   = coord * step;
+	float invRes = float(1u << uint(LENSFLARE_FINE_MIP));
+
+	vec2 texelSize = vec2(invWidth, invHeight) * invRes;
+	vec2 halfTexel = texelSize * 0.5;
+
+	vec2  sumPos    = vec2(0.0);
+	float sumWeight = 0.0;
+	vec2  bbMin     = vec2(1.0);
+	vec2  bbMax     = vec2(0.0);
+
+	for (int y = 0; y < step; ++y) {
+		for (int x = 0; x < step; ++x) {
+			ivec2 fc = base + ivec2(x, y);
+			vec4  f  = texelFetch(mipImage, fc, LENSFLARE_FINE_MIP);
+			float fl = luminance(f.rgb);
+			if (fl > threshold) {
+				vec2 uv = (vec2(fc) + 0.5) * texelSize;
+				sumPos    += uv * fl;
+				sumWeight += fl;
+				bbMin = min(bbMin, uv - halfTexel);
+				bbMax = max(bbMax, uv + halfTexel);
+			}
+		}
+	}
+
+	if (sumWeight > 0.0) {
+		vec2 meanPos = sumPos / sumWeight;
+		uint slot = atomicAdd(flareCount, 1u);
+		if (slot < uint(maxFlares)) {
+			entries[slot].meanPos    = meanPos;
+			entries[slot].aabbMin    = bbMin;
+			entries[slot].aabbMax    = bbMax;
+			entries[slot].brightness = lum;
+			entries[slot].mipLevel   = uint(level);
+		}
+	}
+	return true;
+}
+
+// ----- Pyramid: compile-time unrolled depth-first search -----
+// One workgroup thread per coarse texel at LENSFLARE_COARSE_MIP.
+// If the texel is bright we stop; otherwise we test its 4 children
+// at the next finer level, and so on down to LENSFLARE_FINE_MIP.
+// Every #if block that evaluates false is stripped by the preprocessor
+// so the emitted SPIR-V contains exactly the needed nesting.
+
+void main() {
+	ivec2 dim = textureSize(mipImage, 0);
+	ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+	int   div = 1 << LENSFLARE_COARSE_MIP;
+	ivec2 cs  = max(ivec2(1), dim / div);
+
+	if (gid.x >= cs.x || gid.y >= cs.y) return;
+
+	// ----- Level: LENSFLARE_COARSE_MIP -----
+	if (tryEmit(gid, LENSFLARE_COARSE_MIP)) return;
+
+	// ----- Descend to LENSFLARE_COARSE_MIP - 1 -----
+#if (LENSFLARE_COARSE_MIP - LENSFLARE_FINE_MIP) >= 1
+	{
+		ivec2 b0 = gid * 2;
+		for (int y0 = 0; y0 < 2; ++y0)
+		for (int x0 = 0; x0 < 2; ++x0) {
+			ivec2 c0 = b0 + ivec2(x0, y0);
+			if (tryEmit(c0, LENSFLARE_COARSE_MIP - 1)) continue;
+
+	// ---- Descend to LENSFLARE_COARSE_MIP - 2 ----
+#if (LENSFLARE_COARSE_MIP - LENSFLARE_FINE_MIP) >= 2
+			{
+				ivec2 b1 = c0 * 2;
+				for (int y1 = 0; y1 < 2; ++y1)
+				for (int x1 = 0; x1 < 2; ++x1) {
+					ivec2 c1 = b1 + ivec2(x1, y1);
+					if (tryEmit(c1, LENSFLARE_COARSE_MIP - 2)) continue;
+
+	// --- Descend to LENSFLARE_COARSE_MIP - 3 ---
+#if (LENSFLARE_COARSE_MIP - LENSFLARE_FINE_MIP) >= 3
+					{
+						ivec2 b2 = c1 * 2;
+						for (int y2 = 0; y2 < 2; ++y2)
+						for (int x2 = 0; x2 < 2; ++x2) {
+							ivec2 c2 = b2 + ivec2(x2, y2);
+							if (tryEmit(c2, LENSFLARE_COARSE_MIP - 3)) continue;
+
+	// - Descend to LENSFLARE_COARSE_MIP - 4 -
+#if (LENSFLARE_COARSE_MIP - LENSFLARE_FINE_MIP) >= 4
+							{
+								ivec2 b3 = c2 * 2;
+								for (int y3 = 0; y3 < 2; ++y3)
+								for (int x3 = 0; x3 < 2; ++x3) {
+									ivec2 c3 = b3 + ivec2(x3, y3);
+									if (tryEmit(c3, LENSFLARE_COARSE_MIP - 4)) continue;
+
+	// Descend to LENSFLARE_COARSE_MIP - 5
+#if (LENSFLARE_COARSE_MIP - LENSFLARE_FINE_MIP) >= 5
+									{
+										ivec2 b4 = c3 * 2;
+										for (int y4 = 0; y4 < 2; ++y4)
+										for (int x4 = 0; x4 < 2; ++x4) {
+											ivec2 c4 = b4 + ivec2(x4, y4);
+											tryEmit(c4, LENSFLARE_COARSE_MIP - 5);
+										}
+									}
+#endif
+								}
+							}
+#endif
+						}
+					}
+#endif
+				}
+			}
+#endif
+		}
+	}
+#endif
+}
