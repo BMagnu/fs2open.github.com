@@ -251,6 +251,9 @@ void RenderWidget::mousePressEvent(QMouseEvent* event) {
 
 	if (event->modifiers().testFlag(Qt::ControlModifier)) {  // add a new object
 		if (_viewport->on_object == -1) {
+			// Don't grab the mouse for object creation. Not only does dragging not make sense here, but if it fails
+			// an error popup can lock the mouse grabbed with no way of interacting with the error popup.
+			_window->setMouseGrabEnabled(false);
 			_viewport->Selection_lock = false;  // force off selection lock
 			const bool shift = event->modifiers().testFlag(Qt::ShiftModifier);
 			const bool alt   = event->modifiers().testFlag(Qt::AltModifier);
